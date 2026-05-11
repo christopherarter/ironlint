@@ -35,6 +35,12 @@ impl HectorEngine {
             }
         }
 
+        // Validate every rule's scope by constructing the matcher up front.
+        for (rule_id, rule) in &config.rules {
+            crate::config::scope::ScopeMatcher::new(&rule.scope)
+                .with_context(|| format!("rule `{rule_id}` has invalid scope glob"))?;
+        }
+
         let config_dir = config_path
             .parent()
             .map(|p| p.to_path_buf())
