@@ -1,0 +1,27 @@
+---
+source: crates/hector-core/tests/verdict_snapshot.rs
+expression: v
+---
+{
+  "schema_version": 1,
+  "hector_version": "0.1.0",
+  "status": "block",
+  "violations": [
+    {
+      "rule_id": "no-console-log",
+      "severity": "error",
+      "engine": "script",
+      "file": "src/app.ts",
+      "line": 42,
+      "column": null,
+      "message": "console.log not permitted in src/",
+      "suggestion": null,
+      "context": null
+    }
+  ],
+  "passed_checks": [
+    "no-as-any",
+    "test-coverage-on-auth"
+  ],
+  "elapsed_ms": 1340
+}

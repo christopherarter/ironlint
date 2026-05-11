@@ -1,1 +1,3 @@
-//! Hector core library: config, engines, verdict, trust.
+//! Hector core library.
+
+pub mod verdict;

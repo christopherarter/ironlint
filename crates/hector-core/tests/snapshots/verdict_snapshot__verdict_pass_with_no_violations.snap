@@ -1,0 +1,14 @@
+---
+source: crates/hector-core/tests/verdict_snapshot.rs
+expression: v
+---
+{
+  "schema_version": 1,
+  "hector_version": "0.1.0",
+  "status": "pass",
+  "violations": [],
+  "passed_checks": [
+    "no-console-log"
+  ],
+  "elapsed_ms": 12
+}
