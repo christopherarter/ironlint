@@ -41,6 +41,12 @@ impl HectorEngine {
                 .with_context(|| format!("rule `{rule_id}` has invalid scope glob"))?;
         }
 
+        if crate::config::parser::is_legacy(&config) {
+            eprintln!(
+                "hector: warning — `.bully.yml` schema_version 1 is deprecated; run `hector migrate` to upgrade to schema_version 2"
+            );
+        }
+
         let config_dir = config_path
             .parent()
             .map(|p| p.to_path_buf())
