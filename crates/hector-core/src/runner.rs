@@ -9,6 +9,32 @@ use std::time::Instant;
 pub struct HectorEngine {
     config: Config,
     config_dir: PathBuf,
+    llm: Option<Box<dyn crate::llm::LlmClient>>,
+}
+
+pub struct HectorEngineBuilder {
+    llm: Option<Box<dyn crate::llm::LlmClient>>,
+}
+
+impl HectorEngineBuilder {
+    pub fn new() -> Self {
+        Self { llm: None }
+    }
+
+    pub fn with_llm(mut self, llm: Box<dyn crate::llm::LlmClient>) -> Self {
+        self.llm = Some(llm);
+        self
+    }
+
+    pub fn load(self, config_path: &Path) -> Result<HectorEngine> {
+        HectorEngine::load_with(config_path, self.llm)
+    }
+}
+
+impl Default for HectorEngineBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 pub enum CheckInput {
@@ -18,6 +44,14 @@ pub enum CheckInput {
 
 impl HectorEngine {
     pub fn load(config_path: &Path) -> Result<Self> {
+        Self::load_with(config_path, None)
+    }
+
+    pub fn builder() -> HectorEngineBuilder {
+        HectorEngineBuilder::new()
+    }
+
+    fn load_with(config_path: &Path, llm: Option<Box<dyn crate::llm::LlmClient>>) -> Result<Self> {
         let raw = std::fs::read_to_string(config_path)
             .with_context(|| format!("reading {}", config_path.display()))?;
         trust::verify(&raw)?;
@@ -51,7 +85,7 @@ impl HectorEngine {
             .parent()
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| PathBuf::from("."));
-        Ok(Self { config, config_dir })
+        Ok(Self { config, config_dir, llm })
     }
 
     pub fn check(&self, input: CheckInput) -> Result<Verdict> {
