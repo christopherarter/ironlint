@@ -17,6 +17,7 @@ ast-grep-core.workspace = true
 ast-grep-language.workspace = true
 reqwest.workspace = true
 tokio.workspace = true
+chrono.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 nix.workspace = true
