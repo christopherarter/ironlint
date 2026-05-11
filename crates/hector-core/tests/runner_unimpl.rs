@@ -11,14 +11,7 @@ fn write_trusted(dir: &std::path::Path, body: &str) -> std::path::PathBuf {
     path
 }
 
-#[test]
-fn rejects_config_with_semantic_engine() {
-    let dir = tempdir().unwrap();
-    let cfg = "schema_version: 2\nrules:\n  use-derived:\n    description: \"x\"\n    engine: semantic\n    scope: [\"*\"]\n    severity: error\n";
-    let path = write_trusted(dir.path(), cfg);
-    let result = HectorEngine::load(&path);
-    assert!(result.is_err());
-}
+// semantic engine no longer rejected — it is implemented as of 0.1b Phase 3
 
 #[test]
 fn rejects_config_with_session_engine() {
