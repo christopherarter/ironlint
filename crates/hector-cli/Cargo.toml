@@ -1,0 +1,21 @@
+[package]
+name = "hector-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "hector"
+path = "src/main.rs"
+
+[dependencies]
+hector-core = { path = "../hector-core" }
+clap.workspace = true
+anyhow.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+assert_cmd.workspace = true
+predicates.workspace = true
+tempfile.workspace = true
