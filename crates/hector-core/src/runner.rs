@@ -1,4 +1,4 @@
-use crate::config::{parse_file_with_extends, scope::ScopeMatcher, Config, EngineKind};
+use crate::config::{parse_file_with_extends, Config, EngineKind};
 use crate::engine::script::run_script_rule;
 use crate::trust;
 use crate::verdict::{Verdict, Violation};
@@ -49,34 +49,40 @@ impl HectorEngine {
     }
 
     pub fn check(&self, input: CheckInput) -> Verdict {
+        use crate::disable::DisableMap;
         let start = Instant::now();
-        let (path, _content, _diff) = match input {
+        let (path, content, diff) = match input {
             CheckInput::File { path, content } => (path, content, String::new()),
             CheckInput::Diff { file, unified_diff } => (file, String::new(), unified_diff),
         };
+
+        let disable_map = DisableMap::from_source(&content);
 
         let mut violations: Vec<Violation> = Vec::new();
         let mut passed: Vec<String> = Vec::new();
 
         for (rule_id, rule) in &self.config.rules {
-            let matcher = match ScopeMatcher::new(&rule.scope) {
-                Ok(m) => m,
-                Err(_) => continue,
-            };
+            let matcher = crate::config::scope::ScopeMatcher::new(&rule.scope)
+                .expect("scope validated at load");
             if !matcher.matches(&path) {
                 continue;
             }
             let outcome = match rule.engine {
-                EngineKind::Script => run_script_rule(rule_id, rule, &path, "", &self.config_dir),
-                _ => {
-                    // 0.1a foundation: non-script engines are no-ops; plans B/C wire them.
-                    Ok(None)
-                }
+                EngineKind::Script => run_script_rule(rule_id, rule, &path, &diff, &self.config_dir),
+                _ => Ok(None),
             };
             match outcome {
-                Ok(Some(v)) => violations.push(v),
+                Ok(Some(v)) => {
+                    if let Some(line) = v.line {
+                        if disable_map.is_disabled(line, rule_id) {
+                            passed.push(rule_id.clone());
+                            continue;
+                        }
+                    }
+                    violations.push(v);
+                }
                 Ok(None) => passed.push(rule_id.clone()),
-                Err(_) => {} // engine error treated as no violation; logged at a higher layer
+                Err(_) => {}
             }
         }
 
