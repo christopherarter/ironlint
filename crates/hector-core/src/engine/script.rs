@@ -1,10 +1,30 @@
 use crate::config::Rule;
 use crate::engine::capability::run_with_capabilities;
+use crate::engine::{RuleContext, RuleEngine};
 use crate::verdict::{Engine, Severity, Violation};
 use anyhow::{anyhow, Result};
 use std::path::Path;
 
+pub struct ScriptEngine;
+
+impl RuleEngine for ScriptEngine {
+    fn run(&self, ctx: &RuleContext) -> Result<Option<Violation>> {
+        run_script_rule_internal(ctx.rule_id, ctx.rule, ctx.file, ctx.diff.unwrap_or(""), ctx.cwd)
+    }
+}
+
+/// Kept as a free function for backward compat with existing callsites.
 pub fn run_script_rule(
+    rule_id: &str,
+    rule: &Rule,
+    file: &Path,
+    diff: &str,
+    cwd: &Path,
+) -> Result<Option<Violation>> {
+    run_script_rule_internal(rule_id, rule, file, diff, cwd)
+}
+
+fn run_script_rule_internal(
     rule_id: &str,
     rule: &Rule,
     file: &Path,
