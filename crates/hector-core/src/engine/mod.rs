@@ -1,5 +1,6 @@
 //! Engine module: the RuleEngine trait, RuleContext, and per-engine impls.
 
+pub mod ast;
 pub mod capability;
 pub mod script;
 

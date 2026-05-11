@@ -60,7 +60,7 @@ impl HectorEngine {
         // Reject configs whose engines are not yet implemented by this binary.
         for (rule_id, rule) in &config.rules {
             match rule.engine {
-                EngineKind::Script => {}
+                EngineKind::Script | EngineKind::Ast => {}
                 other => {
                     return Err(anyhow::anyhow!(
                         "rule `{rule_id}` uses engine `{other:?}` which is not implemented in this build (0.1a) — see specs/2026-05-11-hector-plan-and-0.1-design.md §10 phasing"
@@ -109,6 +109,21 @@ impl HectorEngine {
             }
             let outcome = match rule.engine {
                 EngineKind::Script => run_script_rule(rule_id, rule, &path, &diff, &self.config_dir),
+                EngineKind::Ast => {
+                    use crate::engine::ast::AstEngine;
+                    use crate::engine::{RuleContext, RuleEngine};
+                    let engine = AstEngine;
+                    let ctx = RuleContext {
+                        rule_id,
+                        rule,
+                        file: &path,
+                        content: if content.is_empty() { None } else { Some(&content) },
+                        diff: if diff.is_empty() { None } else { Some(&diff) },
+                        cwd: &self.config_dir,
+                        llm: self.llm.as_deref(),
+                    };
+                    engine.run(&ctx)
+                }
                 _ => Ok(None),
             };
             match outcome {
