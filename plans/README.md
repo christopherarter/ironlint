@@ -11,13 +11,11 @@ A plan owns its own progress via its checkboxes — that's the source of truth. 
 
 ## Active
 
-The 0.2.0 cohort closes the bully-parity gaps. Sequencing matters: A1 lands the security boundary that A2 and A3 lean on. See [`specs/2026-05-12-bully-parity-closures.md`](../specs/2026-05-12-bully-parity-closures.md) for the spec.
+The 0.2.0 cohort closes the bully-parity gaps. A1 and A2 shipped; A3 is the remaining item. See [`specs/2026-05-12-bully-parity-closures.md`](../specs/2026-05-12-bully-parity-closures.md) for the spec.
 
 | Priority | Plan | Goal | Steps | Order |
 |---|---|---|---|---|
-| 🔴 security | [A1 — Prompt-Injection Defense](2026-05-12-hector-a1-prompt-injection.md) | Wrap rule policy in `<TRUSTED_POLICY>` and user content in `<UNTRUSTED_EVIDENCE>` so adversarial diffs can't smuggle rule-list content into the prompt. | 0 / 16 | first |
-| 🔴 cost | [A2 — Skip Patterns](2026-05-12-hector-a2-skip-patterns.md) | Default skip for lockfiles, generated code, build artifacts. Project `skip:` in `.hector.yml` + `~/.hector-ignore` for user-global skips. | 0 / 24 | after A1 |
-| 🔴 cost | [A3 — Diff Pre-Filter](2026-05-12-hector-a3-diff-prefilter.md) | Locally short-circuit `engine: semantic` when the diff can't fire the rule (empty / whitespace / comment-only / pure-deletion against an "avoid X" rule). | 0 / 40 | after A2 |
+| 🔴 cost | [A3 — Diff Pre-Filter](2026-05-12-hector-a3-diff-prefilter.md) | Locally short-circuit `engine: semantic` when the diff can't fire the rule (empty / whitespace / comment-only / pure-deletion against an "avoid X" rule). | 0 / 40 | now |
 
 ## Future
 
@@ -34,6 +32,8 @@ Completed plans live in [`archive/`](archive/). They're frozen design records.
 - [`2026-05-11-hector-0.1c-claude-code-adapter`](archive/2026-05-11-hector-0.1c-claude-code-adapter.md) — Claude Code adapter (`plugin.json`, PostToolUse + Stop hooks, ported skills).
 - [`2026-05-12-hector-opencode-adapter`](archive/2026-05-12-hector-opencode-adapter.md) — OpenCode adapter at parity with the Claude Code adapter.
 - [`2026-05-12-bug-audit-remediation`](archive/2026-05-12-bug-audit-remediation.md) — remediation campaign for the [P0/P1/P2 findings](../docs/audits/2026-05-12-bug-audit.md) from the 2026-05-12 audit.
+- [`2026-05-12-hector-a1-prompt-injection`](archive/2026-05-12-hector-a1-prompt-injection.md) — `<TRUSTED_POLICY>` / `<UNTRUSTED_EVIDENCE>` sentinel boundary in semantic prompt.
+- [`2026-05-12-hector-a2-skip-patterns`](archive/2026-05-12-hector-a2-skip-patterns.md) — built-in skip patterns + project `skip:` + `~/.hector-ignore`.
 
 ## Conventions
 

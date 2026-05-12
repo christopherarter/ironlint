@@ -61,7 +61,7 @@ CLI test for the self-check (running `hector check --file Cargo.lock` against he
 
 The module doesn't exist yet; tests will fail to compile. Add the file with **only** `#[cfg(test)] mod tests` content for now — no implementation. We'll fill it in Task 2.
 
-- [ ] **Step 1: Create the test scaffold**
+- [x] **Step 1: Create the test scaffold**
 
 ```rust
 //! File-skip patterns: built-in defaults + project `skip:` list + user-global ignore file.
@@ -172,14 +172,14 @@ fixtures/**
 }
 ```
 
-- [ ] **Step 2: Wire the module into `config/mod.rs`**
+- [x] **Step 2: Wire the module into `config/mod.rs`**
 
 ```rust
 // In crates/hector-core/src/config/mod.rs, add to the existing module list:
 pub mod skip;
 ```
 
-- [ ] **Step 3: Run the failing tests**
+- [x] **Step 3: Run the failing tests**
 
 Run: `cargo test -p hector-core --lib config::skip`
 Expected: compile error — `built_in_skip_globs`, `SkipMatcher`, `parse_user_global_ignore` not found. Good.
@@ -191,7 +191,7 @@ Expected: compile error — `built_in_skip_globs`, `SkipMatcher`, `parse_user_gl
 **Files:**
 - Modify: `crates/hector-core/src/config/skip.rs` (prepend implementation above the test module)
 
-- [ ] **Step 1: Add the implementation**
+- [x] **Step 1: Add the implementation**
 
 ```rust
 //! File-skip patterns: built-in defaults + project `skip:` list + user-global ignore file.
@@ -284,7 +284,7 @@ pub fn parse_user_global_ignore(raw: &str) -> Vec<String> {
 }
 ```
 
-- [ ] **Step 2: Run unit tests**
+- [x] **Step 2: Run unit tests**
 
 Run: `cargo test -p hector-core --lib config::skip`
 Expected: all tests pass.
@@ -299,7 +299,7 @@ Expected: all tests pass.
 - Modify: `crates/hector-core/src/config/types.rs` — add `skip` field
 - Modify: `crates/hector-core/src/config/extends.rs` — union inherited `skip:` into local
 
-- [ ] **Step 1: Add the field to `Config`**
+- [x] **Step 1: Add the field to `Config`**
 
 In `crates/hector-core/src/config/types.rs`, modify the `Config` struct:
 
@@ -319,7 +319,7 @@ pub struct Config {
 }
 ```
 
-- [ ] **Step 2: Union skip lists across extends**
+- [x] **Step 2: Union skip lists across extends**
 
 In `crates/hector-core/src/config/extends.rs`, modify `merge_inherited`:
 
@@ -343,7 +343,7 @@ fn merge_inherited(local: &mut Config, inherited: Config) {
 }
 ```
 
-- [ ] **Step 3: Add an extends test**
+- [x] **Step 3: Add an extends test**
 
 Add a new test to `crates/hector-core/tests/extends.rs` (or follow the pattern there). First peek at the file to find the right helper-style:
 
@@ -374,12 +374,12 @@ fn extends_unions_skip_globs_from_parent_and_child() {
 
 If the existing `extends.rs` test file uses a different helper API (e.g. inline YAML strings, helper functions), follow that convention rather than the snippet above.
 
-- [ ] **Step 4: Run the test**
+- [x] **Step 4: Run the test**
 
 Run: `cargo test -p hector-core --test extends`
 Expected: pass. Existing extends tests continue to pass (the new field is `#[serde(default)]`).
 
-- [ ] **Step 5: Run the full hector-core test sweep**
+- [x] **Step 5: Run the full hector-core test sweep**
 
 Run: `cargo test -p hector-core`
 Expected: all green. Adding a `#[serde(default)]` field is non-breaking for existing fixtures.
@@ -393,7 +393,7 @@ Expected: all green. Adding a `#[serde(default)]` field is non-breaking for exis
 **Files:**
 - Modify: `crates/hector-core/src/runner.rs` — load `~/.hector-ignore`, build `SkipMatcher`, store on `HectorEngine`
 
-- [ ] **Step 1: Add `skip: SkipMatcher` field to `HectorEngine`**
+- [x] **Step 1: Add `skip: SkipMatcher` field to `HectorEngine`**
 
 In `crates/hector-core/src/runner.rs`:
 
@@ -410,7 +410,7 @@ pub struct HectorEngine {
 }
 ```
 
-- [ ] **Step 2: Build the matcher at the bottom of `load_with`**
+- [x] **Step 2: Build the matcher at the bottom of `load_with`**
 
 Replace the `Ok(Self { config, config_dir, llm })` block with:
 
@@ -433,7 +433,7 @@ Replace the `Ok(Self { config, config_dir, llm })` block with:
     }
 ```
 
-- [ ] **Step 3: Add the `home_dir` helper**
+- [x] **Step 3: Add the `home_dir` helper**
 
 Avoid pulling a new dep (`dirs`, `home`) for one path. At the top of `runner.rs` (or in a small private helper module), add:
 
@@ -447,7 +447,7 @@ fn home_dir() -> Option<PathBuf> {
 }
 ```
 
-- [ ] **Step 4: Compile**
+- [x] **Step 4: Compile**
 
 Run: `cargo build -p hector-core`
 Expected: compiles. The skip matcher is loaded but not yet consulted.
@@ -461,7 +461,7 @@ Expected: compiles. The skip matcher is loaded but not yet consulted.
 **Files:**
 - Modify: `crates/hector-core/src/runner.rs` — `HectorEngine::check`
 
-- [ ] **Step 1: Add the short-circuit at the top of `check`**
+- [x] **Step 1: Add the short-circuit at the top of `check`**
 
 In `crates/hector-core/src/runner.rs::check`, after the path/content/diff destructure but before constructing `disable_map`:
 
@@ -493,7 +493,7 @@ In `crates/hector-core/src/runner.rs::check`, after the path/content/diff destru
 
 Note: we construct the `Verdict` directly (instead of `Verdict::pass()`) so that `elapsed_ms` is non-zero — useful for telemetry baselines that look at total skip-overhead time.
 
-- [ ] **Step 2: Run a focused test to confirm nothing regressed**
+- [x] **Step 2: Run a focused test to confirm nothing regressed**
 
 Run: `cargo test -p hector-core --test runner`
 Expected: pass. (The runner test suite doesn't currently use lockfile fixtures, so no behavior change for it.)
@@ -505,7 +505,7 @@ Expected: pass. (The runner test suite doesn't currently use lockfile fixtures, 
 **Files:**
 - Create: `crates/hector-core/tests/runner_skip.rs`
 
-- [ ] **Step 1: Write the test**
+- [x] **Step 1: Write the test**
 
 ```rust
 //! A2 — skip-pattern short-circuit at the top of HectorEngine::check.
@@ -635,7 +635,7 @@ fn user_global_ignore_is_honored() {
 }
 ```
 
-- [ ] **Step 2: Run the new test file**
+- [x] **Step 2: Run the new test file**
 
 Run: `cargo test -p hector-core --test runner_skip`
 Expected: all three tests pass.
@@ -658,7 +658,7 @@ We accept the manual-flag trade-off for one test in 0.2; a full move to a `traci
 **Files:**
 - Modify: `crates/hector-cli/tests/cli_check.rs` — add a test pointing at the workspace's actual `Cargo.lock`
 
-- [ ] **Step 1: Add the smoke test**
+- [x] **Step 1: Add the smoke test**
 
 ```rust
 #[test]
@@ -704,7 +704,7 @@ fn check_skips_cargo_lock_with_default_config() {
 }
 ```
 
-- [ ] **Step 2: Run the new CLI test**
+- [x] **Step 2: Run the new CLI test**
 
 Run: `cargo test -p hector-cli --test cli_check check_skips_cargo_lock_with_default_config`
 Expected: pass.
@@ -713,17 +713,17 @@ Expected: pass.
 
 ### Task 8: Workspace verification
 
-- [ ] **Step 1: Format**
+- [x] **Step 1: Format**
 
 Run: `cargo fmt --all`
 Expected: no diff (or trivial wrapping fixes).
 
-- [ ] **Step 2: Lint**
+- [x] **Step 2: Lint**
 
 Run: `cargo clippy --all-targets -- -D warnings`
 Expected: zero warnings. Watch for `clippy::ptr_arg` on the `&[String]` extras parameter — `Vec<String>` callers go through `&` which is fine.
 
-- [ ] **Step 3: Full test sweep**
+- [x] **Step 3: Full test sweep**
 
 Run: `cargo test --workspace`
 Expected: green across all crates. Specifically:
@@ -731,7 +731,7 @@ Expected: green across all crates. Specifically:
 - All existing `hector-cli` tests still pass.
 - The new `runner_skip` and CLI Cargo.lock tests pass.
 
-- [ ] **Step 4: Live self-check**
+- [x] **Step 4: Live self-check**
 
 Run from the hector workspace root:
 ```bash

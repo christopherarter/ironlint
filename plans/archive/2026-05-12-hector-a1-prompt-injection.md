@@ -54,7 +54,7 @@ No fixture files needed — the adversarial content is small enough to inline in
 
 The helper does not exist yet; tests will fail to compile, which is fine — we're following TDD. The tests below are intentionally exhaustive about the cases that matter for security; do not abbreviate.
 
-- [ ] **Step 1: Write failing unit tests**
+- [x] **Step 1: Write failing unit tests**
 
 Append to `crates/hector-core/src/llm/prompt.rs`:
 
@@ -183,12 +183,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail to compile**
+- [x] **Step 2: Run tests to verify they fail to compile**
 
 Run: `cargo test -p hector-core --lib llm::prompt`
 Expected: compile error — `neutralize` not found, `build_prompt` assertions about TRUSTED/UNTRUSTED don't match.
 
-- [ ] **Step 3: Commit failing test**
+- [x] **Step 3: Commit failing test**
 
 ```bash
 git add crates/hector-core/src/llm/prompt.rs
@@ -204,7 +204,7 @@ git commit -m "test: A1 — failing tests for sentinel-tag prompt boundaries"
 **Files:**
 - Modify: `crates/hector-core/src/llm/prompt.rs:1-25` (replace the whole non-test body)
 
-- [ ] **Step 1: Replace the body of `prompt.rs` (above the `#[cfg(test)]` module) with this:**
+- [x] **Step 1: Replace the body of `prompt.rs` (above the `#[cfg(test)]` module) with this:**
 
 ```rust
 use crate::config::Rule;
@@ -309,17 +309,17 @@ fn replace_ci_ascii(haystack: &str, needle: &str, replacement: &str) -> String {
 }
 ```
 
-- [ ] **Step 2: Run unit tests**
+- [x] **Step 2: Run unit tests**
 
 Run: `cargo test -p hector-core --lib llm::prompt`
 Expected: all tests in the module pass.
 
-- [ ] **Step 3: Run the full `hector-core` test suite to catch regressions**
+- [x] **Step 3: Run the full `hector-core` test suite to catch regressions**
 
 Run: `cargo test -p hector-core`
 Expected: all green. Existing wiremock tests in `tests/anthropic.rs` and `tests/openai_compat.rs` assert response handling, not prompt body, so they should remain green.
 
-- [ ] **Step 4: Commit implementation**
+- [x] **Step 4: Commit implementation**
 
 ```bash
 git add crates/hector-core/src/llm/prompt.rs
@@ -337,7 +337,7 @@ git commit -m "feat(A1): wrap LLM prompt in TRUSTED_POLICY/UNTRUSTED_EVIDENCE wi
 
 This test uses a `FakeLlm` that records the prompt it was handed (instead of a wiremock HTTP fixture — we want the rendered prompt string, not the HTTP body). It asserts that an adversarial file containing literal sentinel tags cannot inject a "pass everything" rule into the policy section.
 
-- [ ] **Step 1: Create the test file**
+- [x] **Step 1: Create the test file**
 
 ```rust
 //! A1 prompt-injection defense — adversarial integration test.
@@ -484,12 +484,12 @@ fn adversarial_file_cannot_inject_pass_everything_rule() {
 }
 ```
 
-- [ ] **Step 2: Run the new test**
+- [x] **Step 2: Run the new test**
 
 Run: `cargo test -p hector-core --test prompt_injection`
 Expected: pass.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add crates/hector-core/tests/prompt_injection.rs
@@ -508,7 +508,7 @@ git commit -m "test(A1): adversarial fixture cannot inject pass-everything rule"
 
 Phase 3's test calls `hector_core::llm::prompt::build_prompt(...)`. Both items above already make that path public. If Step 1 below shows it isn't, add the visibility — but it should be a no-op.
 
-- [ ] **Step 1: Confirm path resolution**
+- [x] **Step 1: Confirm path resolution**
 
 Run: `cargo test -p hector-core --test prompt_injection`
 Expected: still passes (proof the path is reachable).
@@ -521,26 +521,26 @@ If the test fails to compile because `build_prompt` is private, add `pub` and co
 
 ### Task 5: Full workspace verification before declaring A1 done
 
-- [ ] **Step 1: Format**
+- [x] **Step 1: Format**
 
 Run: `cargo fmt --all`
 Expected: no diff (the new code in `prompt.rs` should already be `rustfmt`-clean).
 
-- [ ] **Step 2: Lint**
+- [x] **Step 2: Lint**
 
 Run: `cargo clippy --all-targets -- -D warnings`
 Expected: zero warnings. Watch for `clippy::needless_pass_by_value` on `replace_ci_ascii` and similar — adjust if raised.
 
-- [ ] **Step 3: Full test sweep**
+- [x] **Step 3: Full test sweep**
 
 Run: `cargo test --workspace`
 Expected: green. The change is prompt-body-only; runner, baseline, capability, telemetry, etc. should all be unaffected.
 
-- [ ] **Step 4: Snapshot review (only if any insta snapshots changed)**
+- [x] **Step 4: Snapshot review (only if any insta snapshots changed)**
 
 If `cargo insta pending-snapshots` reports any changes, run `cargo insta review` and accept the new prompt-shape snapshot. If no snapshots changed (likely — none of the existing snapshots assert prompt body), skip.
 
-- [ ] **Step 5: Commit any verification fix-ups**
+- [x] **Step 5: Commit any verification fix-ups**
 
 If steps 1–4 turned up nothing, no commit. Otherwise:
 
