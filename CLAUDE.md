@@ -14,7 +14,7 @@ Hector is a Rust rewrite of [dynamik-dev/bully](https://github.com/dynamik-dev/b
 - This tool has not shipped yet. We don't need to hedge.
 - Rust source files under `crates/*/src/` must meet ≥90% **region** coverage (distinct decision points — branches, short-circuits, match arms — not executed lines). CI enforces this per-file via `scripts/ci-coverage.sh` (cargo-llvm-cov). Adding code without bringing the file up to the gate will break the build.
 - Cognitive complexity per function is capped at **15** via clippy (`clippy.toml`, with `#![warn(clippy::cognitive_complexity)]` activated at each crate root). Refactor over annotate; reach for `#[allow(clippy::cognitive_complexity)]` only when the complexity is intrinsic to the function's job and decomposing would scatter the flow, and document why in a comment.
-- Mutation testing runs nightly via `.github/workflows/mutants.yml` (cargo-mutants, scoped to `hector-core` at v1). The report uploads as an artifact; surviving mutants don't fail the build yet, but they're the canonical signal for tests that walk the code without verifying behavior — treat survivors in code you touched as a coverage gap, not a curiosity.
+- Mutation testing runs on every PR via the `mutants` job in `.github/workflows/ci.yml` using `cargo-mutants --in-diff` against the PR's base ref. **A surviving mutant in the diff fails the build.** Mutation testing flips operators, drops returns, and re-runs the test suite — a mutant the tests don't kill is a place where the tests walked the code without verifying behavior. The `mutants.out/` report uploads as an artifact for diagnosis.
 
 ## Commands
 

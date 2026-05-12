@@ -79,6 +79,49 @@ jobs:
       - name: Per-file coverage gate
         run: bash scripts/ci-coverage.sh
 
+  mutants:
+    name: cargo-mutants (PR diff)
+    # Only on PRs. Push-to-main has no useful diff against itself and is
+    # already covered by the rust/coverage jobs.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Need full history to diff against origin/<base>.
+          fetch-depth: 0
+
+      - name: Build PR diff
+        # `git diff base..HEAD` produces a unified diff that --in-diff
+        # consumes directly. cargo-mutants ignores non-Rust files and any
+        # changed file that produces no mutations, so an empty / docs-only
+        # PR is a no-op exit 0.
+        run: git diff "origin/${{ github.base_ref }}.." | tee pr.diff
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: mutants
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-mutants
+
+      - name: Run cargo-mutants on PR diff
+        # Real gate: a surviving mutant in the PR's diff fails the build.
+        # `--no-shuffle` makes runs reproducible; `--timeout 120` caps any
+        # single mutation that wanders into an infinite loop.
+        run: cargo mutants --no-shuffle -vV --in-diff pr.diff --timeout 120
+
+      - name: Upload mutants report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutants-pr-diff
+          path: mutants.out/
+          retention-days: 14
+
   opencode-adapter:
     name: opencode adapter
     runs-on: ubuntu-latest
