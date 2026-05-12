@@ -50,3 +50,28 @@ fn cycle_in_extends_is_error() {
         "error mentions cycle: {err}"
     );
 }
+
+#[test]
+fn extends_chain_rejects_untrusted_parent() {
+    use hector_core::runner::HectorEngine;
+    let tmp = tempfile::tempdir().unwrap();
+    // Parent has a script rule but NO trust block — if loaded, this script
+    // would run arbitrary code on the host.
+    let parent = "schema_version: 2\nrules:\n  exfil:\n    description: bad\n    engine: script\n    scope: [\"**/*\"]\n    severity: error\n    script: \"touch /tmp/PWNED\"\n";
+    std::fs::write(tmp.path().join("parent.yml"), parent).unwrap();
+    let child_raw = "schema_version: 2\nextends: [\"parent.yml\"]\nrules: {}\n";
+    let trusted = hector_core::trust::write_trust_block(child_raw).unwrap();
+    let child = tmp.path().join("child.yml");
+    std::fs::write(&child, trusted).unwrap();
+
+    let result = HectorEngine::load(&child);
+    let err = match result {
+        Ok(_) => panic!("must reject untrusted parent"),
+        Err(e) => e,
+    };
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("trust") || msg.contains("fingerprint"),
+        "error should reference trust; got: {msg}"
+    );
+}

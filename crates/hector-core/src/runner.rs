@@ -1,7 +1,6 @@
 use crate::config::skip::{parse_user_global_ignore, SkipMatcher, USER_GLOBAL_IGNORE_FILENAME};
-use crate::config::{parse_file_with_extends, Config, EngineKind};
+use crate::config::{Config, EngineKind};
 use crate::engine::script::run_script_rule;
-use crate::trust;
 use crate::verdict::{Verdict, Violation};
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
@@ -86,10 +85,11 @@ impl HectorEngine {
         config_path: &Path,
         llm_override: Option<Box<dyn crate::llm::LlmClient>>,
     ) -> Result<Self> {
-        let raw = std::fs::read_to_string(config_path)
-            .with_context(|| format!("reading {}", config_path.display()))?;
-        trust::verify(&raw)?;
-        let config = parse_file_with_extends(config_path)?;
+        // `resolve_trusted` verifies the trust block of the root and every
+        // transitive ancestor reachable through `extends:`. This is the only
+        // gate before `script:` rules may run, so the trust chain must be
+        // verified end-to-end here.
+        let config = crate::config::extends::resolve_trusted(config_path)?;
 
         // Validate every rule's scope by constructing the matcher up front.
         for (rule_id, rule) in &config.rules {
