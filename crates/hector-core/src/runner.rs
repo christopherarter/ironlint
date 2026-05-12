@@ -201,6 +201,44 @@ impl HectorEngine {
             if !matcher.matches(&match_path) {
                 continue;
             }
+            // A3: Local diff pre-filter for semantic rules. Skip the LLM
+            // dispatch entirely when the diff cannot plausibly match the
+            // rule (empty / whitespace-only / comments-only / pure
+            // deletion of an "avoid" rule). The skip is recorded in
+            // `passed` so the verdict shape matches a real pass; telemetry
+            // logs `semantic_skipped` with a reason string for observability.
+            // The pre-filter lives in the runner — not inside the engine —
+            // so it can sit alongside the other cross-cutting concerns
+            // (scope / baseline / disable / skip) and so the engine stays
+            // pure (no HTTP request leaves the engine when this fires).
+            //
+            // Only fires in diff mode: file-mode (`CheckInput::File`) sets
+            // `diff = String::new()`, which the pre-filter would otherwise
+            // classify as `SkipReason::Empty` and silently bypass every
+            // semantic rule — `can_match_diff` analyzes a diff, and there
+            // is no diff to analyze when the check is whole-file.
+            if rule.engine == EngineKind::Semantic && !diff.is_empty() {
+                let analysis =
+                    crate::diff::analysis::can_match_diff(&diff, &path, &rule.description);
+                if let crate::diff::analysis::CanMatch::No(reason) = analysis {
+                    if let Err(e) = crate::telemetry::append(
+                        &self.config_dir.join(".hector/log.jsonl"),
+                        &crate::telemetry::LogEntry {
+                            timestamp: chrono::Utc::now().to_rfc3339(),
+                            kind: "semantic_skipped".into(),
+                            file: path.display().to_string(),
+                            rule_id: Some(rule_id.clone()),
+                            status: "pass".into(),
+                            elapsed_ms: 0,
+                            reason: Some(reason.as_str().to_string()),
+                        },
+                    ) {
+                        eprintln!("hector: telemetry append failed: {e:#}");
+                    }
+                    passed.push(rule_id.clone());
+                    continue;
+                }
+            }
             let ctx = RuleContext {
                 rule_id,
                 rule,
