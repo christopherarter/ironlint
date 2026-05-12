@@ -4,7 +4,7 @@ Policy-enforcement pipeline for AI coding agents. Rust rewrite of [dynamik-dev/b
 
 ## Status
 
-0.1a (foundation). `script` engine only — `ast`, `semantic`, `session` land in 0.1b.
+0.1b. Engines: `script`, `ast`, `semantic` (Anthropic), `session`. Commands: `check`, `trust`, `validate`, `init`, `migrate`, `baseline`. Plan C (Claude Code adapter) is next.
 
 ## Build
 
