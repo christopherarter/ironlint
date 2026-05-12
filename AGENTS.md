@@ -13,7 +13,7 @@ cargo build --release                       # produces ./target/release/hector
 cargo test                                  # all workspace tests
 cargo test -p hector-core                   # core only
 cargo test -p hector-cli                    # CLI only
-cargo test --test e2e_script_rules          # single integration test file
+cargo test --test cli_e2e_script_rules      # single integration test file
 cargo test <name>                           # filter by test-fn name
 cargo clippy --all-targets -- -D warnings   # lint
 cargo fmt

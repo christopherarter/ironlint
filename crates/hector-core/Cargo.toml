@@ -29,7 +29,6 @@ libc = "0.2"
 [dev-dependencies]
 tempfile.workspace = true
 insta.workspace = true
-assert_cmd.workspace = true
 serde_json.workspace = true
 wiremock.workspace = true
 tokio.workspace = true
