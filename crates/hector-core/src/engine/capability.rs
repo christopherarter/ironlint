@@ -12,7 +12,7 @@ use wait_timeout::ChildExt;
 /// previously blocked the entire `check` invocation because `Command::output()`
 /// reads to EOF. The timeout fires here, the child is killed, and the runner
 /// returns a synthetic `ExecOutcome` so callers can render a verdict like any
-/// other failure. See P1-12 in `docs/2026-05-12-bug-audit.md`.
+/// other failure. See P1-12 in `docs/audits/2026-05-12-bug-audit.md`.
 const TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Per-stream cap on captured output (1 MiB). A noisy linter that floods
