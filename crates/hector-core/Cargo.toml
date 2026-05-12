@@ -19,7 +19,7 @@ reqwest.workspace = true
 tokio.workspace = true
 chrono.workspace = true
 wait-timeout = "0.2"
-fs4 = "0.13"
+fs4.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 nix.workspace = true

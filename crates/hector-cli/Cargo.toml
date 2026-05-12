@@ -19,6 +19,7 @@ walkdir.workspace = true
 chrono.workspace = true
 ignore = "0.4"
 rayon = "1"
+fs4.workspace = true
 
 [dev-dependencies]
 assert_cmd.workspace = true
