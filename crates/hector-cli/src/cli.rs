@@ -16,6 +16,8 @@ pub enum Command {
         file: Option<PathBuf>,
         #[arg(long)]
         diff: Option<PathBuf>,
+        #[arg(long)]
+        session: bool,
         #[arg(long, default_value = "human")]
         format: OutputFormat,
         #[arg(long, default_value = ".hector.yml")]

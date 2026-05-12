@@ -181,8 +181,6 @@ impl HectorEngine {
         use crate::engine::session::SessionEngine;
 
         let start = Instant::now();
-        let llm = self.llm.as_deref()
-            .ok_or_else(|| anyhow::anyhow!("session check requires LlmClient; build engine with .with_llm()"))?;
         let mut violations = Vec::new();
         let mut passed = Vec::new();
         let session_engine = SessionEngine;
@@ -190,6 +188,8 @@ impl HectorEngine {
             if rule.engine != crate::config::EngineKind::Session {
                 continue;
             }
+            let llm = self.llm.as_deref()
+                .ok_or_else(|| anyhow::anyhow!("session check requires LlmClient; build engine with .with_llm()"))?;
             match session_engine.evaluate(state, rule_id, rule, llm) {
                 Ok(Some(v)) => violations.push(v),
                 Ok(None) => passed.push(rule_id.clone()),

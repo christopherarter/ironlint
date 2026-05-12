@@ -8,8 +8,8 @@ use cli::{Cli, Command};
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let code = match cli.command {
-        Command::Check { file, diff, format, config } => {
-            commands::check::run(file, diff, format, &config)?
+        Command::Check { file, diff, session, format, config } => {
+            commands::check::run(file, diff, session, format, &config)?
         }
         Command::Trust { config } => commands::trust::run(&config)?,
         Command::Validate { config } => commands::validate::run(&config)?,

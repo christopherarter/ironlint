@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 pub fn run(
     file: Option<PathBuf>,
     diff: Option<PathBuf>,
+    session: bool,
     format: OutputFormat,
     config: &Path,
 ) -> Result<i32> {
@@ -17,6 +18,16 @@ pub fn run(
             return Ok(1);
         }
     };
+
+    if session {
+        let dir = config.parent().unwrap_or(std::path::Path::new("."));
+        let state_path = dir.join(".hector/session.json");
+        let state = hector_core::session_state::SessionState::load(&state_path)?;
+        let verdict = engine.check_session(&state)?;
+        emit(&verdict, format)?;
+        hector_core::session_state::SessionState::clear(&state_path)?;
+        return Ok(exit_code(&verdict));
+    }
 
     let input = match (file, diff) {
         (Some(f), None) => {
