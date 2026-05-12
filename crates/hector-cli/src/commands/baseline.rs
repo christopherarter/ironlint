@@ -50,6 +50,9 @@ pub fn run(config: &Path, scan_glob: Option<String>) -> Result<i32> {
         let Ok(content) = std::fs::read_to_string(path) else {
             return;
         };
+        // E1: clone the file content so the engine can take ownership
+        // while we still have a borrow to hash for the line_sha256.
+        let content_for_hash = content.clone();
         let Ok(verdict) = engine.check(CheckInput::File {
             path: path.clone(),
             content,
@@ -58,7 +61,7 @@ pub fn run(config: &Path, scan_glob: Option<String>) -> Result<i32> {
         };
         let mut bl = baseline.lock().unwrap();
         for v in verdict.violations {
-            bl.add(&v);
+            bl.add_with_content(&v, Some(&content_for_hash));
         }
     });
 

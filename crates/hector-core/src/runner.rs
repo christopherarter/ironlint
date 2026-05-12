@@ -298,7 +298,11 @@ impl HectorEngine {
                 crate::baseline::Baseline::default()
             }
         };
-        violations.retain(|v| !baseline.contains(v));
+        // E1: pass the post-edit file content so the baseline can compare
+        // each stored `line_sha256` against the current line text. A
+        // missing checksum (legacy v1 entry) falls back to the pre-E1
+        // tuple-only match — see `Baseline::contains_with_content`.
+        violations.retain(|v| !baseline.contains_with_content(v, Some(&content)));
 
         let verdict =
             Verdict::from_violations(violations, passed, start.elapsed().as_millis() as u64);
