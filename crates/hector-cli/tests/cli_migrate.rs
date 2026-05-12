@@ -82,3 +82,112 @@ fn migrate_moves_state_dir() {
         .success();
     assert!(dir.path().join(".hector/log.jsonl").exists());
 }
+
+#[test]
+fn migrate_errors_when_no_bully_config_present() {
+    let dir = tempdir().unwrap();
+    Command::cargo_bin("hector")
+        .unwrap()
+        .args(["migrate", "--dir", dir.path().to_str().unwrap()])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("no .bully.yml"));
+}
+
+#[test]
+fn migrate_refuses_to_overwrite_existing_hector_config() {
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join(".bully.yml"),
+        "schema_version: 1\nrules: {}\n",
+    )
+    .unwrap();
+    fs::write(dir.path().join(".hector.yml"), "schema_version: 2\nrules: {}\n").unwrap();
+    Command::cargo_bin("hector")
+        .unwrap()
+        .args(["migrate", "--dir", dir.path().to_str().unwrap()])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("already exists"));
+}
+
+#[test]
+fn migrate_clean_flag_removes_legacy_config() {
+    let dir = tempdir().unwrap();
+    let bully = dir.path().join(".bully.yml");
+    fs::write(&bully, "schema_version: 1\nrules: {}\n").unwrap();
+    Command::cargo_bin("hector")
+        .unwrap()
+        .args([
+            "migrate",
+            "--dir",
+            dir.path().to_str().unwrap(),
+            "--clean",
+        ])
+        .assert()
+        .success();
+    assert!(!bully.exists(), ".bully.yml removed under --clean");
+    assert!(dir.path().join(".hector.yml").exists());
+}
+
+#[test]
+fn migrate_errors_when_bully_config_is_not_a_mapping() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join(".bully.yml"), "- not\n- a\n- mapping\n").unwrap();
+    Command::cargo_bin("hector")
+        .unwrap()
+        .args(["migrate", "--dir", dir.path().to_str().unwrap()])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("not a YAML mapping"));
+}
+
+#[test]
+fn migrate_errors_when_bully_config_is_unparseable_yaml() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join(".bully.yml"), ": : :\n  oops\n").unwrap();
+    Command::cargo_bin("hector")
+        .unwrap()
+        .args(["migrate", "--dir", dir.path().to_str().unwrap()])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("parsing"));
+}
+
+#[cfg(unix)]
+#[test]
+fn migrate_errors_when_bully_config_unreadable() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempdir().unwrap();
+    let bully = dir.path().join(".bully.yml");
+    fs::write(&bully, "schema_version: 1\nrules: {}\n").unwrap();
+    fs::set_permissions(&bully, fs::Permissions::from_mode(0o000)).unwrap();
+    let result = Command::cargo_bin("hector")
+        .unwrap()
+        .args(["migrate", "--dir", dir.path().to_str().unwrap()])
+        .assert()
+        .failure();
+    fs::set_permissions(&bully, fs::Permissions::from_mode(0o644)).unwrap();
+    result.stderr(predicates::str::contains("reading"));
+}
+
+#[cfg(unix)]
+#[test]
+fn migrate_errors_when_writing_hector_config_fails() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join(".bully.yml"),
+        "schema_version: 1\nrules: {}\n",
+    )
+    .unwrap();
+    fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o555)).unwrap();
+    let assertion = Command::cargo_bin("hector")
+        .unwrap()
+        .args(["migrate", "--dir", dir.path().to_str().unwrap()])
+        .assert()
+        .failure();
+    fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o755)).unwrap();
+    drop(assertion);
+}
+
