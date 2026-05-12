@@ -16,8 +16,12 @@ impl RuleEngine for SemanticEngine {
             &primary,
             context_text.as_deref(),
         )?;
+        let total = verdicts.len();
         let Some(v) = verdicts.into_iter().find(|v| v.rule_id == ctx.rule_id) else {
-            return Ok(None);
+            return Err(anyhow!(
+                "LLM returned no verdict for rule `{}`; got {total} other verdicts",
+                ctx.rule_id
+            ));
         };
         match v.status {
             crate::llm::RuleStatus::Pass => Ok(None),

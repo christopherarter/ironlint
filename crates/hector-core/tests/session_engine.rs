@@ -102,8 +102,13 @@ fn session_engine_returns_none_on_llm_pass() {
     );
 }
 
+// Regression: P1-6. Bug-audit finding — when the LLM hallucinates a different
+// rule_id than the one we requested, the engine used to silently return
+// Ok(None) (a "pass" verdict for a rule we never actually got an answer for).
+// The engine must instead bail so the runner surfaces it as an internal
+// engine error.
 #[test]
-fn session_engine_returns_none_when_llm_omits_rule() {
+fn session_engine_errors_on_rule_id_mismatch() {
     let state = SessionState {
         session_id: "s1".into(),
         started_at: "t".into(),
@@ -125,11 +130,12 @@ fn session_engine_returns_none_when_llm_omits_rule() {
     };
     let rule = make_session_rule();
     let engine = SessionEngine;
-    let result = engine
+    let err = engine
         .evaluate(&state, "audit-tests", &rule, &llm)
-        .expect("evaluate");
+        .expect_err("expected engine to bail on rule_id mismatch");
+    let chain = format!("{err:#}");
     assert!(
-        result.is_none(),
-        "expected None when LLM omits the queried rule_id, got: {result:?}"
+        chain.contains("audit-tests"),
+        "error must mention the requested rule_id; got: {chain}"
     );
 }

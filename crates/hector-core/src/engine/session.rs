@@ -2,7 +2,7 @@ use crate::config::Rule;
 use crate::llm::{LlmClient, RuleStatus};
 use crate::session_state::SessionState;
 use crate::verdict::{Engine, Severity, Violation};
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 
 pub struct SessionEngine;
 
@@ -21,8 +21,11 @@ impl SessionEngine {
             .collect::<Vec<_>>()
             .join("\n\n");
         let verdicts = llm.evaluate(&[(rule_id, rule)], &aggregated, None)?;
+        let total = verdicts.len();
         let Some(v) = verdicts.into_iter().find(|v| v.rule_id == rule_id) else {
-            return Ok(None);
+            return Err(anyhow!(
+                "LLM returned no verdict for rule `{rule_id}`; got {total} other verdicts"
+            ));
         };
         match v.status {
             RuleStatus::Pass => Ok(None),
