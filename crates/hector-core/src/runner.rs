@@ -1,3 +1,4 @@
+use crate::config::skip::{parse_user_global_ignore, SkipMatcher, USER_GLOBAL_IGNORE_FILENAME};
 use crate::config::{parse_file_with_extends, Config, EngineKind};
 use crate::engine::script::run_script_rule;
 use crate::trust;
@@ -10,6 +11,15 @@ pub struct HectorEngine {
     config: Config,
     config_dir: PathBuf,
     llm: Option<Box<dyn crate::llm::LlmClient>>,
+    skip: SkipMatcher,
+}
+
+/// Resolve the current user's home directory from environment variables.
+/// Mirrors what `dirs::home_dir` does on Unix and Windows without the dep.
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
 }
 
 pub struct HectorEngineBuilder {
@@ -89,10 +99,21 @@ impl HectorEngine {
             .filter(|p| !p.as_os_str().is_empty())
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| PathBuf::from("."));
+
+        let mut skip_extras = config.skip.clone();
+        if let Some(home) = home_dir() {
+            let ignore_path = home.join(USER_GLOBAL_IGNORE_FILENAME);
+            if let Ok(raw) = std::fs::read_to_string(&ignore_path) {
+                skip_extras.extend(parse_user_global_ignore(&raw));
+            }
+        }
+        let skip = SkipMatcher::with_built_ins(&skip_extras)?;
+
         Ok(Self {
             config,
             config_dir,
             llm,
+            skip,
         })
     }
 
@@ -103,6 +124,30 @@ impl HectorEngine {
             CheckInput::File { path, content } => (path, content, String::new()),
             CheckInput::Diff { file, unified_diff } => (file, String::new(), unified_diff),
         };
+
+        if self.skip.matches(&path) {
+            let elapsed = start.elapsed().as_millis() as u64;
+            let verdict = Verdict {
+                schema_version: crate::verdict::SCHEMA_VERSION,
+                hector_version: env!("CARGO_PKG_VERSION").to_string(),
+                status: crate::verdict::Status::Pass,
+                violations: vec![],
+                passed_checks: vec![],
+                elapsed_ms: elapsed,
+            };
+            let _ = crate::telemetry::append(
+                &self.config_dir.join(".hector/log.jsonl"),
+                &crate::telemetry::LogEntry {
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    kind: "skipped".into(),
+                    file: path.display().to_string(),
+                    rule_id: None,
+                    status: "pass".into(),
+                    elapsed_ms: elapsed,
+                },
+            );
+            return Ok(verdict);
+        }
 
         let disable_map = DisableMap::from_source(&content);
 

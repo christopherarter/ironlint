@@ -40,5 +40,13 @@ fn merge_inherited(local: &mut Config, inherited: Config) {
     if local.llm.is_none() {
         local.llm = inherited.llm;
     }
+    // Skip entries are additive — the union of every config in the extends
+    // chain is what fires. Order doesn't matter (globs are unordered set
+    // semantics), so we just append (deduped).
+    for g in inherited.skip {
+        if !local.skip.contains(&g) {
+            local.skip.push(g);
+        }
+    }
     // trust block is per-config; never inherited.
 }

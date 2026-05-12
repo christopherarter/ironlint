@@ -10,6 +10,8 @@ pub struct Config {
     pub extends: Vec<String>,
     #[serde(default)]
     pub trust: Option<TrustBlock>,
+    #[serde(default)]
+    pub skip: Vec<String>,
     pub rules: BTreeMap<String, Rule>,
 }
 
