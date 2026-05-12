@@ -41,6 +41,48 @@ fn session_state_atomic_write() {
 }
 
 #[test]
+fn session_state_save_caps_edits_at_thousand() {
+    // P2-18 regression: previously `append` was an unbounded push, so a
+    // long-running agent session could grow session.json to 100MB+ and the
+    // O(N) read-modify-write tax in `hector session record` turned into
+    // O(N^2). Cap the stored edits at 1000 (most recent), dropping the
+    // oldest, so the file size is bounded.
+    let dir = tempdir().unwrap();
+    let state_path = dir.path().join(".hector/session.json");
+    let mut state = SessionState::new("long-running");
+    for i in 0..10_000 {
+        state.append(EditRecord {
+            file: format!("src/f{i}.ts"),
+            diff: format!("DIFF-{i}"),
+            timestamp: "t".into(),
+        });
+    }
+    state.save(&state_path).unwrap();
+    let loaded = SessionState::load(&state_path).unwrap();
+    assert!(
+        loaded.edits.len() <= 1000,
+        "expected at most 1000 edits on disk, got {}",
+        loaded.edits.len()
+    );
+    assert_eq!(
+        loaded.edits.len(),
+        1000,
+        "with 10k appends and a 1000-cap we should retain exactly 1000",
+    );
+    // Most recent must be retained — the last edit (DIFF-9999) is in the file.
+    let diffs: Vec<&str> = loaded.edits.iter().map(|e| e.diff.as_str()).collect();
+    assert_eq!(
+        diffs.last().copied(),
+        Some("DIFF-9999"),
+        "the newest edit must survive the cap"
+    );
+    assert!(
+        !diffs.contains(&"DIFF-0"),
+        "oldest edits should be dropped first"
+    );
+}
+
+#[test]
 fn session_state_load_missing_returns_empty() {
     // P2-2 regression: `load` on a non-existent path previously surfaced an
     // IO error. Adapters all had to special-case this. Treat missing as

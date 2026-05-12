@@ -2,6 +2,16 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+/// Maximum number of edit records persisted to `session.json` (P2-18).
+///
+/// Long-running agent sessions previously grew the file without bound,
+/// blowing up disk usage and turning the read-modify-write in
+/// `hector session record` into O(N^2). On save we truncate to the most
+/// recent `MAX_EDITS` entries, dropping the oldest. 1000 fits comfortably
+/// in memory and on disk while still covering realistically long agent
+/// sessions.
+pub const MAX_EDITS: usize = 1000;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EditRecord {
     pub file: String,
@@ -42,7 +52,18 @@ impl SessionState {
         Ok(s)
     }
 
-    pub fn save(&self, path: &Path) -> Result<()> {
+    pub fn save(&mut self, path: &Path) -> Result<()> {
+        // P2-18: cap stored edits to the most recent `MAX_EDITS`, dropping
+        // the oldest. Without this, long agent sessions accumulate every
+        // recorded edit forever, growing session.json without bound and
+        // making `hector session record` (which re-reads and re-writes the
+        // whole file) effectively O(N^2). Truncating in-place keeps the
+        // in-memory state consistent with what's on disk.
+        if self.edits.len() > MAX_EDITS {
+            let drop = self.edits.len() - MAX_EDITS;
+            self.edits.drain(..drop);
+        }
+
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
