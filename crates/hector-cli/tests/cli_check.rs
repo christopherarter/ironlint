@@ -194,6 +194,46 @@ fn check_diff_input_parses_and_runs() {
     assert_eq!(status, "pass");
 }
 
+// P0-6: a unified diff with multiple changed files should result in every
+// file being checked. Pre-fix the CLI only fed the first `+++ b/` file to the
+// runner; violations in the second file silently disappeared.
+#[test]
+fn cli_check_diff_processes_every_changed_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/a.rs"), "fn a() {}\n").unwrap();
+    std::fs::write(root.join("src/b.rs"), "fn b() { panic!(); }\n").unwrap();
+    let cfg = write_trusted(
+        root,
+        "schema_version: 2\nrules:\n  no-panic:\n    description: x\n    engine: ast\n    language: rust\n    scope: [\"src/**/*.rs\"]\n    severity: error\n    pattern: panic!($$$)\n",
+    );
+    let diff = "--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1 +1 @@\n-x\n+fn a() {}\n--- a/src/b.rs\n+++ b/src/b.rs\n@@ -1 +1 @@\n-x\n+fn b() { panic!(); }\n";
+    let diff_path = root.join("multi.diff");
+    std::fs::write(&diff_path, diff).unwrap();
+    let out = Command::cargo_bin("hector")
+        .unwrap()
+        .args([
+            "check",
+            "--diff",
+            diff_path.to_str().unwrap(),
+            "--config",
+            cfg.to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("\"rule_id\": \"no-panic\""),
+        "violation must surface for src/b.rs: {stdout}"
+    );
+    // Exit 2 because the violation is Error severity → Block.
+    assert_eq!(out.status.code(), Some(2));
+}
+
 #[test]
 fn check_skips_cargo_lock_with_default_config() {
     let dir = tempdir().unwrap();

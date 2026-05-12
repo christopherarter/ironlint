@@ -54,3 +54,73 @@ fn runner_accepts_diff_input_with_blocking_rule() {
     assert_eq!(verdict.violations.len(), 1);
     assert_eq!(verdict.violations[0].rule_id, "always-fail");
 }
+
+// P0-5: in diff mode, AST rules should run against the post-edit file on disk
+// (not see an empty `content` and guarantee-fail with "requires file content").
+#[test]
+fn ast_rule_runs_in_diff_mode_when_file_on_disk() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    let target = root.join("src/foo.rs");
+    std::fs::write(&target, "fn main() { let _ = foo.unwrap(); }\n").unwrap();
+    let cfg = "schema_version: 2\nrules:\n  no-unwrap:\n    description: x\n    engine: ast\n    language: rust\n    scope: [\"src/**/*.rs\"]\n    severity: warning\n    pattern: $E.unwrap()\n";
+    let cfg_path = write_trusted_config(root, cfg);
+    let engine = HectorEngine::load(&cfg_path).unwrap();
+    let diff =
+        "--- a/src/foo.rs\n+++ b/src/foo.rs\n@@ -1 +1 @@\n-fn main() {}\n+fn main() { let _ = foo.unwrap(); }\n";
+    let v = engine
+        .check(CheckInput::Diff {
+            file: target.clone(),
+            unified_diff: diff.to_string(),
+        })
+        .unwrap();
+    // Pre-fix: this produces a Block with an `__internal` error about file content.
+    // Post-fix: the rule runs against on-disk content and produces a real Warn.
+    assert!(
+        v.violations.iter().any(|x| x.rule_id == "no-unwrap"),
+        "ast rule must fire in diff mode; got {v:?}"
+    );
+    assert!(
+        v.violations.iter().all(|x| !x.rule_id.ends_with("__internal")),
+        "no internal-error violations expected; got {v:?}"
+    );
+}
+
+// P0-7: `hector-disable` directives are read from the file source; in diff mode
+// the runner must read the file from disk so those directives still apply.
+#[test]
+fn hector_disable_directive_applies_in_diff_mode() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    let target = root.join("src/foo.rs");
+    std::fs::write(
+        &target,
+        "fn main() { let _ = foo.unwrap(); } // hector-disable: no-unwrap\n",
+    )
+    .unwrap();
+    let cfg = "schema_version: 2\nrules:\n  no-unwrap:\n    description: x\n    engine: ast\n    language: rust\n    scope: [\"src/**/*.rs\"]\n    severity: error\n    pattern: $E.unwrap()\n";
+    let cfg_path = write_trusted_config(root, cfg);
+    let engine = HectorEngine::load(&cfg_path).unwrap();
+    let diff = "--- a/src/foo.rs\n+++ b/src/foo.rs\n@@ -1 +1 @@\n-x\n+fn main() { let _ = foo.unwrap(); } // hector-disable: no-unwrap\n";
+    let v = engine
+        .check(CheckInput::Diff {
+            file: target,
+            unified_diff: diff.to_string(),
+        })
+        .unwrap();
+    assert!(
+        !v.violations.iter().any(|x| x.rule_id == "no-unwrap"),
+        "hector-disable on the same line must silence the rule, got {v:?}"
+    );
+    // Pre-fix this test passed vacuously because the AST engine errored out
+    // with an `__internal` suffix (empty content). Post-fix we want to see
+    // the rule actually evaluated and silenced, so no internal error either.
+    assert!(
+        v.violations
+            .iter()
+            .all(|x| !x.rule_id.ends_with("__internal")),
+        "no internal-error violations expected; got {v:?}"
+    );
+}

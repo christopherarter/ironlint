@@ -1,5 +1,5 @@
 use crate::cli::OutputFormat;
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use hector_core::runner::{CheckInput, HectorEngine};
 use hector_core::verdict::{Status, Verdict};
 use std::path::{Path, PathBuf};
@@ -32,29 +32,46 @@ pub fn run(
         return Ok(exit_code(&verdict));
     }
 
-    let input = match (file, diff) {
+    match (file, diff) {
         (Some(f), None) => {
             let content = std::fs::read_to_string(&f)?;
-            CheckInput::File { path: f, content }
+            let verdict = engine.check(CheckInput::File { path: f, content })?;
+            emit(&verdict, format)?;
+            Ok(exit_code(&verdict))
         }
         (None, Some(d)) => {
             let unified_diff = std::fs::read_to_string(&d)?;
-            let path = first_file_in_diff(&unified_diff)
-                .ok_or_else(|| anyhow!("could not infer file from diff"))?;
-            CheckInput::Diff {
-                file: path,
-                unified_diff,
+            let changed = hector_core::diff::parser::parse_unified(&unified_diff)?;
+            if changed.is_empty() {
+                eprintln!("ERROR: no changed files in diff");
+                return Ok(1);
             }
+            let mut aggregated_violations = Vec::new();
+            let mut aggregated_passed = Vec::new();
+            let mut elapsed_ms: u64 = 0;
+            for f in changed {
+                let per_file_diff = build_single_file_diff(&unified_diff, &f.path);
+                let v = engine.check(CheckInput::Diff {
+                    file: f.path,
+                    unified_diff: per_file_diff,
+                })?;
+                elapsed_ms = elapsed_ms.saturating_add(v.elapsed_ms);
+                aggregated_violations.extend(v.violations);
+                aggregated_passed.extend(v.passed_checks);
+            }
+            let verdict = Verdict::from_violations(
+                aggregated_violations,
+                aggregated_passed,
+                elapsed_ms,
+            );
+            emit(&verdict, format)?;
+            Ok(exit_code(&verdict))
         }
         _ => {
             eprintln!("ERROR: provide exactly one of --file or --diff");
-            return Ok(1);
+            Ok(1)
         }
-    };
-
-    let verdict = engine.check(input)?;
-    emit(&verdict, format)?;
-    Ok(exit_code(&verdict))
+    }
 }
 
 fn exit_code(v: &Verdict) -> i32 {
@@ -93,9 +110,46 @@ fn emit(v: &Verdict, format: OutputFormat) -> Result<()> {
     Ok(())
 }
 
-fn first_file_in_diff(diff: &str) -> Option<PathBuf> {
-    diff.lines()
-        .find_map(|l| l.strip_prefix("+++ b/").map(PathBuf::from))
+/// Slice a multi-file unified diff down to the hunks for a single file.
+///
+/// A file's section starts at the `--- a/<path>` header that precedes its
+/// `+++ b/<path>` line and ends at the next `--- a/...` header (or EOF). We
+/// scan for the matching `+++ b/<path>` and, when found, walk backwards to
+/// include the preceding `--- a/...` line so the slice is a syntactically
+/// well-formed diff in its own right.
+fn build_single_file_diff(full: &str, file: &Path) -> String {
+    let needle = format!("+++ b/{}", file.display());
+    // `split_inclusive` preserves line terminators so we can round-trip the
+    // slice without re-emitting newlines.
+    let lines: Vec<&str> = full.split_inclusive('\n').collect();
+
+    // Locate the `+++ b/<path>` for the target file.
+    let plus_idx = lines.iter().position(|line| {
+        let trimmed = line.trim_end_matches(['\n', '\r']);
+        trimmed == needle
+    });
+    let Some(plus_idx) = plus_idx else {
+        return String::new();
+    };
+
+    // Include the preceding `--- a/...` header if it sits immediately above
+    // the `+++ b/...` line, so the slice is a syntactically well-formed diff.
+    let header_idx = if plus_idx > 0 && lines[plus_idx - 1].starts_with("--- ") {
+        plus_idx - 1
+    } else {
+        plus_idx
+    };
+
+    // Walk forward until the next `--- ` header (start of another file) or
+    // end of input.
+    let end_idx = lines
+        .iter()
+        .enumerate()
+        .skip(plus_idx + 1)
+        .find_map(|(i, line)| line.starts_with("--- ").then_some(i))
+        .unwrap_or(lines.len());
+
+    lines[header_idx..end_idx].concat()
 }
 
 trait SeverityHuman {
@@ -108,5 +162,40 @@ impl SeverityHuman for hector_core::verdict::Violation {
             hector_core::verdict::Severity::Error => "error",
             hector_core::verdict::Severity::Warning => "warn",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn slice_preserves_each_files_hunks() {
+        let full = "--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1 +1 @@\n-x\n+fn a() {}\n--- a/src/b.rs\n+++ b/src/b.rs\n@@ -1 +1 @@\n-x\n+fn b() { panic!(); }\n";
+        let slice_a = build_single_file_diff(full, &PathBuf::from("src/a.rs"));
+        let slice_b = build_single_file_diff(full, &PathBuf::from("src/b.rs"));
+        assert_eq!(
+            slice_a,
+            "--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1 +1 @@\n-x\n+fn a() {}\n"
+        );
+        assert_eq!(
+            slice_b,
+            "--- a/src/b.rs\n+++ b/src/b.rs\n@@ -1 +1 @@\n-x\n+fn b() { panic!(); }\n"
+        );
+        // Sanity: each slice parses cleanly into a single ChangedFile.
+        let parsed_a = hector_core::diff::parser::parse_unified(&slice_a).unwrap();
+        let parsed_b = hector_core::diff::parser::parse_unified(&slice_b).unwrap();
+        assert_eq!(parsed_a.len(), 1);
+        assert_eq!(parsed_a[0].path, PathBuf::from("src/a.rs"));
+        assert_eq!(parsed_b.len(), 1);
+        assert_eq!(parsed_b[0].path, PathBuf::from("src/b.rs"));
+    }
+
+    #[test]
+    fn slice_returns_empty_for_unknown_file() {
+        let full = "--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1 +1 @@\n+x\n";
+        let slice = build_single_file_diff(full, &PathBuf::from("src/missing.rs"));
+        assert_eq!(slice, "");
     }
 }

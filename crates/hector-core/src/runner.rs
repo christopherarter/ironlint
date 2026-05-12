@@ -143,7 +143,17 @@ impl HectorEngine {
         let start = Instant::now();
         let (path, content, diff) = match input {
             CheckInput::File { path, content } => (path, content, String::new()),
-            CheckInput::Diff { file, unified_diff } => (file, String::new(), unified_diff),
+            CheckInput::Diff { file, unified_diff } => {
+                // Read the post-edit file from disk so AST rules, disable
+                // directives, and any other content-based engine see real
+                // content. In the agent flow, diff mode runs *after* the
+                // agent's edit has landed on disk, so reading the file here
+                // is the correct semantics (P0-5, P0-7). A missing file
+                // falls back to empty content — AST will then no-op rather
+                // than crashing the runner.
+                let content = std::fs::read_to_string(&file).unwrap_or_default();
+                (file, content, unified_diff)
+            }
         };
 
         if self.skip.matches(&path) {
