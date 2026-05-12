@@ -144,7 +144,8 @@ fn save_replaces_corrupt_target_atomically() {
 
     let mut b = Baseline::default();
     b.add(&make_violation("r1", "a.txt", Some(1)));
-    b.save(&path).expect("atomic save should overwrite corrupt target");
+    b.save(&path)
+        .expect("atomic save should overwrite corrupt target");
 
     // After save, no stray `.tmp` sibling should linger.
     let tmp_sibling = path.with_extension("json.tmp");
@@ -173,6 +174,10 @@ fn atomic_save_keeps_temp_file_in_parent_dir() {
         .filter_map(|e| e.ok())
         .map(|e| e.file_name())
         .collect();
-    assert_eq!(entries.len(), 1, "expected only the final file: {entries:?}");
+    assert_eq!(
+        entries.len(),
+        1,
+        "expected only the final file: {entries:?}"
+    );
     assert_eq!(entries[0].to_string_lossy(), "baseline.json");
 }

@@ -174,9 +174,7 @@ async fn anthropic_client_times_out_on_hung_request() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
-        .respond_with(
-            ResponseTemplate::new(200).set_delay(std::time::Duration::from_secs(120)),
-        )
+        .respond_with(ResponseTemplate::new(200).set_delay(std::time::Duration::from_secs(120)))
         .mount(&server)
         .await;
     let base_url = server.uri();

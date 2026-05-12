@@ -92,8 +92,16 @@ fn session_record_concurrent_writers_do_not_clobber() {
             Command::cargo_bin("hector")
                 .unwrap()
                 .args([
-                    "session", "record", "--dir", &dir_str, "--file", &file_str, "--diff", &diff,
-                    "--session-id", "race",
+                    "session",
+                    "record",
+                    "--dir",
+                    &dir_str,
+                    "--file",
+                    &file_str,
+                    "--diff",
+                    &diff,
+                    "--session-id",
+                    "race",
                 ])
                 .assert()
                 .success();

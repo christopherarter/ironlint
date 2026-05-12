@@ -61,11 +61,8 @@ pub fn run(
                 aggregated_violations.extend(v.violations);
                 aggregated_passed.extend(v.passed_checks);
             }
-            let verdict = Verdict::from_violations(
-                aggregated_violations,
-                aggregated_passed,
-                elapsed_ms,
-            );
+            let verdict =
+                Verdict::from_violations(aggregated_violations, aggregated_passed, elapsed_ms);
             emit(&verdict, format)?;
             Ok(exit_code(&verdict))
         }

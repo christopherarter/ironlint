@@ -84,5 +84,9 @@ fn telemetry_append_creates_file_with_mode_0600() {
     append(&path, &entry).unwrap();
     let meta = std::fs::metadata(&path).unwrap();
     let mode = meta.permissions().mode() & 0o777;
-    assert_eq!(mode, 0o600, "telemetry log must be owner-only; got {:o}", mode);
+    assert_eq!(
+        mode, 0o600,
+        "telemetry log must be owner-only; got {:o}",
+        mode
+    );
 }

@@ -42,7 +42,11 @@ fn init_template_preserves_grep_error_exit_codes() {
     for (manifest, name, contents) in [
         ("Cargo.toml", "Cargo.toml", "[package]\nname = \"foo\"\n"),
         ("package.json", "package.json", "{}\n"),
-        ("pyproject.toml", "pyproject.toml", "[project]\nname=\"x\"\n"),
+        (
+            "pyproject.toml",
+            "pyproject.toml",
+            "[project]\nname=\"x\"\n",
+        ),
         // Generic stack — no manifest.
         ("", "", ""),
     ] {

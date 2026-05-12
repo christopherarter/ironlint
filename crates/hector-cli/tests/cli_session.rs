@@ -87,7 +87,10 @@ async fn check_session_preserves_state_on_block() {
             "session.json must persist on Block so the user can re-inspect"
         );
         let after = fs::read_to_string(&session_path_clone).unwrap();
-        assert_eq!(after, body_owned, "session contents must be untouched on Block");
+        assert_eq!(
+            after, body_owned,
+            "session contents must be untouched on Block"
+        );
     })
     .await
     .unwrap();

@@ -146,7 +146,10 @@ fn spawn_with_timeout(cmd: &str, cwd: &Path, env: &[(&str, &str)]) -> Result<Exe
     }
     let mut child = command.spawn().context("spawning script subprocess")?;
 
-    let Some(status) = child.wait_timeout(TIMEOUT).context("waiting for subprocess")? else {
+    let Some(status) = child
+        .wait_timeout(TIMEOUT)
+        .context("waiting for subprocess")?
+    else {
         // Timeout fired. Kill, reap, and synthesise a hector-prefixed
         // stderr so consumers can distinguish a timeout from a genuine
         // non-zero exit. Exit code 124 matches GNU `timeout(1)`.

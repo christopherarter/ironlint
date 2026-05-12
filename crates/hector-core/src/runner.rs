@@ -273,9 +273,9 @@ impl HectorEngine {
         let baseline = match crate::baseline::Baseline::load(&baseline_path) {
             Ok(b) => b,
             Err(e) => {
-                let is_missing = e.downcast_ref::<std::io::Error>().is_some_and(|io| {
-                    io.kind() == std::io::ErrorKind::NotFound
-                });
+                let is_missing = e
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound);
                 if !is_missing {
                     eprintln!(
                         "hector: warning — baseline at {} is corrupt or unreadable: {e:#}; ignoring",

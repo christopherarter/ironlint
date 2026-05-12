@@ -66,7 +66,10 @@ fn parse_unified_rejects_empty_path() {
     let err = hector_core::diff::parser::parse_unified(diff)
         .expect_err("empty +++ b/ path must be rejected");
     let msg = format!("{err:#}");
-    assert!(msg.contains("empty"), "error should mention empty; got: {msg}");
+    assert!(
+        msg.contains("empty"),
+        "error should mention empty; got: {msg}"
+    );
 }
 
 // Regression: P2-10 — CRLF diffs left a trailing `\r` on the parsed path,

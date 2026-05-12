@@ -82,7 +82,9 @@ fn ast_rule_runs_in_diff_mode_when_file_on_disk() {
         "ast rule must fire in diff mode; got {v:?}"
     );
     assert!(
-        v.violations.iter().all(|x| !x.rule_id.ends_with("__internal")),
+        v.violations
+            .iter()
+            .all(|x| !x.rule_id.ends_with("__internal")),
         "no internal-error violations expected; got {v:?}"
     );
 }

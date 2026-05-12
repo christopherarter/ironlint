@@ -141,10 +141,9 @@ fn baseline_skips_gitignored_and_target_dirs() {
         "{:?}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let baseline: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(root.join(".hector/baseline.json")).unwrap(),
-    )
-    .unwrap();
+    let baseline: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(root.join(".hector/baseline.json")).unwrap())
+            .unwrap();
     let fps = baseline["fingerprints"].as_array().unwrap();
     let printed: Vec<String> = fps
         .iter()
