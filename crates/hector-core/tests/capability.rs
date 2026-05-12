@@ -24,6 +24,24 @@ fn rejects_unknown_writes_policy_via_parser() {
 
 #[cfg(target_os = "linux")]
 #[test]
+fn capability_run_succeeds_for_unprivileged_user() {
+    // Regression for P0-8: pre-fix, unshare(CLONE_NEWNET) without CLONE_NEWUSER
+    // returned EPERM for unprivileged callers, which made `Command::output()`
+    // error and every script rule produced an `__internal` Block verdict.
+    // Post-fix: the parent probes unshare in advance; on EPERM it falls back
+    // to best-effort with a one-time stderr warning, so the command still runs.
+    let caps = Capabilities {
+        network: false,
+        writes: WritesPolicy::CwdOnly,
+    };
+    let out = run_with_capabilities("echo ok", std::path::Path::new("/tmp"), &caps)
+        .expect("must run without privilege");
+    assert_eq!(out.exit_code, 0);
+    assert!(out.stdout.contains("ok"));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
 fn linux_network_disabled_blocks_network_attempts() {
     let caps = Capabilities {
         network: false,

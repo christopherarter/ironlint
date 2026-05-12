@@ -1,4 +1,4 @@
-use crate::config::{Capabilities, WritesPolicy};
+use crate::config::Capabilities;
 use anyhow::{Context, Result};
 use std::path::Path;
 use std::process::Command;
@@ -33,7 +33,7 @@ pub fn run_with_capabilities_env(
     }
     #[cfg(not(target_os = "linux"))]
     {
-        run_best_effort(cmd, cwd, caps, env)
+        run_best_effort_macos(cmd, cwd, caps, env)
     }
 }
 
@@ -44,62 +44,71 @@ fn run_linux(
     caps: &Capabilities,
     env: &[(&str, &str)],
 ) -> Result<ExecOutcome> {
-    use nix::sched::{unshare, CloneFlags};
+    use nix::sched::CloneFlags;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static WARNED: AtomicBool = AtomicBool::new(false);
+
+    // Compute the desired isolation flags. Writes-policy enforcement is a
+    // documented no-op in 0.1 (see docs/security.md and CLAUDE.md), so we
+    // only request CLONE_NEWNET here — claiming CLONE_NEWNS without
+    // remounting anything would be theatre.
     let mut flags = CloneFlags::empty();
     if !caps.network {
         flags.insert(CloneFlags::CLONE_NEWNET);
     }
-    if matches!(caps.writes, WritesPolicy::None | WritesPolicy::CwdOnly) {
-        flags.insert(CloneFlags::CLONE_NEWNS);
-    }
-    let mut child = Command::new("sh");
-    child.arg("-c").arg(cmd).current_dir(cwd);
-    for (k, v) in env {
-        child.env(k, v);
-    }
-    // Pre-exec hook to unshare into restricted namespaces.
-    unsafe {
-        use std::os::unix::process::CommandExt;
-        let flags_captured = flags;
-        let writes_policy = caps.writes;
-        let cwd_owned = cwd.to_path_buf();
-        child.pre_exec(move || {
-            unshare(flags_captured).map_err(|e| std::io::Error::other(format!("unshare: {e}")))?;
-            if flags_captured.contains(CloneFlags::CLONE_NEWNS) {
-                apply_mount_policy(writes_policy, &cwd_owned)?;
-            }
-            Ok(())
-        });
-    }
-    let output = child.output().context("running command")?;
-    Ok(ExecOutcome {
-        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-        exit_code: output.status.code().unwrap_or(-1),
-    })
-}
 
-#[cfg(target_os = "linux")]
-fn apply_mount_policy(policy: WritesPolicy, cwd: &Path) -> std::io::Result<()> {
-    // Best-effort: this requires CAP_SYS_ADMIN in the new ns (granted by CLONE_NEWUSER).
-    // For 0.1a, we skip mount remounting if not permitted; documented in docs/security.md.
-    let _ = (policy, cwd);
-    Ok(())
+    // Probe whether unshare with the requested flags would succeed. If not
+    // (typically EPERM for unprivileged users without CLONE_NEWUSER), fall
+    // back to a best-effort spawn with a one-time stderr warning. Before
+    // this probe, the unshare lived inside `pre_exec`, where its failure
+    // surfaced as a confusing "running command" error and turned every
+    // script rule into an `__internal` Block verdict (P0-8).
+    //
+    // NOTE: a successful unshare here mutates the *parent* process's
+    // namespaces — it's a one-shot, process-wide side effect. That's fine
+    // for the `hector` CLI (one process per invocation). Tests that share
+    // a process should not assume the network is reachable afterwards if
+    // any earlier test in the suite has unshared CLONE_NEWNET.
+    if !flags.is_empty() {
+        let probe = unsafe { libc::unshare(flags.bits()) };
+        if probe != 0 {
+            let err = std::io::Error::last_os_error();
+            if !WARNED.swap(true, Ordering::Relaxed) {
+                eprintln!(
+                    "hector: capability sandbox unavailable for unprivileged user ({err}); \
+                     running command without isolation. See docs/security.md."
+                );
+            }
+            return spawn_unrestricted(cmd, cwd, env);
+        }
+        // Probe succeeded — the parent is now inside the requested namespace,
+        // and the child will inherit it. Do NOT unshare again in pre_exec.
+    }
+
+    spawn_unrestricted(cmd, cwd, env)
 }
 
 #[cfg(not(target_os = "linux"))]
-fn run_best_effort(
+fn run_best_effort_macos(
     cmd: &str,
     cwd: &Path,
     caps: &Capabilities,
     env: &[(&str, &str)],
 ) -> Result<ExecOutcome> {
+    use crate::config::WritesPolicy;
     // macOS: caps are advisory; log the limitation, run normally.
     if !caps.network || !matches!(caps.writes, WritesPolicy::Unrestricted) {
         eprintln!(
             "hector: capability enforcement is best-effort on this platform (see docs/security.md); running command unrestricted"
         );
     }
+    spawn_unrestricted(cmd, cwd, env)
+}
+
+/// Spawn `sh -c <cmd>` in `cwd` with `env` overrides — no namespace work.
+/// Used on macOS, and on Linux either after a successful parent-side
+/// unshare or when falling back from an EPERM probe.
+fn spawn_unrestricted(cmd: &str, cwd: &Path, env: &[(&str, &str)]) -> Result<ExecOutcome> {
     let mut child = Command::new("sh");
     child.arg("-c").arg(cmd).current_dir(cwd);
     for (k, v) in env {

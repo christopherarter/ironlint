@@ -21,6 +21,7 @@ chrono.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 nix.workspace = true
+libc = "0.2"
 
 [dev-dependencies]
 tempfile.workspace = true
