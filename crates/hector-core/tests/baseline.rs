@@ -325,3 +325,129 @@ fn refresh_drops_entries_whose_line_no_longer_exists() {
     assert_eq!(report.dropped, 1);
     assert!(!b.contains_with_content(&v, Some("fn main() {}\n")));
 }
+
+// --- E1: coverage for the long-tail refresh / contains arms -----------
+
+// File-level (`line: None`) entries pass straight through `refresh`
+// untouched — there's no line to re-hash.
+#[test]
+fn refresh_preserves_file_level_entries() {
+    let dir = tempdir().unwrap();
+    let mut b = Baseline::default();
+    let v_file = make_violation("file-level", "src/lib.rs", None);
+    b.add_with_content(&v_file, None);
+
+    let report = b.refresh(dir.path()).unwrap();
+    assert_eq!(report.refreshed, 0);
+    assert_eq!(report.dropped, 0);
+    // Entry is still there, still suppressing.
+    assert!(b.contains_with_content(&v_file, Some("any content\n")));
+}
+
+// Refresh keeps entries whose file is missing on disk — the user may
+// have temporarily renamed it; we don't want to silently lose suppressions.
+#[test]
+fn refresh_keeps_entries_for_missing_files() {
+    let dir = tempdir().unwrap();
+    let mut b = Baseline::default();
+    let v = make_violation("rule", "src/never_existed.rs", Some(2));
+    b.add_with_content(&v, None);
+
+    let report = b.refresh(dir.path()).unwrap();
+    assert_eq!(report.refreshed, 0);
+    assert_eq!(report.dropped, 0);
+    // Legacy/None checksum path: still suppressed.
+    assert!(b.contains(&v));
+}
+
+// Refresh never drops malformed keys it can't decode — that would be
+// silent data loss.
+#[test]
+fn refresh_preserves_malformed_keys() {
+    let dir = tempdir().unwrap();
+    let mut b = Baseline::default();
+    b.entries
+        .insert("not a valid fingerprint".to_string(), None);
+
+    let report = b.refresh(dir.path()).unwrap();
+    assert_eq!(report.refreshed, 0);
+    assert_eq!(report.dropped, 0);
+    assert!(b.entries.contains_key("not a valid fingerprint"));
+}
+
+// Refresh resolves entries whose `file` is recorded as an absolute path.
+// The `join_rel` helper's absolute-path branch otherwise stays uncovered.
+#[test]
+fn refresh_handles_absolute_file_paths() {
+    let dir = tempdir().unwrap();
+    let file = dir.path().join("abs.rs");
+    std::fs::write(&file, "line one\nline two\n").unwrap();
+
+    let mut b = Baseline::default();
+    let v = make_violation("r", file.to_str().unwrap(), Some(1));
+    b.add_with_content(&v, None);
+
+    let report = b.refresh(dir.path()).unwrap();
+    assert_eq!(report.refreshed, 1);
+    assert_eq!(report.dropped, 0);
+}
+
+// `contains_with_content` conservative-match path: a stored checksum
+// exists, the violation has a line, but the caller passed `None` for
+// content. Library callers that opt out of content-aware matching land
+// here.
+#[test]
+fn contains_without_content_falls_back_to_match() {
+    let mut b = Baseline::default();
+    let v = make_violation("r1", "a.txt", Some(2));
+    b.add_with_content(&v, Some("first\nsecond\n"));
+    // Stored checksum exists; passing None for content => conservative
+    // match (preserves pre-E1 behavior for that path).
+    assert!(b.contains_with_content(&v, None));
+}
+
+// `contains_with_content`: stored checksum + violation has no line.
+// The checksum can't apply, so match by key alone. Hit by mixed
+// file-level + line-level recordings on the same rule.
+#[test]
+fn contains_line_none_with_stored_checksum_still_matches() {
+    let mut b = Baseline::default();
+    // Add an entry whose key has line: None but which somehow ended up
+    // with a stored checksum (shouldn't normally happen via add_with_content,
+    // but the public API allows direct mutation of `entries`).
+    let v_none = make_violation("r1", "a.txt", None);
+    b.entries
+        .insert(Baseline::fingerprint(&v_none), Some("deadbeef".to_string()));
+    assert!(b.contains_with_content(&v_none, Some("any\n")));
+}
+
+// `contains_with_content`: stored checksum, current content available,
+// but the line is past the end of the file. We treat the violation as
+// still suppressed — it can't recur on a line that no longer exists.
+#[test]
+fn contains_line_past_eof_remains_suppressed() {
+    let mut b = Baseline::default();
+    let v = make_violation("r1", "a.txt", Some(2));
+    let original = "first\nsecond\n";
+    b.add_with_content(&v, Some(original));
+
+    // Truncated file: line 2 is gone.
+    let truncated = "first\n";
+    assert!(b.contains_with_content(&v, Some(truncated)));
+}
+
+// `Baseline::line_at` (private; reached via add_with_content) treats
+// line == 0 as out-of-range — the engine's line numbers are 1-based, but
+// a defensive caller could pass 0 and we shouldn't panic.
+#[test]
+fn add_with_content_line_zero_records_no_checksum() {
+    let mut b = Baseline::default();
+    let v = make_violation("r1", "a.txt", Some(0));
+    b.add_with_content(&v, Some("first\nsecond\n"));
+    // No checksum captured because `line_at(_, 0) == None`.
+    let stored = b.entries.get(&Baseline::fingerprint(&v)).unwrap();
+    assert!(
+        stored.is_none(),
+        "line == 0 must produce no checksum: {stored:?}"
+    );
+}

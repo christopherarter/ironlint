@@ -263,16 +263,15 @@ impl Baseline {
             // trees where the file was renamed).
             return RefreshOutcome::PassThrough;
         };
-        match Self::line_at(&content, line) {
-            Some(text) => RefreshOutcome::Updated(Self::line_checksum(text)),
-            None => {
-                eprintln!(
-                    "hector: refresh — dropping baseline entry {key}: line {line} no longer \
-                     present in {}",
-                    path.display()
-                );
-                RefreshOutcome::Dropped
-            }
+        if let Some(text) = Self::line_at(&content, line) {
+            RefreshOutcome::Updated(Self::line_checksum(text))
+        } else {
+            eprintln!(
+                "hector: refresh — dropping baseline entry {key}: line {line} no longer \
+                 present in {}",
+                path.display()
+            );
+            RefreshOutcome::Dropped
         }
     }
 
