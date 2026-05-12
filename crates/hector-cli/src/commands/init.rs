@@ -43,6 +43,20 @@ fn detect_stack(dir: &Path) -> Stack {
     Stack::Unknown
 }
 
+// Grep exit-code routing for script rules.
+//
+// Naive idiom `grep PATTERN file && exit 1 || exit 0` collapses grep's
+// exit-2 (regex/parse error, unreadable file, binary refusal) into a
+// pass — a broken rule silently passes forever (P2-9).
+//
+// The case-statement form routes each exit explicitly:
+//   - 0 (match found)     → exit 1   → script-engine reports violation
+//   - 1 (no match)        → exit 0   → pass
+//   - * (grep error >=2)  → exit $?  → runner treats as violation, so a
+//                                       broken regex fails loudly
+//
+// Kept on a single YAML line (POSIX `;`-separated) so the templated
+// `script:` value remains a scalar.
 const RUST_TEMPLATE: &str = r#"schema_version: 2
 
 rules:
@@ -51,7 +65,7 @@ rules:
     engine: script
     scope: ["src/**/*.rs"]
     severity: warning
-    script: "grep -nE '\\.unwrap\\(\\)' {file} && exit 1 || exit 0"
+    script: "grep -nE '\\.unwrap\\(\\)' {file}; case $? in 0) exit 1;; 1) exit 0;; *) exit $?;; esac"
 "#;
 
 const NODE_TEMPLATE: &str = r#"schema_version: 2
@@ -62,7 +76,7 @@ rules:
     engine: script
     scope: ["src/**/*.ts", "src/**/*.tsx", "src/**/*.js"]
     severity: error
-    script: "grep -nE 'console\\.log\\(' {file} && exit 1 || exit 0"
+    script: "grep -nE 'console\\.log\\(' {file}; case $? in 0) exit 1;; 1) exit 0;; *) exit $?;; esac"
 "#;
 
 const PYTHON_TEMPLATE: &str = r#"schema_version: 2
@@ -84,5 +98,5 @@ rules:
     engine: script
     scope: ["*"]
     severity: warning
-    script: "grep -nE 'FIXME' {file} && exit 1 || exit 0"
+    script: "grep -nE 'FIXME' {file}; case $? in 0) exit 1;; 1) exit 0;; *) exit $?;; esac"
 "#;
