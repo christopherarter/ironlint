@@ -22,6 +22,20 @@ fn home_dir() -> Option<PathBuf> {
         .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
 }
 
+/// Resolve `path` to a form that can be matched against a relative scope glob
+/// authored in `config_dir`-relative terms. Falls back to the original path
+/// when canonicalization is impossible (e.g. the file is absent during diff
+/// mode where the diff references a path not yet on disk).
+fn relativize(path: &std::path::Path, root: &std::path::Path) -> std::path::PathBuf {
+    use std::path::PathBuf;
+    let canon_path = path.canonicalize().unwrap_or_else(|_| PathBuf::from(path));
+    let canon_root = root.canonicalize().unwrap_or_else(|_| PathBuf::from(root));
+    canon_path
+        .strip_prefix(&canon_root)
+        .map(PathBuf::from)
+        .unwrap_or(canon_path)
+}
+
 pub struct HectorEngineBuilder {
     llm: Option<Box<dyn crate::llm::LlmClient>>,
 }
@@ -154,10 +168,12 @@ impl HectorEngine {
         let mut violations: Vec<Violation> = Vec::new();
         let mut passed: Vec<String> = Vec::new();
 
+        let match_path = relativize(&path, &self.config_dir);
+
         for (rule_id, rule) in &self.config.rules {
             let matcher = crate::config::scope::ScopeMatcher::new(&rule.scope)
                 .expect("scope validated at load");
-            if !matcher.matches(&path) {
+            if !matcher.matches(&match_path) {
                 continue;
             }
             let outcome = match rule.engine {
