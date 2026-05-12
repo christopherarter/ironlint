@@ -161,7 +161,11 @@ impl HectorEngine {
                 passed_checks: vec![],
                 elapsed_ms: elapsed,
             };
-            let _ = crate::telemetry::append(
+            // P2-21: surface telemetry append failures (disk-full,
+            // unwritable path, FS lock issues) instead of silently
+            // swallowing them. The check itself still succeeds; the
+            // append is best-effort and never the source of truth.
+            if let Err(e) = crate::telemetry::append(
                 &self.config_dir.join(".hector/log.jsonl"),
                 &crate::telemetry::LogEntry {
                     timestamp: chrono::Utc::now().to_rfc3339(),
@@ -171,7 +175,9 @@ impl HectorEngine {
                     status: "pass".into(),
                     elapsed_ms: elapsed,
                 },
-            );
+            ) {
+                eprintln!("hector: telemetry append failed: {e:#}");
+            }
             return Ok(verdict);
         }
 
@@ -283,7 +289,8 @@ impl HectorEngine {
 
         let verdict =
             Verdict::from_violations(violations, passed, start.elapsed().as_millis() as u64);
-        let _ = crate::telemetry::append(
+        // P2-21: same rationale as the skip-path append above.
+        if let Err(e) = crate::telemetry::append(
             &self.config_dir.join(".hector/log.jsonl"),
             &crate::telemetry::LogEntry {
                 timestamp: chrono::Utc::now().to_rfc3339(),
@@ -293,7 +300,9 @@ impl HectorEngine {
                 status: format!("{:?}", verdict.status).to_lowercase(),
                 elapsed_ms: verdict.elapsed_ms,
             },
-        );
+        ) {
+            eprintln!("hector: telemetry append failed: {e:#}");
+        }
         Ok(verdict)
     }
 
@@ -360,7 +369,8 @@ impl HectorEngine {
             passed,
             start.elapsed().as_millis() as u64,
         );
-        let _ = crate::telemetry::append(
+        // P2-21: same rationale as the per-file append above.
+        if let Err(e) = crate::telemetry::append(
             &self.config_dir.join(".hector/log.jsonl"),
             &crate::telemetry::LogEntry {
                 timestamp: chrono::Utc::now().to_rfc3339(),
@@ -370,7 +380,9 @@ impl HectorEngine {
                 status: format!("{:?}", verdict.status).to_lowercase(),
                 elapsed_ms: verdict.elapsed_ms,
             },
-        );
+        ) {
+            eprintln!("hector: telemetry append failed: {e:#}");
+        }
         Ok(verdict)
     }
 }
