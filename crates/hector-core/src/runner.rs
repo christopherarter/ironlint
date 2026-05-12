@@ -4,8 +4,62 @@ use crate::engine::{RuleContext, RuleEngine};
 use crate::verdict::{Verdict, Violation};
 use anyhow::{Context, Result};
 use rayon::prelude::*;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
+
+/// C4: optional per-run knobs for `HectorEngine::check`. Plumbed via
+/// `HectorEngine::builder().with_options(...)` so the public `check`
+/// signature stays stable across additions.
+#[derive(Debug, Clone, Default)]
+pub struct CheckOptions {
+    /// Restrict evaluation to these rule ids. Empty set = run all rules.
+    /// The runner enforces the filter *upstream* of the parallel
+    /// dispatch pool, so filtered-out rules never enter the work queue
+    /// and never trigger their engine (in particular, no LLM call).
+    pub rules: HashSet<String>,
+    /// If true, capture per-rule outcomes for the explain report.
+    pub explain: bool,
+}
+
+/// C4: one row of the `--explain` report. Stays out of the verdict JSON
+/// (verdict shape is locked at 0.1) — surfaced to the CLI via
+/// [`CheckReport`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuleExplain {
+    pub rule_id: String,
+    pub engine: EngineKind,
+    pub outcome: ExplainOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExplainOutcome {
+    /// Rule emitted at least one violation.
+    Fire,
+    /// Deterministic engine returned a clean pass.
+    Pass,
+    /// Semantic rule reached the LLM and the LLM returned `pass`.
+    Dispatched,
+    /// Rule was short-circuited before engine dispatch (e.g. A3 diff
+    /// pre-filter) or the engine returned an error.
+    Skipped { reason: String },
+}
+
+/// C4: companion return shape for [`HectorEngine::check_with_explain`].
+#[derive(Debug, Clone)]
+pub struct CheckReport {
+    pub verdict: Verdict,
+    pub explain: Vec<RuleExplain>,
+}
+
+/// C4: one rendered semantic prompt. `system` + `user` mirror Anthropic's
+/// `/v1/messages` split; OpenAI-compat providers concatenate them.
+#[derive(Debug, Clone)]
+pub struct RenderedPrompt {
+    pub rule_id: String,
+    pub system: String,
+    pub user: String,
+}
 
 /// Per-rule evaluation result, before the runner-level baseline pass.
 ///
@@ -13,9 +67,16 @@ use std::time::Instant;
 /// (no match, no engine output, or every match suppressed by a disable
 /// directive); `None` otherwise. Splitting passed/violations from one
 /// `Result<Vec<Violation>>` keeps the parallel `collect` straightforward.
+///
+/// C4: `explain` carries an optional explain row. The row is produced
+/// inside `evaluate_one_rule` so the parallel dispatch keeps a single
+/// per-rule output type — the runner concatenates explain rows after
+/// collecting outcomes. When `CheckInputs.collect_explain` is false the
+/// field is always `None` (one branch, zero allocation).
 struct RuleOutcome {
     violations: Vec<Violation>,
     passed: Option<String>,
+    explain: Option<RuleExplain>,
 }
 
 /// Per-file inputs reused across every rule evaluation in one `check()`
@@ -27,6 +88,11 @@ struct CheckInputs<'a> {
     content: &'a str,
     diff: &'a str,
     disable_map: &'a crate::disable::DisableMap,
+    /// C4: build a `RuleExplain` row for every rule whose evaluation
+    /// reaches engine dispatch (or is short-circuited by the A3 diff
+    /// pre-filter). Out-of-scope and filter-skipped rules never enter
+    /// `evaluate_one_rule` so they don't appear in the report.
+    collect_explain: bool,
 }
 
 pub struct HectorEngine {
@@ -34,6 +100,7 @@ pub struct HectorEngine {
     config_dir: PathBuf,
     llm: Option<Box<dyn crate::llm::LlmClient>>,
     skip: SkipMatcher,
+    options: CheckOptions,
 }
 
 /// Resolve the current user's home directory from environment variables.
@@ -67,11 +134,15 @@ fn relativize(path: &std::path::Path, root: &std::path::Path) -> std::path::Path
 
 pub struct HectorEngineBuilder {
     llm: Option<Box<dyn crate::llm::LlmClient>>,
+    options: CheckOptions,
 }
 
 impl HectorEngineBuilder {
     pub fn new() -> Self {
-        Self { llm: None }
+        Self {
+            llm: None,
+            options: CheckOptions::default(),
+        }
     }
 
     pub fn with_llm(mut self, llm: Box<dyn crate::llm::LlmClient>) -> Self {
@@ -79,8 +150,14 @@ impl HectorEngineBuilder {
         self
     }
 
+    /// C4: attach optional per-run knobs (rule filter, explain capture).
+    pub fn with_options(mut self, options: CheckOptions) -> Self {
+        self.options = options;
+        self
+    }
+
     pub fn load(self, config_path: &Path) -> Result<HectorEngine> {
-        HectorEngine::load_with(config_path, self.llm)
+        HectorEngine::load_with(config_path, self.llm, self.options)
     }
 }
 
@@ -95,18 +172,56 @@ pub enum CheckInput {
     Diff { file: PathBuf, unified_diff: String },
 }
 
+/// C4: translate `(engine, errored, emitted)` into the explain outcome for
+/// a rule that *did* reach engine dispatch (i.e. wasn't filtered or
+/// short-circuited by the A3 diff pre-filter — those produce their own
+/// rows upstream).
+///
+/// * `engine_errored` → `Skipped { reason: "engine_error" }`. The rule
+///   surfaced a `__internal` violation but its policy verdict is
+///   indeterminate, so the explain row marks it skipped rather than
+///   asserting fire/pass.
+/// * `any_emitted` → `Fire`.
+/// * Otherwise: `Dispatched` for semantic (LLM ran and returned clean),
+///   `Pass` for deterministic engines.
+fn explain_outcome_for(
+    engine: EngineKind,
+    engine_errored: bool,
+    any_emitted: bool,
+) -> ExplainOutcome {
+    if engine_errored {
+        ExplainOutcome::Skipped {
+            reason: "engine_error".into(),
+        }
+    } else if any_emitted {
+        ExplainOutcome::Fire
+    } else if engine == EngineKind::Semantic {
+        ExplainOutcome::Dispatched
+    } else {
+        ExplainOutcome::Pass
+    }
+}
+
 impl HectorEngine {
     pub fn load(config_path: &Path) -> Result<Self> {
-        Self::load_with(config_path, None)
+        Self::load_with(config_path, None, CheckOptions::default())
     }
 
     pub fn builder() -> HectorEngineBuilder {
         HectorEngineBuilder::new()
     }
 
+    /// C4: iterator over every rule id in the loaded config. Used by the
+    /// CLI to validate `--rule` arguments at the boundary, before any
+    /// dispatch happens.
+    pub fn config_rule_ids(&self) -> impl Iterator<Item = &str> {
+        self.config.rules.keys().map(|k| k.as_str())
+    }
+
     fn load_with(
         config_path: &Path,
         llm_override: Option<Box<dyn crate::llm::LlmClient>>,
+        options: CheckOptions,
     ) -> Result<Self> {
         // `resolve_trusted` verifies the trust block of the root and every
         // transitive ancestor reachable through `extends:`. This is the only
@@ -153,6 +268,7 @@ impl HectorEngine {
             config_dir,
             llm,
             skip,
+            options,
         })
     }
 
@@ -183,8 +299,13 @@ impl HectorEngine {
 
     /// Evaluate a single rule against a single file. Pure helper extracted
     /// so the parallel dispatch in `check()` can `par_iter().map(…)` over
-    /// it. Owns nothing — every input is borrowed; output is two owned
-    /// collections that merge cleanly via `extend`/`push` post-iteration.
+    /// it. Owns nothing — every input is borrowed; output is three owned
+    /// fields that merge cleanly via `extend`/`push` post-iteration.
+    ///
+    /// C4: when `inputs.collect_explain` is true, the outcome carries a
+    /// `RuleExplain` row describing the disposition of the rule (fire /
+    /// pass / dispatched / skipped). Out-of-scope rules return early with
+    /// `explain: None` because they don't appear in the explain report.
     fn evaluate_one_rule(
         &self,
         rule_id: &str,
@@ -197,14 +318,23 @@ impl HectorEngine {
             return RuleOutcome {
                 violations: vec![],
                 passed: None,
+                explain: None,
             };
         }
         // A3: short-circuit semantic dispatch when the diff cannot
-        // plausibly match — see `try_semantic_skip`.
-        if self.try_semantic_skip(rule_id, rule, inputs.path, inputs.diff) {
+        // plausibly match — see `try_semantic_skip`. The returned reason
+        // string also feeds the explain row so authors see the same
+        // string the telemetry recorded.
+        if let Some(reason) = self.try_semantic_skip(rule_id, rule, inputs.path, inputs.diff) {
+            let explain = inputs.collect_explain.then(|| RuleExplain {
+                rule_id: rule_id.to_string(),
+                engine: rule.engine,
+                outcome: ExplainOutcome::Skipped { reason },
+            });
             return RuleOutcome {
                 violations: vec![],
                 passed: Some(rule_id.to_string()),
+                explain,
             };
         }
         let ctx = RuleContext {
@@ -232,15 +362,21 @@ impl HectorEngine {
             // path; treat it as a pass here.
             _ => Ok(Vec::new()),
         };
-        Self::merge_engine_outcome(rule_id, inputs, outcome)
+        Self::merge_engine_outcome(rule_id, rule.engine, inputs, outcome)
     }
 
     /// Post-process the engine's `Result<Vec<Violation>>` into a `RuleOutcome`.
     /// Applies disable-directive suppression and converts engine errors into
     /// `Engine::Internal` violations. Split out of `evaluate_one_rule` to
     /// keep the per-rule cognitive complexity well below the workspace cap.
+    ///
+    /// C4: when `inputs.collect_explain` is true, the outcome carries a
+    /// `RuleExplain` row whose `outcome` is derived from
+    /// `(engine_errored, any_emitted, engine_kind)` by
+    /// [`explain_outcome_for`].
     fn merge_engine_outcome(
         rule_id: &str,
+        engine: EngineKind,
         inputs: &CheckInputs<'_>,
         outcome: Result<Vec<Violation>>,
     ) -> RuleOutcome {
@@ -249,11 +385,19 @@ impl HectorEngine {
             // per match). Walk the vec, apply per-violation disable
             // directives, and only record the rule as passed if every match
             // was suppressed (or there were none to begin with).
-            Ok(vs) if vs.is_empty() => RuleOutcome {
-                violations: vec![],
-                passed: Some(rule_id.to_string()),
-            },
-            Ok(vs) => Self::apply_disables(rule_id, inputs.disable_map, vs),
+            Ok(vs) if vs.is_empty() => {
+                let explain = inputs.collect_explain.then(|| RuleExplain {
+                    rule_id: rule_id.to_string(),
+                    engine,
+                    outcome: explain_outcome_for(engine, false, false),
+                });
+                RuleOutcome {
+                    violations: vec![],
+                    passed: Some(rule_id.to_string()),
+                    explain,
+                }
+            }
+            Ok(vs) => Self::apply_disables(rule_id, engine, inputs, vs),
             Err(e) => {
                 // P1-1: engine runtime errors are Engine::Internal, not
                 // Engine::Trust. Trust failures halt at load time and never
@@ -269,9 +413,15 @@ impl HectorEngine {
                     suggestion: None,
                     context: None,
                 };
+                let explain = inputs.collect_explain.then(|| RuleExplain {
+                    rule_id: rule_id.to_string(),
+                    engine,
+                    outcome: explain_outcome_for(engine, true, false),
+                });
                 RuleOutcome {
                     violations: vec![v],
                     passed: None,
+                    explain,
                 }
             }
         }
@@ -283,15 +433,16 @@ impl HectorEngine {
     /// directives anywhere in the file in that case.
     fn apply_disables(
         rule_id: &str,
-        disable_map: &crate::disable::DisableMap,
+        engine: EngineKind,
+        inputs: &CheckInputs<'_>,
         vs: Vec<Violation>,
     ) -> RuleOutcome {
         let mut kept: Vec<Violation> = Vec::new();
         let mut any_emitted = false;
         for v in vs {
             let disabled = match v.line {
-                Some(line) => disable_map.is_disabled(line, rule_id),
-                None => disable_map.is_disabled_file_wide(rule_id),
+                Some(line) => inputs.disable_map.is_disabled(line, rule_id),
+                None => inputs.disable_map.is_disabled_file_wide(rule_id),
             };
             if disabled {
                 continue;
@@ -307,10 +458,32 @@ impl HectorEngine {
             // `passed_checks` and telemetry.
             Some(rule_id.to_string())
         };
+        let explain = inputs.collect_explain.then(|| RuleExplain {
+            rule_id: rule_id.to_string(),
+            engine,
+            outcome: explain_outcome_for(engine, false, any_emitted),
+        });
         RuleOutcome {
             violations: kept,
             passed,
+            explain,
         }
+    }
+
+    /// Run the loaded rules against `input` and return the verdict.
+    ///
+    /// Thin wrapper over `check_inner` that drops the explain rows; the
+    /// public signature is held stable so callers don't have to opt into
+    /// the C4 explain shape unless they want it.
+    pub fn check(&self, input: CheckInput) -> Result<Verdict> {
+        self.check_inner(input, false).map(|r| r.verdict)
+    }
+
+    /// C4: like [`Self::check`], but returns a per-rule outcome list
+    /// when the engine was built with `CheckOptions { explain: true, .. }`.
+    /// With explain off, the returned `explain` list is empty.
+    pub fn check_with_explain(&self, input: CheckInput) -> Result<CheckReport> {
+        self.check_inner(input, self.options.explain)
     }
 
     // Central orchestration: input-mode normalization, skip short-circuit,
@@ -319,7 +492,7 @@ impl HectorEngine {
     // reason about; the complexity is intrinsic to the work this method
     // does, not an accident.
     #[allow(clippy::cognitive_complexity)]
-    pub fn check(&self, input: CheckInput) -> Result<Verdict> {
+    fn check_inner(&self, input: CheckInput, collect_explain: bool) -> Result<CheckReport> {
         use crate::disable::DisableMap;
         let start = Instant::now();
         let (path, content, diff) = match input {
@@ -365,13 +538,17 @@ impl HectorEngine {
             ) {
                 eprintln!("hector: telemetry append failed: {e:#}");
             }
-            return Ok(verdict);
+            return Ok(CheckReport {
+                verdict,
+                explain: Vec::new(),
+            });
         }
 
         let disable_map = DisableMap::from_source(&content);
 
         let mut violations: Vec<Violation> = Vec::new();
         let mut passed: Vec<String> = Vec::new();
+        let mut explain: Vec<RuleExplain> = Vec::new();
 
         let match_path = relativize(&path, &self.config_dir);
 
@@ -381,22 +558,36 @@ impl HectorEngine {
             content: &content,
             diff: &diff,
             disable_map: &disable_map,
+            collect_explain,
         };
 
+        // C4: apply the `--rule` filter *upstream* of the parallel
+        // dispatch so filtered-out rules never enter the work queue and
+        // never trigger their engine (in particular, no LLM call). Empty
+        // set = run every rule. The collected pair list also keeps the
+        // single-rule fast-path measurable (skip pool construction when
+        // the filter narrows down to one rule).
+        let filter: &HashSet<String> = &self.options.rules;
+        let selected: Vec<(&String, &Rule)> = self
+            .config
+            .rules
+            .iter()
+            .filter(|(rule_id, _)| filter.is_empty() || filter.contains(rule_id.as_str()))
+            .collect();
+
         // B1: dispatch rules in parallel. Output order matches input
-        // (`BTreeMap` key order) — `par_iter().collect::<Vec<_>>()` is
-        // deterministic. Single-rule configs skip pool construction entirely.
-        let outcomes: Vec<RuleOutcome> = if self.config.rules.len() <= 1 {
-            self.config
-                .rules
+        // (`BTreeMap` key order, preserved by the `filter()` above) —
+        // `par_iter().collect::<Vec<_>>()` is deterministic. Single-rule
+        // workloads skip pool construction entirely.
+        let outcomes: Vec<RuleOutcome> = if selected.len() <= 1 {
+            selected
                 .iter()
                 .map(|(rule_id, rule)| self.evaluate_one_rule(rule_id, rule, &inputs))
                 .collect()
         } else {
             let pool = self.execution_pool();
-            let rules: Vec<(&String, &Rule)> = self.config.rules.iter().collect();
             pool.install(|| {
-                rules
+                selected
                     .par_iter()
                     .map(|(rule_id, rule)| self.evaluate_one_rule(rule_id, rule, &inputs))
                     .collect()
@@ -407,6 +598,9 @@ impl HectorEngine {
             violations.extend(outcome.violations);
             if let Some(id) = outcome.passed {
                 passed.push(id);
+            }
+            if let Some(row) = outcome.explain {
+                explain.push(row);
             }
         }
 
@@ -455,12 +649,62 @@ impl HectorEngine {
         ) {
             eprintln!("hector: telemetry append failed: {e:#}");
         }
-        Ok(verdict)
+        Ok(CheckReport { verdict, explain })
+    }
+
+    /// C4: render the LLM prompts that *would* be sent for every in-scope
+    /// semantic rule, without dispatching anything. Used by
+    /// `hector check --print-prompt` to debug prompt construction without
+    /// burning API calls.
+    ///
+    /// Honors `CheckOptions.rules` (the `--rule` filter) and the per-rule
+    /// scope matcher. Skips rules whose engine is not `semantic`. Returns
+    /// an empty vec if no semantic rule is in scope.
+    pub fn render_semantic_prompts(&self, input: CheckInput) -> Result<Vec<RenderedPrompt>> {
+        let (path, diff) = match input {
+            CheckInput::File { path, .. } => (path, String::new()),
+            CheckInput::Diff { file, unified_diff } => (file, unified_diff),
+        };
+        let match_path = relativize(&path, &self.config_dir);
+        let mut out = Vec::new();
+        for (rule_id, rule) in &self.config.rules {
+            if !self.options.rules.is_empty() && !self.options.rules.contains(rule_id) {
+                continue;
+            }
+            if rule.engine != EngineKind::Semantic {
+                continue;
+            }
+            let matcher = crate::config::scope::ScopeMatcher::new(&rule.scope)
+                .expect("scope validated at load");
+            if !matcher.matches(&match_path) {
+                continue;
+            }
+            let scope = rule.context.unwrap_or(crate::config::ContextScope::Diff);
+            let (primary, context_text) = crate::engine::context::expand_context(
+                scope,
+                if diff.is_empty() { None } else { Some(&diff) },
+                Some(&path),
+                &self.config_dir,
+            )?;
+            let (system, user) = crate::llm::prompt::build_prompt_split(
+                &[(rule_id.as_str(), rule)],
+                &primary,
+                context_text.as_deref(),
+            );
+            out.push(RenderedPrompt {
+                rule_id: rule_id.clone(),
+                system,
+                user,
+            });
+        }
+        Ok(out)
     }
 
     /// If the rule is semantic and the diff cannot plausibly match it,
-    /// record a `semantic_skipped` telemetry entry and return `true` so
-    /// the caller skips engine dispatch. Otherwise return `false`.
+    /// record a `semantic_skipped` telemetry entry and return
+    /// `Some(reason)` so the caller skips engine dispatch (the same
+    /// reason string also feeds the C4 `--explain` row). Otherwise
+    /// return `None`.
     ///
     /// Only applies in diff mode: `CheckInput::File` passes an empty
     /// `diff` here, which `can_match_diff` would classify as
@@ -472,14 +716,21 @@ impl HectorEngine {
     /// so it sits alongside the other cross-cutting concerns (scope,
     /// baseline, disable, skip) and the engine stays pure — no HTTP
     /// request leaves the engine when this fires.
-    fn try_semantic_skip(&self, rule_id: &str, rule: &Rule, path: &Path, diff: &str) -> bool {
+    fn try_semantic_skip(
+        &self,
+        rule_id: &str,
+        rule: &Rule,
+        path: &Path,
+        diff: &str,
+    ) -> Option<String> {
         if rule.engine != EngineKind::Semantic || diff.is_empty() {
-            return false;
+            return None;
         }
         let analysis = crate::diff::analysis::can_match_diff(diff, path, &rule.description);
         let crate::diff::analysis::CanMatch::No(reason) = analysis else {
-            return false;
+            return None;
         };
+        let reason_str = reason.as_str().to_string();
         let log_path = self.config_dir.join(".hector/log.jsonl");
         let entry = crate::telemetry::LogEntry {
             timestamp: chrono::Utc::now().to_rfc3339(),
@@ -488,12 +739,12 @@ impl HectorEngine {
             rule_id: Some(rule_id.to_string()),
             status: "pass".into(),
             elapsed_ms: 0,
-            reason: Some(reason.as_str().to_string()),
+            reason: Some(reason_str.clone()),
         };
         if let Err(e) = crate::telemetry::append(&log_path, &entry) {
             eprintln!("hector: telemetry append failed: {e:#}");
         }
-        true
+        Some(reason_str)
     }
 
     pub fn check_session(

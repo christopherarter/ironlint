@@ -1,23 +1,52 @@
 use crate::cli::OutputFormat;
 use anyhow::Result;
-use hector_core::runner::{CheckInput, HectorEngine};
+use hector_core::runner::{CheckInput, CheckOptions, ExplainOutcome, HectorEngine, RuleExplain};
 use hector_core::verdict::{Status, Verdict};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     file: Option<PathBuf>,
     diff: Option<PathBuf>,
     session: bool,
     format: OutputFormat,
     config: &Path,
+    rules: Vec<String>,
+    explain: bool,
+    print_prompt: bool,
 ) -> Result<i32> {
-    let engine = match HectorEngine::load(config) {
+    // First load without options so we can validate `--rule` against the
+    // resolved rule list at the CLI boundary. The trust-and-parse work is
+    // repeated on the second load below, which is cheap relative to the
+    // wall-clock cost of running rules — and it keeps the
+    // unknown-rule-id error path independent of options plumbing.
+    let probe = match HectorEngine::load(config) {
         Ok(e) => e,
         Err(e) => {
             eprintln!("ERROR: {:#}", e);
             return Ok(1);
         }
     };
+    if let Some(code) = validate_rule_filter(&probe, &rules) {
+        return Ok(code);
+    }
+    let rule_set: HashSet<String> = rules.into_iter().collect();
+    let options = CheckOptions {
+        rules: rule_set,
+        explain,
+    };
+    let engine = match HectorEngine::builder().with_options(options).load(config) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("ERROR: {:#}", e);
+            return Ok(1);
+        }
+    };
+
+    if print_prompt {
+        return run_print_prompt(&engine, file, diff);
+    }
 
     if session {
         let dir = config
@@ -37,9 +66,12 @@ pub fn run(
     match (file, diff) {
         (Some(f), None) => {
             let content = std::fs::read_to_string(&f)?;
-            let verdict = engine.check(CheckInput::File { path: f, content })?;
-            emit(&verdict, format)?;
-            Ok(exit_code(&verdict))
+            let report = engine.check_with_explain(CheckInput::File { path: f, content })?;
+            if explain {
+                print_explain(&report.explain);
+            }
+            emit(&report.verdict, format)?;
+            Ok(exit_code(&report.verdict))
         }
         (None, Some(d)) => {
             let unified_diff = std::fs::read_to_string(&d)?;
@@ -50,19 +82,24 @@ pub fn run(
             }
             let mut aggregated_violations = Vec::new();
             let mut aggregated_passed = Vec::new();
+            let mut aggregated_explain: Vec<RuleExplain> = Vec::new();
             let mut elapsed_ms: u64 = 0;
             for f in changed {
                 let per_file_diff = build_single_file_diff(&unified_diff, &f.path);
-                let v = engine.check(CheckInput::Diff {
+                let r = engine.check_with_explain(CheckInput::Diff {
                     file: f.path,
                     unified_diff: per_file_diff,
                 })?;
-                elapsed_ms = elapsed_ms.saturating_add(v.elapsed_ms);
-                aggregated_violations.extend(v.violations);
-                aggregated_passed.extend(v.passed_checks);
+                elapsed_ms = elapsed_ms.saturating_add(r.verdict.elapsed_ms);
+                aggregated_violations.extend(r.verdict.violations);
+                aggregated_passed.extend(r.verdict.passed_checks);
+                aggregated_explain.extend(r.explain);
             }
             let verdict =
                 Verdict::from_violations(aggregated_violations, aggregated_passed, elapsed_ms);
+            if explain {
+                print_explain(&aggregated_explain);
+            }
             emit(&verdict, format)?;
             Ok(exit_code(&verdict))
         }
@@ -71,6 +108,91 @@ pub fn run(
             Ok(1)
         }
     }
+}
+
+/// C4: refuse `--rule <unknown>` at the CLI boundary so callers see a
+/// clear error before any rule runs.
+fn validate_rule_filter(engine: &HectorEngine, rules: &[String]) -> Option<i32> {
+    if rules.is_empty() {
+        return None;
+    }
+    let known: HashSet<&str> = engine.config_rule_ids().collect();
+    let unknown: Vec<&String> = rules
+        .iter()
+        .filter(|id| !known.contains(id.as_str()))
+        .collect();
+    if unknown.is_empty() {
+        None
+    } else {
+        let names: Vec<&str> = unknown.iter().map(|s| s.as_str()).collect();
+        eprintln!("ERROR: unknown rule id(s): {}", names.join(", "));
+        Some(1)
+    }
+}
+
+/// C4: render the `--explain` rows to stderr so stdout (JSON) is
+/// uncorrupted.
+fn print_explain(rows: &[RuleExplain]) {
+    for row in rows {
+        let outcome = match &row.outcome {
+            ExplainOutcome::Fire => "fire".to_string(),
+            ExplainOutcome::Pass => "pass".to_string(),
+            ExplainOutcome::Dispatched => "dispatched".to_string(),
+            ExplainOutcome::Skipped { reason } => format!("skipped {reason}"),
+        };
+        let engine_name = match row.engine {
+            hector_core::config::EngineKind::Script => "script",
+            hector_core::config::EngineKind::Ast => "ast",
+            hector_core::config::EngineKind::Semantic => "semantic",
+            hector_core::config::EngineKind::Session => "session",
+        };
+        eprintln!("{} {} {}", row.rule_id, engine_name, outcome);
+    }
+}
+
+/// C4: short-circuit before any engine dispatch. Render the (system, user)
+/// prompt for every in-scope semantic rule and exit 0. No HTTP request
+/// reaches the configured LLM endpoint.
+fn run_print_prompt(
+    engine: &HectorEngine,
+    file: Option<PathBuf>,
+    diff: Option<PathBuf>,
+) -> Result<i32> {
+    let input = match (file, diff) {
+        (Some(f), None) => {
+            let content = std::fs::read_to_string(&f)?;
+            CheckInput::File { path: f, content }
+        }
+        (None, Some(d)) => {
+            let unified_diff = std::fs::read_to_string(&d)?;
+            let changed = hector_core::diff::parser::parse_unified(&unified_diff)?;
+            let Some(first) = changed.into_iter().next() else {
+                eprintln!("ERROR: no changed files in diff");
+                return Ok(1);
+            };
+            let per_file = build_single_file_diff(&unified_diff, &first.path);
+            CheckInput::Diff {
+                file: first.path,
+                unified_diff: per_file,
+            }
+        }
+        _ => {
+            eprintln!("ERROR: provide exactly one of --file or --diff");
+            return Ok(1);
+        }
+    };
+    let prompts = engine.render_semantic_prompts(input)?;
+    if prompts.is_empty() {
+        eprintln!("no semantic rule in scope; nothing to render");
+    }
+    for p in &prompts {
+        println!("# rule: {}", p.rule_id);
+        println!("## system");
+        println!("{}", p.system);
+        println!("## user");
+        println!("{}", p.user);
+    }
+    Ok(0)
 }
 
 fn exit_code(v: &Verdict) -> i32 {

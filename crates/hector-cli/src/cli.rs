@@ -26,6 +26,16 @@ pub enum Command {
         format: OutputFormat,
         #[arg(long, default_value = ".hector.yml")]
         config: PathBuf,
+        /// Evaluate only this rule id. Repeatable; multiple flags OR'd.
+        #[arg(long = "rule", action = clap::ArgAction::Append)]
+        rules: Vec<String>,
+        /// After the verdict, print a per-rule outcome report to stderr.
+        #[arg(long)]
+        explain: bool,
+        /// For semantic rules in scope, render the prompt to stdout and exit 0
+        /// without dispatching to the LLM. Debug-only.
+        #[arg(long = "print-prompt")]
+        print_prompt: bool,
     },
     /// Compute the trust fingerprint and write it to the config.
     Trust {
