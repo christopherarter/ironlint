@@ -191,8 +191,8 @@ impl HectorEngine {
         rule: &Rule,
         inputs: &CheckInputs<'_>,
     ) -> RuleOutcome {
-        let matcher = crate::config::scope::ScopeMatcher::new(&rule.scope)
-            .expect("scope validated at load");
+        let matcher =
+            crate::config::scope::ScopeMatcher::new(&rule.scope).expect("scope validated at load");
         if !matcher.matches(inputs.match_path) {
             return RuleOutcome {
                 violations: vec![],
