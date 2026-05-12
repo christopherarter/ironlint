@@ -110,7 +110,10 @@ fn session_rule_with_scope_no_matching_edits_passes_trivially() {
     };
     let verdict = engine.check_session(&state).expect("check_session");
     assert_eq!(verdict.status, Status::Pass);
-    assert!(verdict.violations.is_empty(), "rule must not fire when no edits match scope");
+    assert!(
+        verdict.violations.is_empty(),
+        "rule must not fire when no edits match scope"
+    );
     assert!(verdict.passed_checks.iter().any(|r| r == "audit-tests"));
 }
 
