@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 pub fn canonicalize_for_fingerprint(input: &str) -> Result<String> {
     let mut value: Value = serde_yaml::from_str(input).context("parse yaml")?;
     if let Value::Mapping(ref mut map) = value {
-        map.remove(&Value::String("trust".into()));
+        map.remove(Value::String("trust".into()));
     }
     let canonical = canonical_serialize(&value);
     Ok(canonical)
@@ -74,7 +74,7 @@ pub fn write_trust_block(input: &str) -> Result<String> {
     let fp = fingerprint(input)?;
     let mut value: Value = serde_yaml::from_str(input).context("parse yaml")?;
     if let Value::Mapping(ref mut map) = value {
-        map.remove(&Value::String("trust".into()));
+        map.remove(Value::String("trust".into()));
         let mut trust_map = serde_yaml::Mapping::new();
         trust_map.insert(Value::String("fingerprint".into()), Value::String(fp));
         map.insert(Value::String("trust".into()), Value::Mapping(trust_map));

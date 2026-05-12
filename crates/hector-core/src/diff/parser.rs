@@ -31,13 +31,13 @@ pub fn parse_unified(input: &str) -> Result<Vec<ChangedFile>> {
                 .ok_or_else(|| anyhow!("malformed hunk header: {raw}"))?;
             let new_part = &rest[plus_idx + 1..];
             let comma_or_space = new_part
-                .find(|c: char| c == ',' || c == ' ')
+                .find([',', ' '])
                 .ok_or_else(|| anyhow!("malformed hunk header: {raw}"))?;
             new_line_no = new_part[..comma_or_space]
                 .parse::<u32>()
                 .map_err(|e| anyhow!("hunk header parse: {e}"))?;
         } else if let Some(f) = current.as_mut() {
-            if let Some(_) = raw.strip_prefix('+') {
+            if raw.strip_prefix('+').is_some() {
                 if !raw.starts_with("+++") {
                     f.added_lines.push(new_line_no);
                     new_line_no += 1;

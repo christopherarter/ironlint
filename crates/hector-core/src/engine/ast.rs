@@ -58,10 +58,11 @@ fn find_first_match(content: &str, pattern_str: &str, lang_name: &str) -> Result
     let grep = lang.ast_grep(content);
     let pattern = Pattern::try_new(pattern_str, lang)
         .map_err(|e| anyhow!("invalid ast-grep pattern `{pattern_str}`: {e:?}"))?;
-    for node in grep.root().find_all(pattern) {
-        let pos = node.start_pos();
-        // start_pos().line() is zero-based; convert to 1-based
-        return Ok(Some((pos.line() + 1) as u32));
-    }
-    Ok(None)
+    // start_pos().line() is zero-based; convert to 1-based.
+    let line = grep
+        .root()
+        .find_all(pattern)
+        .next()
+        .map(|node| (node.start_pos().line() + 1) as u32);
+    Ok(line)
 }
