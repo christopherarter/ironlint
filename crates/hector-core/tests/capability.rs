@@ -40,6 +40,44 @@ fn capability_run_succeeds_for_unprivileged_user() {
     assert!(out.stdout.contains("ok"));
 }
 
+#[test]
+fn capability_run_kills_runaway_command() {
+    // Regression for P1-12: a script rule like `sleep 30` previously wedged
+    // the entire `check` invocation because `Command::output()` blocks until
+    // the child exits. The capability runner now spawns the child with piped
+    // stdio and enforces a wall-clock timeout via `wait_timeout`, returning a
+    // hector-prefixed stderr and exit code 124 (matches GNU `timeout`).
+    //
+    // Use unrestricted caps so the Linux unshare path doesn't take its
+    // fallback branch — the timeout logic lives in the spawn helper that
+    // both paths share, so this exercises macOS and the Linux post-unshare
+    // path uniformly without requiring privilege.
+    let start = std::time::Instant::now();
+    let caps = Capabilities {
+        network: true,
+        writes: WritesPolicy::Unrestricted,
+    };
+    let out = run_with_capabilities("sleep 30", std::path::Path::new("/tmp"), &caps)
+        .expect("runner must return Ok even when child is killed");
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(10),
+        "runaway must be killed within timeout; took {:?}",
+        start.elapsed()
+    );
+    assert_ne!(
+        out.exit_code, 0,
+        "killed process must report non-zero exit; got {}",
+        out.exit_code
+    );
+    assert!(
+        out.stderr.contains("killed")
+            || out.stderr.contains("timeout")
+            || out.stderr.contains("hector"),
+        "stderr should mention the kill reason; was: {:?}",
+        out.stderr
+    );
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn linux_network_disabled_blocks_network_attempts() {

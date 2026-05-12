@@ -1,7 +1,28 @@
 use crate::config::Capabilities;
 use anyhow::{Context, Result};
+use std::io::Read;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::Duration;
+use wait_timeout::ChildExt;
+
+/// Hard wall-clock cap on a single script-rule subprocess.
+///
+/// A runaway shell (infinite loop, hung `tail -f`, accidental `sleep 30`)
+/// previously blocked the entire `check` invocation because `Command::output()`
+/// reads to EOF. The timeout fires here, the child is killed, and the runner
+/// returns a synthetic `ExecOutcome` so callers can render a verdict like any
+/// other failure. See P1-12 in `docs/2026-05-12-bug-audit.md`.
+const TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Per-stream cap on captured output (1 MiB). A noisy linter that floods
+/// stdout/stderr would otherwise grow `String::from_utf8_lossy` allocations
+/// until the host OOMs.
+const MAX_OUTPUT: usize = 1 << 20;
+
+/// Exit code reported when the timeout fires. Matches GNU coreutils' `timeout(1)`
+/// convention so existing tooling and operators recognise the meaning.
+const TIMEOUT_EXIT_CODE: i32 = 124;
 
 pub struct ExecOutcome {
     pub stdout: String,
@@ -79,13 +100,13 @@ fn run_linux(
                      running command without isolation. See docs/security.md."
                 );
             }
-            return spawn_unrestricted(cmd, cwd, env);
+            return spawn_with_timeout(cmd, cwd, env);
         }
         // Probe succeeded — the parent is now inside the requested namespace,
         // and the child will inherit it. Do NOT unshare again in pre_exec.
     }
 
-    spawn_unrestricted(cmd, cwd, env)
+    spawn_with_timeout(cmd, cwd, env)
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -102,22 +123,59 @@ fn run_best_effort_macos(
             "hector: capability enforcement is best-effort on this platform (see docs/security.md); running command unrestricted"
         );
     }
-    spawn_unrestricted(cmd, cwd, env)
+    spawn_with_timeout(cmd, cwd, env)
 }
 
-/// Spawn `sh -c <cmd>` in `cwd` with `env` overrides — no namespace work.
-/// Used on macOS, and on Linux either after a successful parent-side
-/// unshare or when falling back from an EPERM probe.
-fn spawn_unrestricted(cmd: &str, cwd: &Path, env: &[(&str, &str)]) -> Result<ExecOutcome> {
-    let mut child = Command::new("sh");
-    child.arg("-c").arg(cmd).current_dir(cwd);
+/// Spawn `sh -c <cmd>` in `cwd` with `env` overrides, enforcing both a
+/// wall-clock timeout and a per-stream output cap.
+///
+/// No namespace work happens here — on Linux, the parent has already done
+/// the unshare (or fallen back to best-effort) before reaching this point.
+/// Used by macOS and the Linux post-unshare path; centralising the spawn
+/// keeps the timeout + bounded-read invariant in exactly one place.
+fn spawn_with_timeout(cmd: &str, cwd: &Path, env: &[(&str, &str)]) -> Result<ExecOutcome> {
+    let mut command = Command::new("sh");
+    command
+        .arg("-c")
+        .arg(cmd)
+        .current_dir(cwd)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     for (k, v) in env {
-        child.env(k, v);
+        command.env(k, v);
     }
-    let output = child.output().context("running command")?;
+    let mut child = command.spawn().context("spawning script subprocess")?;
+
+    let Some(status) = child.wait_timeout(TIMEOUT).context("waiting for subprocess")? else {
+        // Timeout fired. Kill, reap, and synthesise a hector-prefixed
+        // stderr so consumers can distinguish a timeout from a genuine
+        // non-zero exit. Exit code 124 matches GNU `timeout(1)`.
+        let _ = child.kill();
+        let _ = child.wait();
+        return Ok(ExecOutcome {
+            stdout: String::new(),
+            stderr: format!("hector: script killed after {TIMEOUT:?} timeout"),
+            exit_code: TIMEOUT_EXIT_CODE,
+        });
+    };
+
+    // Bounded reads: drop anything beyond MAX_OUTPUT per stream. Lossy-utf8
+    // decoding here would require buffering the raw bytes first; using
+    // `read_to_string` on a `Read::take(N)` gives us the cap for free, and
+    // any invalid UTF-8 is reported as an I/O error which we swallow (the
+    // stream is best-effort diagnostic output, not load-bearing).
+    let mut stdout = String::new();
+    if let Some(out) = child.stdout.take() {
+        let _ = out.take(MAX_OUTPUT as u64).read_to_string(&mut stdout);
+    }
+    let mut stderr = String::new();
+    if let Some(err) = child.stderr.take() {
+        let _ = err.take(MAX_OUTPUT as u64).read_to_string(&mut stderr);
+    }
+
     Ok(ExecOutcome {
-        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-        exit_code: output.status.code().unwrap_or(-1),
+        stdout,
+        stderr,
+        exit_code: status.code().unwrap_or(-1),
     })
 }
