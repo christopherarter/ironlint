@@ -7,7 +7,7 @@ use anyhow::{anyhow, Result};
 pub struct SemanticEngine;
 
 impl RuleEngine for SemanticEngine {
-    fn run(&self, ctx: &RuleContext) -> Result<Option<Violation>> {
+    fn run(&self, ctx: &RuleContext) -> Result<Vec<Violation>> {
         let llm = ctx.llm.ok_or_else(|| anyhow!("semantic engine requires LlmClient; provide via HectorEngine::builder().with_llm(...)"))?;
         let scope = ctx.rule.context.unwrap_or(ContextScope::Diff);
         let (primary, context_text) = expand_context(scope, ctx.diff, Some(ctx.file), ctx.cwd)?;
@@ -17,20 +17,27 @@ impl RuleEngine for SemanticEngine {
             context_text.as_deref(),
         )?;
         let total = verdicts.len();
+        // P1-6: the LLM must return a verdict whose `rule_id` matches what we
+        // asked about. If it hallucinates a different id, surface that as an
+        // engine error instead of silently passing — preserved across the
+        // P1-11 trait-shape change.
         let Some(v) = verdicts.into_iter().find(|v| v.rule_id == ctx.rule_id) else {
             return Err(anyhow!(
                 "LLM returned no verdict for rule `{}`; got {total} other verdicts",
                 ctx.rule_id
             ));
         };
+        // P1-11: semantic emits at most one violation per call. Empty vec
+        // means pass; one-element vec means violation. The shape matches
+        // script — only AST is multi-element today.
         match v.status {
-            crate::llm::RuleStatus::Pass => Ok(None),
+            crate::llm::RuleStatus::Pass => Ok(Vec::new()),
             crate::llm::RuleStatus::Violation { message, line } => {
                 let severity = match ctx.rule.severity {
                     crate::config::Severity::Error => Severity::Error,
                     crate::config::Severity::Warning => Severity::Warning,
                 };
-                Ok(Some(Violation {
+                Ok(vec![Violation {
                     rule_id: ctx.rule_id.to_string(),
                     severity,
                     engine: Engine::Semantic,
@@ -40,7 +47,7 @@ impl RuleEngine for SemanticEngine {
                     message,
                     suggestion: ctx.rule.fix_hint.clone(),
                     context: None,
-                }))
+                }])
             }
         }
     }

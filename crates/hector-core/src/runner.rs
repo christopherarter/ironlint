@@ -1,6 +1,6 @@
 use crate::config::skip::{parse_user_global_ignore, SkipMatcher, USER_GLOBAL_IGNORE_FILENAME};
 use crate::config::{Config, EngineKind};
-use crate::engine::script::run_script_rule;
+use crate::engine::{RuleContext, RuleEngine};
 use crate::verdict::{Verdict, Violation};
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
@@ -193,66 +193,56 @@ impl HectorEngine {
             if !matcher.matches(&match_path) {
                 continue;
             }
-            let outcome = match rule.engine {
-                EngineKind::Script => {
-                    run_script_rule(rule_id, rule, &path, &diff, &self.config_dir)
-                }
-                EngineKind::Ast => {
-                    use crate::engine::ast::AstEngine;
-                    use crate::engine::{RuleContext, RuleEngine};
-                    let engine = AstEngine;
-                    let ctx = RuleContext {
-                        rule_id,
-                        rule,
-                        file: &path,
-                        content: if content.is_empty() {
-                            None
-                        } else {
-                            Some(&content)
-                        },
-                        diff: if diff.is_empty() { None } else { Some(&diff) },
-                        cwd: &self.config_dir,
-                        llm: self.llm.as_deref(),
-                    };
-                    engine.run(&ctx)
-                }
-                EngineKind::Semantic => {
-                    use crate::engine::semantic::SemanticEngine;
-                    use crate::engine::{RuleContext, RuleEngine};
-                    let engine = SemanticEngine;
-                    let ctx = RuleContext {
-                        rule_id,
-                        rule,
-                        file: &path,
-                        content: if content.is_empty() {
-                            None
-                        } else {
-                            Some(&content)
-                        },
-                        diff: if diff.is_empty() { None } else { Some(&diff) },
-                        cwd: &self.config_dir,
-                        llm: self.llm.as_deref(),
-                    };
-                    engine.run(&ctx)
-                }
-                _ => Ok(None),
+            let ctx = RuleContext {
+                rule_id,
+                rule,
+                file: &path,
+                content: if content.is_empty() {
+                    None
+                } else {
+                    Some(&content)
+                },
+                diff: if diff.is_empty() { None } else { Some(&diff) },
+                cwd: &self.config_dir,
+                llm: self.llm.as_deref(),
+            };
+            let outcome: Result<Vec<Violation>> = match rule.engine {
+                EngineKind::Script => crate::engine::script::ScriptEngine.run(&ctx),
+                EngineKind::Ast => crate::engine::ast::AstEngine.run(&ctx),
+                EngineKind::Semantic => crate::engine::semantic::SemanticEngine.run(&ctx),
+                // Session is dispatched via `check_session`, not the per-file
+                // path; treat it as a pass here.
+                _ => Ok(Vec::new()),
             };
             match outcome {
-                Ok(Some(v)) => {
-                    // Script and semantic engines often emit file-level
-                    // violations with `line: None`. Honor `hector-disable:`
-                    // directives anywhere in the file in that case (P1-2).
-                    let disabled = match v.line {
-                        Some(line) => disable_map.is_disabled(line, rule_id),
-                        None => disable_map.is_disabled_file_wide(rule_id),
-                    };
-                    if disabled {
-                        passed.push(rule_id.clone());
-                        continue;
+                // P1-11: the engine may return many violations (AST emits one
+                // per match). Walk the vec, apply per-violation disable
+                // directives, and only record the rule as passed if every
+                // match was suppressed (or there were none to begin with).
+                Ok(vs) if vs.is_empty() => passed.push(rule_id.clone()),
+                Ok(vs) => {
+                    let mut any_emitted = false;
+                    for v in vs {
+                        // P1-2: script/semantic emit file-level violations
+                        // with `line: None`. Honor `hector-disable:`
+                        // directives anywhere in the file in that case.
+                        let disabled = match v.line {
+                            Some(line) => disable_map.is_disabled(line, rule_id),
+                            None => disable_map.is_disabled_file_wide(rule_id),
+                        };
+                        if disabled {
+                            continue;
+                        }
+                        violations.push(v);
+                        any_emitted = true;
                     }
-                    violations.push(v);
+                    if !any_emitted {
+                        // Every match was suppressed by a disable directive —
+                        // treat the rule as passing for this file so it shows
+                        // up in `passed_checks` and telemetry.
+                        passed.push(rule_id.clone());
+                    }
                 }
-                Ok(None) => passed.push(rule_id.clone()),
                 Err(e) => {
                     // P1-1: engine runtime errors are Engine::Internal, not
                     // Engine::Trust. Trust failures halt at load time and

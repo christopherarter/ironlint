@@ -37,9 +37,9 @@ fn script_engine_implements_rule_engine_trait() {
         llm: None,
     };
     let engine = ScriptEngine;
-    let outcome = engine.run(&ctx).expect("run");
+    let vs = engine.run(&ctx).expect("run");
     assert!(
-        outcome.is_none(),
-        "passing script should produce no violation"
+        vs.is_empty(),
+        "passing script should produce no violation, got {vs:?}"
     );
 }

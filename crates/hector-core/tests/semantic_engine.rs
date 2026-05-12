@@ -64,7 +64,9 @@ fn semantic_engine_returns_violation_when_llm_says_so() {
         llm: Some(&llm),
     };
     let engine = SemanticEngine;
-    let v = engine.run(&ctx).expect("run").expect("violation");
+    let vs = engine.run(&ctx).expect("run");
+    assert_eq!(vs.len(), 1, "exactly one violation expected, got {vs:?}");
+    let v = &vs[0];
     assert_eq!(v.rule_id, "no-derived-state");
     assert_eq!(v.line, Some(1));
     assert_eq!(v.engine, hector_core::verdict::Engine::Semantic);
@@ -92,8 +94,8 @@ fn semantic_engine_returns_none_when_llm_says_pass() {
         llm: Some(&llm),
     };
     let engine = SemanticEngine;
-    let outcome = engine.run(&ctx).expect("run");
-    assert!(outcome.is_none());
+    let vs = engine.run(&ctx).expect("run");
+    assert!(vs.is_empty(), "expected no violations, got {vs:?}");
 }
 
 // Regression: P1-6. Bug-audit finding — when the LLM hallucinates a different

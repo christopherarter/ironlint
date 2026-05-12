@@ -24,5 +24,11 @@ pub struct RuleContext<'a> {
 }
 
 pub trait RuleEngine: Send + Sync {
-    fn run(&self, ctx: &RuleContext) -> Result<Option<Violation>>;
+    /// Evaluate `ctx` and return every violation produced by this engine.
+    ///
+    /// Returning `Ok(Vec::new())` means "this rule passed for this file".
+    /// Engines that conceptually emit at most one verdict per call (script,
+    /// semantic) wrap their single outcome in a one-element vec; engines that
+    /// can hit many sites in one file (AST) emit one entry per match.
+    fn run(&self, ctx: &RuleContext) -> Result<Vec<Violation>>;
 }

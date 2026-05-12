@@ -10,7 +10,7 @@ use anyhow::{anyhow, Result};
 pub struct AstEngine;
 
 impl RuleEngine for AstEngine {
-    fn run(&self, ctx: &RuleContext) -> Result<Option<Violation>> {
+    fn run(&self, ctx: &RuleContext) -> Result<Vec<Violation>> {
         let pattern_str = ctx.rule.pattern.as_ref().ok_or_else(|| {
             anyhow!(
                 "rule {} is engine: ast but has no `pattern:` field",
@@ -26,26 +26,30 @@ impl RuleEngine for AstEngine {
             .content
             .ok_or_else(|| anyhow!("ast engine requires file content (CheckInput::File)"))?;
 
-        let first_match = find_first_match(content, pattern_str, lang_name)?;
-        let Some((line, column, context_str)) = first_match else {
-            return Ok(None);
-        };
-
         let severity = match ctx.rule.severity {
             crate::config::Severity::Error => Severity::Error,
             crate::config::Severity::Warning => Severity::Warning,
         };
-        Ok(Some(Violation {
-            rule_id: ctx.rule_id.to_string(),
-            severity,
-            engine: Engine::Ast,
-            file: ctx.file.display().to_string(),
-            line: Some(line),
-            column: Some(column),
-            message: ctx.rule.description.clone(),
-            suggestion: ctx.rule.fix_hint.clone(),
-            context: Some(context_str),
-        }))
+
+        // P1-11: emit one violation per matched node, not just the first one.
+        // The previous `Option<Violation>` return shape forced us to drop
+        // every match after the first; `Vec<Violation>` is the fix.
+        let matches = find_all_matches(content, pattern_str, lang_name)?;
+        let mut violations = Vec::with_capacity(matches.len());
+        for (line, column, context_str) in matches {
+            violations.push(Violation {
+                rule_id: ctx.rule_id.to_string(),
+                severity,
+                engine: Engine::Ast,
+                file: ctx.file.display().to_string(),
+                line: Some(line),
+                column: Some(column),
+                message: ctx.rule.description.clone(),
+                suggestion: ctx.rule.fix_hint.clone(),
+                context: Some(context_str),
+            });
+        }
+        Ok(violations)
     }
 }
 
@@ -55,16 +59,17 @@ impl RuleEngine for AstEngine {
 /// a useful snippet without blowing up payload size.
 const CONTEXT_RADIUS: usize = 3;
 
-/// Locate the first AST match in `content` and return its 1-based
-/// `(line, column, context_window)`.
+/// Locate every AST match in `content` and return each as a 1-based
+/// `(line, column, context_window)` tuple.
 ///
 /// The context window is `±CONTEXT_RADIUS` lines around the match line,
-/// joined with `\n`, clamped to the file's bounds.
-fn find_first_match(
+/// joined with `\n`, clamped to the file's bounds. An empty vec means the
+/// pattern produced no hits.
+fn find_all_matches(
     content: &str,
     pattern_str: &str,
     lang_name: &str,
-) -> Result<Option<(u32, u32, String)>> {
+) -> Result<Vec<(u32, u32, String)>> {
     use ast_grep_core::matcher::Pattern;
     use ast_grep_language::{LanguageExt, SupportLang};
     use std::str::FromStr;
@@ -75,15 +80,16 @@ fn find_first_match(
     let pattern = Pattern::try_new(pattern_str, lang)
         .map_err(|e| anyhow!("invalid ast-grep pattern `{pattern_str}`: {e:?}"))?;
     let root = grep.root();
-    let Some(node) = root.find_all(pattern).next() else {
-        return Ok(None);
-    };
-    // ast-grep positions are zero-based; verdicts are 1-based.
-    let start = node.start_pos();
-    let line = (start.line() + 1) as u32;
-    let column = (start.column(&node) + 1) as u32;
-    let context_str = surrounding_lines(content, line);
-    Ok(Some((line, column, context_str)))
+    let mut out = Vec::new();
+    for node in root.find_all(pattern) {
+        // ast-grep positions are zero-based; verdicts are 1-based.
+        let start = node.start_pos();
+        let line = (start.line() + 1) as u32;
+        let column = (start.column(&node) + 1) as u32;
+        let context_str = surrounding_lines(content, line);
+        out.push((line, column, context_str));
+    }
+    Ok(out)
 }
 
 /// Build a `±CONTEXT_RADIUS`-line window around the 1-based `line`, joined

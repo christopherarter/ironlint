@@ -8,14 +8,20 @@ use std::path::Path;
 pub struct ScriptEngine;
 
 impl RuleEngine for ScriptEngine {
-    fn run(&self, ctx: &RuleContext) -> Result<Option<Violation>> {
-        run_script_rule_internal(
+    fn run(&self, ctx: &RuleContext) -> Result<Vec<Violation>> {
+        // P1-11: the trait now returns `Vec`. Script always produces at most
+        // one violation per rule per file (it's a single subprocess), so we
+        // wrap the existing `Option` outcome — empty vec for pass, one-element
+        // vec for violation.
+        Ok(run_script_rule_internal(
             ctx.rule_id,
             ctx.rule,
             ctx.file,
             ctx.diff.unwrap_or(""),
             ctx.cwd,
-        )
+        )?
+        .into_iter()
+        .collect())
     }
 }
 
