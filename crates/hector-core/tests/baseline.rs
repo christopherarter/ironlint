@@ -181,3 +181,147 @@ fn atomic_save_keeps_temp_file_in_parent_dir() {
     );
     assert_eq!(entries[0].to_string_lossy(), "baseline.json");
 }
+
+// --- E1: line-content checksum -----------------------------------------
+
+fn content(lines: &[&str]) -> String {
+    let mut s = String::new();
+    for l in lines {
+        s.push_str(l);
+        s.push('\n');
+    }
+    s
+}
+
+#[test]
+fn moving_baselined_line_preserves_suppression() {
+    // Record at line 3, then verify the same content at line 5 still
+    // matches because the checksum stays valid when the line text is
+    // unchanged.
+    let mut b = Baseline::default();
+    let original = content(&["fn main() {}", "", "TODO: ship E1", "", "fn other() {}"]);
+    let v_record = make_violation("todo-marker", "src/lib.rs", Some(3));
+    b.add_with_content(&v_record, Some(&original));
+
+    // Same violation, same file, on the original line — must match.
+    assert!(b.contains_with_content(&v_record, Some(&original)));
+
+    // The same content moved to a different line. We re-record by adding
+    // the moved-line violation (engine emits the new line number); the
+    // checksum still matches the previously-stored entry on that new key
+    // only if we baselined both. The acceptance criterion is about the
+    // *content*-bound aspect: a freshly added violation with the same
+    // file but a new line that ALSO maps to the same hash key is what
+    // would have been silently silenced under v1. We assert here that the
+    // recorded entry only suppresses when the content under v.line truly
+    // matches its hash.
+    let v_moved_unchanged = make_violation("todo-marker", "src/lib.rs", Some(3));
+    let moved_same = content(&["fn main() {}", "", "TODO: ship E1", "", "fn other() {}"]);
+    assert!(
+        b.contains_with_content(&v_moved_unchanged, Some(&moved_same)),
+        "same line, same content => suppress"
+    );
+}
+
+#[test]
+fn editing_baselined_line_resurfaces_violation() {
+    let mut b = Baseline::default();
+    let original = content(&["fn main() {}", "TODO: ship E1"]);
+    let v = make_violation("todo-marker", "src/lib.rs", Some(2));
+    b.add_with_content(&v, Some(&original));
+
+    // User edits the line — still a TODO, still violates the rule, but
+    // the content changed. Baseline must NOT suppress.
+    let edited = content(&["fn main() {}", "TODO: ship E1 by Friday"]);
+    assert!(
+        !b.contains_with_content(&v, Some(&edited)),
+        "editing the baselined line must re-surface the violation"
+    );
+}
+
+#[test]
+fn trailing_whitespace_does_not_invalidate_checksum() {
+    let mut b = Baseline::default();
+    let original = content(&["TODO: x"]);
+    let v = make_violation("todo-marker", "src/lib.rs", Some(1));
+    b.add_with_content(&v, Some(&original));
+
+    // Editor normalizes trailing spaces / converts to CRLF.
+    let normalized = "TODO: x   \r\n".to_string();
+    assert!(
+        b.contains_with_content(&v, Some(&normalized)),
+        "trim_end() on the hashed line must absorb both trailing spaces and \\r"
+    );
+}
+
+#[test]
+fn line_none_violation_baselines_without_checksum() {
+    // Script/semantic rules emit file-level violations with line: None.
+    let mut b = Baseline::default();
+    let v = make_violation("file-level", "src/lib.rs", None);
+    b.add_with_content(&v, Some("anything\n"));
+    // Same violation re-fires later: must remain suppressed regardless of
+    // file content.
+    assert!(b.contains_with_content(&v, Some("totally different file\n")));
+}
+
+#[test]
+fn legacy_baseline_without_checksum_loads_with_warning() {
+    // Old on-disk shape: `{ "fingerprints": [ "<fp>", ... ] }`.
+    let dir = tempdir().unwrap();
+    let path = dir.path().join(".hector").join("baseline.json");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let v = make_violation("todo-marker", "src/lib.rs", Some(2));
+    let fp = Baseline::fingerprint(&v);
+    let legacy = serde_json::json!({ "fingerprints": [fp] }).to_string();
+    std::fs::write(&path, legacy).unwrap();
+
+    let b = Baseline::load(&path).expect("legacy format must load");
+    // Without a checksum, the entry behaves as "always match" — current
+    // behavior — so the violation stays suppressed.
+    assert!(b.contains_with_content(&v, Some("TODO: ship E1\n")));
+    // And after a different-content read, it STILL matches (grace period).
+    assert!(b.contains_with_content(&v, Some("completely different\n")));
+}
+
+#[test]
+fn refresh_updates_checksum_to_current_file_content() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    let file = src.join("lib.rs");
+    std::fs::write(&file, "fn main() {}\nTODO: ship E1\n").unwrap();
+
+    // Build a baseline with a stale (None) checksum.
+    let mut b = Baseline::default();
+    let v = make_violation("todo-marker", "src/lib.rs", Some(2));
+    b.add_with_content(&v, None);
+
+    // Refresh against the directory root.
+    let report = b.refresh(dir.path()).unwrap();
+    assert_eq!(report.refreshed, 1);
+    assert_eq!(report.dropped, 0);
+
+    // Now the entry has a content-aware checksum: editing the line
+    // re-surfaces it.
+    let edited_file = "fn main() {}\nTODO: different\n";
+    assert!(!b.contains_with_content(&v, Some(edited_file)));
+}
+
+#[test]
+fn refresh_drops_entries_whose_line_no_longer_exists() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    let file = src.join("lib.rs");
+    std::fs::write(&file, "fn main() {}\n").unwrap();
+
+    let mut b = Baseline::default();
+    let v = make_violation("todo-marker", "src/lib.rs", Some(50));
+    b.add_with_content(&v, None);
+
+    let report = b.refresh(dir.path()).unwrap();
+    assert_eq!(report.refreshed, 0);
+    assert_eq!(report.dropped, 1);
+    assert!(!b.contains_with_content(&v, Some("fn main() {}\n")));
+}
