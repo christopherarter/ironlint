@@ -65,7 +65,13 @@ fn script_engine_quotes_file_path_with_shell_metacharacters() {
         pattern: None,
         language: None,
         context: None,
-        capabilities: None,
+        // Unrestricted capabilities so this test exercises the quoting defense
+        // itself on every platform — not the Linux mount-namespace, which
+        // would block `touch` regardless of the bug.
+        capabilities: Some(Capabilities {
+            network: true,
+            writes: WritesPolicy::Unrestricted,
+        }),
         fix_hint: None,
     };
     let _ = run_script_rule("evil", &rule, &evil, "", cwd);

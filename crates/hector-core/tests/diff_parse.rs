@@ -57,6 +57,18 @@ fn parse_unified_rejects_absolute_path() {
     assert!(hector_core::diff::parser::parse_unified(diff).is_err());
 }
 
+// Regression: empty `+++ b/` path. After trim/strip this leaves `""`, which
+// `starts_with('/')` and `components()` both pass — a downstream consumer that
+// joins onto `cwd` would silently target `cwd` itself. Reject explicitly.
+#[test]
+fn parse_unified_rejects_empty_path() {
+    let diff = "--- a/foo\n+++ b/\n@@ -0,0 +1 @@\n+x\n";
+    let err = hector_core::diff::parser::parse_unified(diff)
+        .expect_err("empty +++ b/ path must be rejected");
+    let msg = format!("{err:#}");
+    assert!(msg.contains("empty"), "error should mention empty; got: {msg}");
+}
+
 // Regression: P2-10 — CRLF diffs left a trailing `\r` on the parsed path,
 // which silently mis-matched globs (e.g. `src/**/*.py` vs `myfile.py\r`).
 #[test]

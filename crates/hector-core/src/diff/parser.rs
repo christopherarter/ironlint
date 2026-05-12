@@ -23,6 +23,9 @@ pub fn parse_unified(input: &str) -> Result<Vec<ChangedFile>> {
             // parser feeds these straight into the semantic context reader
             // and script-engine working dirs; an unchecked `+++ b/../../etc/passwd`
             // or `+++ b//etc/passwd` is direct exfil.
+            if path.is_empty() {
+                return Err(anyhow!("diff contains empty `+++ b/` path"));
+            }
             if path.starts_with('/') {
                 return Err(anyhow!("diff contains absolute path: {path}"));
             }
