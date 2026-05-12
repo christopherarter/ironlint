@@ -10,10 +10,14 @@ fn session_record_creates_session_file() {
     Command::cargo_bin("hector")
         .unwrap()
         .args([
-            "session", "record",
-            "--dir", dir.path().to_str().unwrap(),
-            "--file", file.to_str().unwrap(),
-            "--diff", "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new",
+            "session",
+            "record",
+            "--dir",
+            dir.path().to_str().unwrap(),
+            "--file",
+            file.to_str().unwrap(),
+            "--diff",
+            "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new",
         ])
         .assert()
         .success();
@@ -33,10 +37,14 @@ fn session_record_appends_when_file_exists() {
     Command::cargo_bin("hector")
         .unwrap()
         .args([
-            "session", "record",
-            "--dir", dir.path().to_str().unwrap(),
-            "--file", file.to_str().unwrap(),
-            "--diff", "diff1",
+            "session",
+            "record",
+            "--dir",
+            dir.path().to_str().unwrap(),
+            "--file",
+            file.to_str().unwrap(),
+            "--diff",
+            "diff1",
         ])
         .assert()
         .success();
@@ -44,10 +52,14 @@ fn session_record_appends_when_file_exists() {
     Command::cargo_bin("hector")
         .unwrap()
         .args([
-            "session", "record",
-            "--dir", dir.path().to_str().unwrap(),
-            "--file", file.to_str().unwrap(),
-            "--diff", "diff2",
+            "session",
+            "record",
+            "--dir",
+            dir.path().to_str().unwrap(),
+            "--file",
+            file.to_str().unwrap(),
+            "--diff",
+            "diff2",
         ])
         .assert()
         .success();
@@ -70,10 +82,14 @@ fn session_record_fails_on_corrupt_session_file() {
     Command::cargo_bin("hector")
         .unwrap()
         .args([
-            "session", "record",
-            "--dir", dir.path().to_str().unwrap(),
-            "--file", file.to_str().unwrap(),
-            "--diff", "diff",
+            "session",
+            "record",
+            "--dir",
+            dir.path().to_str().unwrap(),
+            "--file",
+            file.to_str().unwrap(),
+            "--diff",
+            "diff",
         ])
         .assert()
         .failure();

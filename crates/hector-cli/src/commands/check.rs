@@ -38,7 +38,10 @@ pub fn run(
             let unified_diff = std::fs::read_to_string(&d)?;
             let path = first_file_in_diff(&unified_diff)
                 .ok_or_else(|| anyhow!("could not infer file from diff"))?;
-            CheckInput::Diff { file: path, unified_diff }
+            CheckInput::Diff {
+                file: path,
+                unified_diff,
+            }
         }
         _ => {
             eprintln!("ERROR: provide exactly one of --file or --diff");
@@ -74,11 +77,14 @@ fn emit(v: &Verdict, format: OutputFormat) -> Result<()> {
                 );
                 eprintln!("  {}", vio.message);
             }
-            println!("{}", match v.status {
-                Status::Pass => "pass",
-                Status::Warn => "warn",
-                Status::Block => "block",
-            });
+            println!(
+                "{}",
+                match v.status {
+                    Status::Pass => "pass",
+                    Status::Warn => "warn",
+                    Status::Block => "block",
+                }
+            );
         }
     }
     Ok(())

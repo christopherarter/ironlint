@@ -21,16 +21,31 @@ fn check_passing_rule_exits_zero() {
         dir.path(),
         "schema_version: 2\nrules:\n  noop:\n    description: \"x\"\n    engine: script\n    scope: [\"*.txt\"]\n    severity: error\n    script: \"true\"\n",
     );
-    Command::cargo_bin("hector")
+    let out = Command::cargo_bin("hector")
         .unwrap()
         .args([
             "check",
-            "--config", cfg.to_str().unwrap(),
-            "--file", file.to_str().unwrap(),
-            "--format", "json",
+            "--config",
+            cfg.to_str().unwrap(),
+            "--file",
+            file.to_str().unwrap(),
+            "--format",
+            "json",
         ])
         .assert()
-        .code(0);
+        .code(0)
+        .get_output()
+        .stdout
+        .clone();
+    let parsed: serde_json::Value = serde_json::from_slice(&out).expect("valid json");
+    assert_eq!(parsed["status"], "pass");
+    let passed = parsed["passed_checks"]
+        .as_array()
+        .expect("passed_checks is an array");
+    assert!(
+        passed.iter().any(|v| v == "noop"),
+        "expected `noop` in passed_checks, got {passed:?}"
+    );
 }
 
 #[test]
@@ -46,9 +61,12 @@ fn check_blocking_rule_exits_two() {
         .unwrap()
         .args([
             "check",
-            "--config", cfg.to_str().unwrap(),
-            "--file", file.to_str().unwrap(),
-            "--format", "json",
+            "--config",
+            cfg.to_str().unwrap(),
+            "--file",
+            file.to_str().unwrap(),
+            "--format",
+            "json",
         ])
         .assert()
         .code(2)
@@ -74,9 +92,58 @@ fn check_with_untrusted_config_exits_one() {
         .unwrap()
         .args([
             "check",
-            "--config", cfg.to_str().unwrap(),
-            "--file", file.to_str().unwrap(),
+            "--config",
+            cfg.to_str().unwrap(),
+            "--file",
+            file.to_str().unwrap(),
         ])
         .assert()
         .code(1);
+}
+
+#[test]
+fn check_diff_input_parses_and_runs() {
+    let dir = tempdir().unwrap();
+    let cfg = write_trusted(
+        dir.path(),
+        "schema_version: 2\nrules:\n  noop:\n    description: \"x\"\n    engine: script\n    scope: [\"*.ts\"]\n    severity: error\n    script: \"true\"\n",
+    );
+    let patch = dir.path().join("change.patch");
+    std::fs::write(
+        &patch,
+        "\
+--- a/src/foo.ts
++++ b/src/foo.ts
+@@ -1,3 +1,4 @@
+ line one
+-old line
++new line
++added line
+ line three
+",
+    )
+    .unwrap();
+    let out = Command::cargo_bin("hector")
+        .unwrap()
+        .args([
+            "check",
+            "--config",
+            cfg.to_str().unwrap(),
+            "--diff",
+            patch.to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .assert()
+        .code(0)
+        .get_output()
+        .stdout
+        .clone();
+    let parsed: serde_json::Value = serde_json::from_slice(&out).expect("valid json");
+    let status = parsed["status"].as_str().expect("status is a string");
+    assert!(
+        matches!(status, "pass" | "warn" | "block"),
+        "unexpected status: {status}"
+    );
+    assert_eq!(status, "pass");
 }

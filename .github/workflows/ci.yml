@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel superseded runs on the same PR/branch.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+  RUST_BACKTRACE: short
+
+jobs:
+  rust:
+    name: rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: cargo test
+        run: cargo test --workspace --no-fail-fast
+
+      - name: cargo build --release
+        run: cargo build --release
+
+      - name: Upload release binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: hector-${{ matrix.os }}
+          path: target/release/hector
+          retention-days: 1
+
+      - name: Claude Code adapter integration
+        run: PATH="$(pwd)/target/release:${PATH}" bash adapters/claude-code/tests/hook_integration.sh
+
+      - name: Hector dogfood (.hector.yml on own source)
+        if: hashFiles('.hector.yml') != ''
+        run: PATH="$(pwd)/target/release:${PATH}" bash scripts/ci-dogfood.sh
+
+  opencode-adapter:
+    name: opencode adapter
+    runs-on: ubuntu-latest
+    needs: rust
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: hector-ubuntu-latest
+          path: target/release
+
+      - run: chmod +x target/release/hector
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install plugin dev deps
+        working-directory: adapters/opencode
+        run: bun install --frozen-lockfile
+
+      - name: TypeScript type-check
+        working-directory: adapters/opencode
+        run: bunx tsc --noEmit
+
+      - name: Plugin integration test
+        run: PATH="$(pwd)/target/release:${PATH}" bun test adapters/opencode/tests/plugin.test.ts

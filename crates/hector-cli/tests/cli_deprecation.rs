@@ -26,9 +26,12 @@ fn v1_config_emits_deprecation_warning() {
         .unwrap()
         .args([
             "check",
-            "--config", cfg.to_str().unwrap(),
-            "--file", file.to_str().unwrap(),
-            "--format", "json",
+            "--config",
+            cfg.to_str().unwrap(),
+            "--file",
+            file.to_str().unwrap(),
+            "--format",
+            "json",
         ])
         .assert()
         .code(0)
@@ -37,7 +40,9 @@ fn v1_config_emits_deprecation_warning() {
         .clone();
     let stderr = String::from_utf8_lossy(&output);
     assert!(
-        stderr.contains("deprecated") || stderr.contains("legacy") || stderr.contains("hector migrate"),
+        stderr.contains("deprecated")
+            || stderr.contains("legacy")
+            || stderr.contains("hector migrate"),
         "expected deprecation in stderr, got: {stderr}"
     );
 }

@@ -51,13 +51,14 @@ impl HectorEngine {
         HectorEngineBuilder::new()
     }
 
-    fn load_with(config_path: &Path, llm: Option<Box<dyn crate::llm::LlmClient>>) -> Result<Self> {
+    fn load_with(
+        config_path: &Path,
+        llm_override: Option<Box<dyn crate::llm::LlmClient>>,
+    ) -> Result<Self> {
         let raw = std::fs::read_to_string(config_path)
             .with_context(|| format!("reading {}", config_path.display()))?;
         trust::verify(&raw)?;
         let config = parse_file_with_extends(config_path)?;
-
-        // All engines (Script, Ast, Semantic, Session) implemented as of 0.1b.
 
         // Validate every rule's scope by constructing the matcher up front.
         for (rule_id, rule) in &config.rules {
@@ -71,11 +72,24 @@ impl HectorEngine {
             );
         }
 
+        // If no explicit override, auto-construct from config.llm.
+        let llm = match llm_override {
+            Some(client) => Some(client),
+            None => match &config.llm {
+                Some(cfg) => crate::llm::build_from_config(cfg)?,
+                None => None,
+            },
+        };
+
         let config_dir = config_path
             .parent()
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| PathBuf::from("."));
-        Ok(Self { config, config_dir, llm })
+        Ok(Self {
+            config,
+            config_dir,
+            llm,
+        })
     }
 
     pub fn check(&self, input: CheckInput) -> Result<Verdict> {
@@ -98,7 +112,9 @@ impl HectorEngine {
                 continue;
             }
             let outcome = match rule.engine {
-                EngineKind::Script => run_script_rule(rule_id, rule, &path, &diff, &self.config_dir),
+                EngineKind::Script => {
+                    run_script_rule(rule_id, rule, &path, &diff, &self.config_dir)
+                }
                 EngineKind::Ast => {
                     use crate::engine::ast::AstEngine;
                     use crate::engine::{RuleContext, RuleEngine};
@@ -107,7 +123,11 @@ impl HectorEngine {
                         rule_id,
                         rule,
                         file: &path,
-                        content: if content.is_empty() { None } else { Some(&content) },
+                        content: if content.is_empty() {
+                            None
+                        } else {
+                            Some(&content)
+                        },
                         diff: if diff.is_empty() { None } else { Some(&diff) },
                         cwd: &self.config_dir,
                         llm: self.llm.as_deref(),
@@ -122,7 +142,11 @@ impl HectorEngine {
                         rule_id,
                         rule,
                         file: &path,
-                        content: if content.is_empty() { None } else { Some(&content) },
+                        content: if content.is_empty() {
+                            None
+                        } else {
+                            Some(&content)
+                        },
                         diff: if diff.is_empty() { None } else { Some(&diff) },
                         cwd: &self.config_dir,
                         llm: self.llm.as_deref(),
@@ -158,11 +182,13 @@ impl HectorEngine {
             }
         }
 
-        let baseline = crate::baseline::Baseline::load(&self.config_dir.join(".hector/baseline.json"))
-            .unwrap_or_default();
+        let baseline =
+            crate::baseline::Baseline::load(&self.config_dir.join(".hector/baseline.json"))
+                .unwrap_or_default();
         violations.retain(|v| !baseline.contains(v));
 
-        let verdict = Verdict::from_violations(violations, passed, start.elapsed().as_millis() as u64);
+        let verdict =
+            Verdict::from_violations(violations, passed, start.elapsed().as_millis() as u64);
         let _ = crate::telemetry::append(
             &self.config_dir.join(".hector/log.jsonl"),
             &crate::telemetry::LogEntry {
@@ -177,7 +203,10 @@ impl HectorEngine {
         Ok(verdict)
     }
 
-    pub fn check_session(&self, state: &crate::session_state::SessionState) -> Result<crate::verdict::Verdict> {
+    pub fn check_session(
+        &self,
+        state: &crate::session_state::SessionState,
+    ) -> Result<crate::verdict::Verdict> {
         use crate::engine::session::SessionEngine;
 
         let start = Instant::now();
@@ -188,8 +217,9 @@ impl HectorEngine {
             if rule.engine != crate::config::EngineKind::Session {
                 continue;
             }
-            let llm = self.llm.as_deref()
-                .ok_or_else(|| anyhow::anyhow!("session check requires LlmClient; build engine with .with_llm()"))?;
+            let llm = self.llm.as_deref().ok_or_else(|| {
+                anyhow::anyhow!("session check requires LlmClient; build engine with .with_llm()")
+            })?;
             match session_engine.evaluate(state, rule_id, rule, llm) {
                 Ok(Some(v)) => violations.push(v),
                 Ok(None) => passed.push(rule_id.clone()),
@@ -206,7 +236,11 @@ impl HectorEngine {
                 }),
             }
         }
-        let verdict = crate::verdict::Verdict::from_violations(violations, passed, start.elapsed().as_millis() as u64);
+        let verdict = crate::verdict::Verdict::from_violations(
+            violations,
+            passed,
+            start.elapsed().as_millis() as u64,
+        );
         let _ = crate::telemetry::append(
             &self.config_dir.join(".hector/log.jsonl"),
             &crate::telemetry::LogEntry {

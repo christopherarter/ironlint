@@ -5,3 +5,5 @@ Cargo.lock
 .vscode/
 .DS_Store
 *.swp
+# Hector runtime state (telemetry log, session state, baseline cache)
+.hector/

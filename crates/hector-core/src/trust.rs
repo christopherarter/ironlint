@@ -20,10 +20,8 @@ fn canonical_serialize(value: &Value) -> String {
 fn sort_keys(value: Value) -> Value {
     match value {
         Value::Mapping(m) => {
-            let mut pairs: Vec<(Value, Value)> = m
-                .into_iter()
-                .map(|(k, v)| (k, sort_keys(v)))
-                .collect();
+            let mut pairs: Vec<(Value, Value)> =
+                m.into_iter().map(|(k, v)| (k, sort_keys(v))).collect();
             pairs.sort_by(|a, b| {
                 serde_yaml::to_string(&a.0)
                     .unwrap_or_default()

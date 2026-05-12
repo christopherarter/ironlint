@@ -25,5 +25,8 @@ fn cycle_in_extends_is_error() {
     let result = parse_file_with_extends(&a);
     assert!(result.is_err(), "cycle detection should fail");
     let err = format!("{:#}", result.unwrap_err());
-    assert!(err.to_lowercase().contains("cycle") || err.to_lowercase().contains("loop"), "error mentions cycle: {err}");
+    assert!(
+        err.to_lowercase().contains("cycle") || err.to_lowercase().contains("loop"),
+        "error mentions cycle: {err}"
+    );
 }

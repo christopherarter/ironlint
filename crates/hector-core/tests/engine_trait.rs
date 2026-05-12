@@ -1,6 +1,6 @@
 use hector_core::config::{Capabilities, EngineKind, Rule, Severity, WritesPolicy};
-use hector_core::engine::{RuleContext, RuleEngine};
 use hector_core::engine::script::ScriptEngine;
+use hector_core::engine::{RuleContext, RuleEngine};
 use tempfile::tempdir;
 
 fn make_rule(script: &str) -> Rule {
@@ -13,7 +13,10 @@ fn make_rule(script: &str) -> Rule {
         pattern: None,
         language: None,
         context: None,
-        capabilities: Some(Capabilities { network: false, writes: WritesPolicy::None }),
+        capabilities: Some(Capabilities {
+            network: false,
+            writes: WritesPolicy::None,
+        }),
         fix_hint: None,
     }
 }
@@ -35,5 +38,8 @@ fn script_engine_implements_rule_engine_trait() {
     };
     let engine = ScriptEngine;
     let outcome = engine.run(&ctx).expect("run");
-    assert!(outcome.is_none(), "passing script should produce no violation");
+    assert!(
+        outcome.is_none(),
+        "passing script should produce no violation"
+    );
 }

@@ -8,6 +8,55 @@ edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/dynamik-dev/hector"
 
+[workspace.lints.rust]
+unsafe_code = "forbid"
+rust_2018_idioms = { level = "warn", priority = -1 }
+unused_lifetimes = "warn"
+# Anonymous lifetimes on `&T` arguments are idiomatic; opt in explicitly later.
+elided_lifetimes_in_paths = "allow"
+# Pre-existing codebase patterns to revisit:
+#   missing_debug_implementations — many internal types lack Debug; opt in later.
+#   unreachable_pub                — bin-crate `pub fn run` is fine as-is.
+#   unused_qualifications          — already enforced by rustfmt-style review.
+#   elided_lifetimes_in_paths      — current style is idiomatic; revisit.
+
+[workspace.lints.clippy]
+# Default lint groups — deny at workspace level so violations are errors.
+all = { level = "deny", priority = -1 }
+# Pedantic + nursery as warn — visible but with broad allows for noisy lints.
+# Each `allow` below documents *why* it's silenced.
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+
+# === Pedantic allows: taste-call lints we disagree with ===
+module_name_repetitions = "allow"     # idiomatic Rust naming, not a bug
+must_use_candidate = "allow"          # noisy; opt in per-API where it matters
+missing_errors_doc = "allow"          # internal Result-returning fns don't need docs
+missing_panics_doc = "allow"          # same — internal code
+return_self_not_must_use = "allow"    # builders rely on chaining, no need to annotate
+similar_names = "allow"               # `path` / `file_path` etc. are clear enough
+too_many_lines = "allow"              # arbitrary line-count threshold
+cast_possible_truncation = "allow"    # use site-specific allows when needed
+doc_markdown = "allow"                # backtick-the-thing nags are mostly noise
+unnecessary_wraps = "allow"           # uniform Result returns simplify dispatch
+match_wildcard_for_single_variants = "allow"  # forward-compat by design
+map_unwrap_or = "allow"               # `.map(...).unwrap_or(...)` is readable
+manual_let_else = "allow"             # taste; both forms are fine
+uninlined_format_args = "allow"       # cleanup candidate, not a bug
+redundant_closure_for_method_calls = "allow"  # taste; explicit is fine
+
+# === Nursery allows: experimental lints with too many false positives ===
+option_if_let_else = "allow"
+significant_drop_tightening = "allow"
+redundant_pub_crate = "allow"
+missing_const_for_fn = "allow"        # nursery; often suggests breaking const fn
+or_fun_call = "allow"                 # cheap-eval false positives
+redundant_clone = "allow"             # noisy on Arc/string clones that are intentional
+needless_collect = "allow"            # often suggests less-readable forms
+literal_string_with_formatting_args = "allow"  # frequent false positives in messages
+format_push_string = "allow"          # noisy; both forms compile to similar code
+manual_string_new = "allow"           # `"".to_string()` is fine when it's clearer
+
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
@@ -21,7 +70,7 @@ nix = { version = "0.29", features = ["mount", "sched", "user"] }
 tempfile = "3"
 assert_cmd = "2"
 predicates = "3"
-insta = { version = "1", features = ["yaml", "json"] }
+insta = { version = "1", features = ["yaml", "json", "redactions"] }
 ast-grep-core = "0.42"
 ast-grep-language = "0.42"
 reqwest = { version = "0.12", default-features = false, features = ["json", "blocking", "rustls-tls"] }

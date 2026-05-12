@@ -30,7 +30,10 @@ schema_version: 2
 fn fingerprint_ignores_key_order_and_trust_block() {
     let a = fingerprint(CFG_A).unwrap();
     let b = fingerprint(CFG_A_REORDERED).unwrap();
-    assert_eq!(a, b, "canonicalization must ignore key order and trust block");
+    assert_eq!(
+        a, b,
+        "canonicalization must ignore key order and trust block"
+    );
     assert!(a.starts_with("sha256:"));
 }
 
@@ -48,7 +51,10 @@ fn verify_accepts_matching_fingerprint() {
     let body = "schema_version: 2\nrules:\n  r:\n    description: \"x\"\n    engine: script\n    scope: [\"*\"]\n    severity: error\n    script: \"true\"\n";
     let fp = fingerprint(body).unwrap();
     let cfg = format!("{body}trust:\n  fingerprint: \"{fp}\"\n");
-    assert!(verify(&cfg).is_ok(), "self-consistent fingerprint should verify");
+    assert!(
+        verify(&cfg).is_ok(),
+        "self-consistent fingerprint should verify"
+    );
 
     // Sanity: canonicalization function is callable.
     let _ = canonicalize_for_fingerprint(body).unwrap();

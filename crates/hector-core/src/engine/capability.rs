@@ -11,11 +11,7 @@ pub struct ExecOutcome {
 
 /// Run a shell command under the requested capability constraints.
 /// Returns Ok(outcome) if the process completed (even non-zero exit).
-pub fn run_with_capabilities(
-    cmd: &str,
-    cwd: &Path,
-    caps: &Capabilities,
-) -> Result<ExecOutcome> {
+pub fn run_with_capabilities(cmd: &str, cwd: &Path, caps: &Capabilities) -> Result<ExecOutcome> {
     #[cfg(target_os = "linux")]
     {
         run_linux(cmd, cwd, caps)

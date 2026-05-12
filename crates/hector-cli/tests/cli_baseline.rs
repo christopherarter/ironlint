@@ -21,8 +21,10 @@ fn baseline_records_and_then_filters() {
         .unwrap()
         .args([
             "baseline",
-            "--config", cfg.to_str().unwrap(),
-            "--scan", "*.txt",
+            "--config",
+            cfg.to_str().unwrap(),
+            "--scan",
+            "*.txt",
         ])
         .assert()
         .success();
@@ -32,9 +34,12 @@ fn baseline_records_and_then_filters() {
         .unwrap()
         .args([
             "check",
-            "--config", cfg.to_str().unwrap(),
-            "--file", file.to_str().unwrap(),
-            "--format", "json",
+            "--config",
+            cfg.to_str().unwrap(),
+            "--file",
+            file.to_str().unwrap(),
+            "--format",
+            "json",
         ])
         .assert()
         .code(0);

@@ -1,9 +1,9 @@
+use anyhow::Result;
 use hector_core::config::{ContextScope, EngineKind, Rule, Severity};
 use hector_core::engine::semantic::SemanticEngine;
 use hector_core::engine::{RuleContext, RuleEngine};
 use hector_core::llm::{LlmClient, RuleStatus, RuleVerdict};
 use tempfile::tempdir;
-use anyhow::Result;
 
 struct FakeLlm {
     canned: Vec<RuleVerdict>,
@@ -39,7 +39,11 @@ fn make_semantic_rule(ctx: ContextScope) -> Rule {
 fn semantic_engine_returns_violation_when_llm_says_so() {
     let dir = tempdir().unwrap();
     let file = dir.path().join("app.tsx");
-    std::fs::write(&file, "const X = () => useEffect(() => setY(props.y), [props.y]);\n").unwrap();
+    std::fs::write(
+        &file,
+        "const X = () => useEffect(() => setY(props.y), [props.y]);\n",
+    )
+    .unwrap();
     let llm = FakeLlm {
         canned: vec![RuleVerdict {
             rule_id: "no-derived-state".to_string(),

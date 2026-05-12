@@ -18,8 +18,8 @@ impl ScopeMatcher {
             b.add(glob);
             if !g.contains('/') {
                 let prefixed = format!("**/{}", g);
-                let glob = Glob::new(&prefixed)
-                    .with_context(|| format!("invalid glob: {prefixed}"))?;
+                let glob =
+                    Glob::new(&prefixed).with_context(|| format!("invalid glob: {prefixed}"))?;
                 b.add(glob);
             }
         }

@@ -9,7 +9,13 @@ pub struct ScriptEngine;
 
 impl RuleEngine for ScriptEngine {
     fn run(&self, ctx: &RuleContext) -> Result<Option<Violation>> {
-        run_script_rule_internal(ctx.rule_id, ctx.rule, ctx.file, ctx.diff.unwrap_or(""), ctx.cwd)
+        run_script_rule_internal(
+            ctx.rule_id,
+            ctx.rule,
+            ctx.file,
+            ctx.diff.unwrap_or(""),
+            ctx.cwd,
+        )
     }
 }
 
@@ -57,7 +63,11 @@ fn run_script_rule_internal(
         file: file.display().to_string(),
         line: None,
         column: None,
-        message: if message.is_empty() { rule.description.clone() } else { message },
+        message: if message.is_empty() {
+            rule.description.clone()
+        } else {
+            message
+        },
         suggestion: rule.fix_hint.clone(),
         context: None,
     }))

@@ -19,5 +19,8 @@ fn invalid_glob_in_scope_fails_load() {
     let result = HectorEngine::load(&path);
     assert!(result.is_err(), "invalid glob should fail load");
     let err = format!("{:#}", result.err().unwrap());
-    assert!(err.to_lowercase().contains("glob") || err.to_lowercase().contains("scope"), "msg: {err}");
+    assert!(
+        err.to_lowercase().contains("glob") || err.to_lowercase().contains("scope"),
+        "msg: {err}"
+    );
 }

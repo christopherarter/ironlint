@@ -27,8 +27,8 @@ impl SessionState {
     }
 
     pub fn load(path: &Path) -> Result<Self> {
-        let content = std::fs::read_to_string(path)
-            .with_context(|| format!("reading {}", path.display()))?;
+        let content =
+            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
         let s: Self = serde_json::from_str(&content)
             .with_context(|| format!("parsing {}", path.display()))?;
         Ok(s)

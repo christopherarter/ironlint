@@ -17,7 +17,8 @@ pub struct Config {
 pub struct LlmConfig {
     pub provider: String,
     pub model: String,
-    pub api_key_env: String,
+    #[serde(default)]
+    pub api_key_env: Option<String>,
     #[serde(default)]
     pub base_url: Option<String>,
 }
@@ -87,7 +88,10 @@ fn default_writes() -> WritesPolicy {
 
 impl Default for Capabilities {
     fn default() -> Self {
-        Self { network: false, writes: WritesPolicy::None }
+        Self {
+            network: false,
+            writes: WritesPolicy::None,
+        }
     }
 }
 
@@ -110,7 +114,11 @@ where
         serde_yaml::Value::String(s) => Ok(vec![s]),
         serde_yaml::Value::Sequence(seq) => seq
             .into_iter()
-            .map(|x| x.as_str().map(|s| s.to_string()).ok_or_else(|| D::Error::custom("scope entry must be string")))
+            .map(|x| {
+                x.as_str()
+                    .map(|s| s.to_string())
+                    .ok_or_else(|| D::Error::custom("scope entry must be string"))
+            })
             .collect(),
         _ => Err(D::Error::custom("scope must be string or list of strings")),
     }

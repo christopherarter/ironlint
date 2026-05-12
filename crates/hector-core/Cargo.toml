@@ -29,3 +29,6 @@ assert_cmd.workspace = true
 serde_json.workspace = true
 wiremock.workspace = true
 tokio.workspace = true
+
+[lints]
+workspace = true

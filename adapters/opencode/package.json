@@ -1,0 +1,43 @@
+{
+  "name": "@dynamik-dev/hector-opencode",
+  "version": "0.1.0",
+  "description": "OpenCode plugin for Hector — policy enforcement for AI coding agents. tool.execute.after gate + session.idle session check.",
+  "type": "module",
+  "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "peerDependencies": {
+    "@opencode-ai/plugin": "*"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "*",
+    "@types/bun": "*",
+    "@types/node": "*",
+    "typescript": "^5"
+  },
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "hector",
+    "lint",
+    "policy",
+    "ai-agents"
+  ],
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dynamik-dev/hector.git",
+    "directory": "adapters/opencode"
+  },
+  "homepage": "https://github.com/dynamik-dev/hector#readme",
+  "bugs": "https://github.com/dynamik-dev/hector/issues"
+}

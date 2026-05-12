@@ -11,7 +11,11 @@ impl RuleEngine for SemanticEngine {
         let llm = ctx.llm.ok_or_else(|| anyhow!("semantic engine requires LlmClient; provide via HectorEngine::builder().with_llm(...)"))?;
         let scope = ctx.rule.context.unwrap_or(ContextScope::Diff);
         let (primary, context_text) = expand_context(scope, ctx.diff, Some(ctx.file), ctx.cwd)?;
-        let verdicts = llm.evaluate(&[(ctx.rule_id, ctx.rule)], &primary, context_text.as_deref())?;
+        let verdicts = llm.evaluate(
+            &[(ctx.rule_id, ctx.rule)],
+            &primary,
+            context_text.as_deref(),
+        )?;
         let Some(v) = verdicts.into_iter().find(|v| v.rule_id == ctx.rule_id) else {
             return Ok(None);
         };

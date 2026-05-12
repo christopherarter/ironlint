@@ -25,9 +25,12 @@ fn full_pipeline_script_only() {
         .unwrap()
         .args([
             "check",
-            "--config", cfg.to_str().unwrap(),
-            "--file", clean.to_str().unwrap(),
-            "--format", "json",
+            "--config",
+            cfg.to_str().unwrap(),
+            "--file",
+            clean.to_str().unwrap(),
+            "--format",
+            "json",
         ])
         .assert()
         .code(0);
@@ -38,9 +41,12 @@ fn full_pipeline_script_only() {
         .unwrap()
         .args([
             "check",
-            "--config", cfg.to_str().unwrap(),
-            "--file", dirty.to_str().unwrap(),
-            "--format", "json",
+            "--config",
+            cfg.to_str().unwrap(),
+            "--file",
+            dirty.to_str().unwrap(),
+            "--format",
+            "json",
         ])
         .assert()
         .code(2)

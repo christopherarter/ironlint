@@ -10,13 +10,16 @@ fn parses_v2_minimal() {
     let llm = cfg.llm.as_ref().expect("llm block");
     assert_eq!(llm.provider, "anthropic");
     assert_eq!(llm.model, "claude-sonnet-4-6");
-    assert_eq!(llm.api_key_env, "ANTHROPIC_API_KEY");
+    assert_eq!(llm.api_key_env.as_deref(), Some("ANTHROPIC_API_KEY"));
 
     let r = cfg.rules.get("no-console-log").expect("rule present");
     assert_eq!(r.engine, EngineKind::Script);
     assert_eq!(r.severity, Severity::Error);
     assert_eq!(r.scope, vec!["src/**/*.ts"]);
-    assert_eq!(r.script.as_deref(), Some("grep -nE 'console\\.log\\(' {file} && exit 1 || exit 0"));
+    assert_eq!(
+        r.script.as_deref(),
+        Some("grep -nE 'console\\.log\\(' {file} && exit 1 || exit 0")
+    );
     let caps = r.capabilities.as_ref().expect("caps");
     assert!(!caps.network);
     assert_eq!(caps.writes, WritesPolicy::CwdOnly);

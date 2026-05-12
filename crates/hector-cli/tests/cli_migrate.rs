@@ -28,7 +28,8 @@ fn migrate_moves_state_dir() {
     fs::write(
         dir.path().join(".bully.yml"),
         "schema_version: 1\nrules: {}\n",
-    ).unwrap();
+    )
+    .unwrap();
     fs::create_dir(dir.path().join(".bully")).unwrap();
     fs::write(dir.path().join(".bully/log.jsonl"), "{\"x\":1}\n").unwrap();
     Command::cargo_bin("hector")

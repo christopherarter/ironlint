@@ -7,8 +7,8 @@ pub fn record(dir: &Path, file: &Path, diff: &str, session_id: Option<String>) -
     let mut state = if state_path.exists() {
         SessionState::load(&state_path)?
     } else {
-        let id = session_id
-            .unwrap_or_else(|| format!("session-{}", chrono::Utc::now().timestamp()));
+        let id =
+            session_id.unwrap_or_else(|| format!("session-{}", chrono::Utc::now().timestamp()));
         SessionState::new(id)
     };
     state.append(EditRecord {

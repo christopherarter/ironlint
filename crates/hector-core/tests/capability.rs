@@ -4,7 +4,10 @@ use std::path::PathBuf;
 
 #[test]
 fn allows_command_with_no_network_and_no_writes() {
-    let caps = Capabilities { network: false, writes: WritesPolicy::None };
+    let caps = Capabilities {
+        network: false,
+        writes: WritesPolicy::None,
+    };
     let cwd = PathBuf::from(".");
     let outcome = run_with_capabilities("echo hello", &cwd, &caps).expect("run");
     assert!(outcome.stdout.contains("hello"));
@@ -22,16 +25,21 @@ fn rejects_unknown_writes_policy_via_parser() {
 #[cfg(target_os = "linux")]
 #[test]
 fn linux_network_disabled_blocks_network_attempts() {
-    let caps = Capabilities { network: false, writes: WritesPolicy::None };
+    let caps = Capabilities {
+        network: false,
+        writes: WritesPolicy::None,
+    };
     let cwd = PathBuf::from(".");
     // Try to resolve a hostname; should fail in the netns
     let outcome = run_with_capabilities(
         "getent hosts example.com >/dev/null 2>&1 && echo NET || echo NONET",
         &cwd,
         &caps,
-    ).expect("run");
+    )
+    .expect("run");
     assert!(
         outcome.stdout.contains("NONET"),
-        "expected NONET in netns, got: {}", outcome.stdout
+        "expected NONET in netns, got: {}",
+        outcome.stdout
     );
 }

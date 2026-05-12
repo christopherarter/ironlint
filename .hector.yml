@@ -1,0 +1,51 @@
+schema_version: 2
+rules:
+  no-unwrap-in-src:
+    description: Avoid .unwrap() in production source. Use ? or expect() with a message.
+    engine: ast
+    language: rust
+    scope:
+    - crates/*/src/**/*.rs
+    severity: warning
+    pattern: $EXPR.unwrap()
+  no-panic-in-src:
+    description: Avoid panic!() in production source. Return an error instead.
+    engine: ast
+    language: rust
+    scope:
+    - crates/*/src/**/*.rs
+    severity: warning
+    pattern: panic!($$$)
+  no-todo-in-src:
+    description: todo!() must not ship. Replace with a real implementation or return an error.
+    engine: ast
+    language: rust
+    scope:
+    - crates/*/src/**/*.rs
+    severity: error
+    pattern: todo!($$$)
+  no-unimplemented-in-src:
+    description: unimplemented!() must not ship.
+    engine: ast
+    language: rust
+    scope:
+    - crates/*/src/**/*.rs
+    severity: error
+    pattern: unimplemented!($$$)
+  no-dbg-in-src:
+    description: dbg!() is a debug macro and must not ship.
+    engine: ast
+    language: rust
+    scope:
+    - crates/*/src/**/*.rs
+    severity: error
+    pattern: dbg!($$$)
+  no-eprintln-debug:
+    description: Don't ship `eprintln!("DEBUG ...")` — use tracing or remove it.
+    engine: script
+    scope:
+    - crates/*/src/**/*.rs
+    severity: warning
+    script: grep -nE 'eprintln!\("DEBUG' {file} && exit 1 || exit 0
+trust:
+  fingerprint: sha256:43cf7a20e2a3400b3c470189197d2860d17a418a92968be575f26a1e9e3de259

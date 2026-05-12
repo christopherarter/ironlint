@@ -62,7 +62,11 @@ impl Verdict {
         }
     }
 
-    pub fn from_violations(violations: Vec<Violation>, passed: Vec<String>, elapsed_ms: u64) -> Self {
+    pub fn from_violations(
+        violations: Vec<Violation>,
+        passed: Vec<String>,
+        elapsed_ms: u64,
+    ) -> Self {
         let status = if violations.iter().any(|v| v.severity == Severity::Error) {
             Status::Block
         } else if violations.is_empty() {

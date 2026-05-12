@@ -17,5 +17,8 @@ fn rejects_unknown_schema_version() {
     let result = parse_str(bad);
     assert!(result.is_err());
     let err = format!("{:#}", result.unwrap_err());
-    assert!(err.contains("schema_version"), "error mentions schema_version: {err}");
+    assert!(
+        err.contains("schema_version"),
+        "error mentions schema_version: {err}"
+    );
 }

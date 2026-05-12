@@ -4,7 +4,10 @@ use std::path::Path;
 pub fn run(dir: &Path) -> Result<i32> {
     let cfg_path = dir.join(".hector.yml");
     if cfg_path.exists() {
-        return Err(anyhow!("{} already exists; refusing to overwrite", cfg_path.display()));
+        return Err(anyhow!(
+            "{} already exists; refusing to overwrite",
+            cfg_path.display()
+        ));
     }
     let stack = detect_stack(dir);
     let body = match stack {
@@ -20,12 +23,23 @@ pub fn run(dir: &Path) -> Result<i32> {
 }
 
 #[derive(Debug)]
-enum Stack { Rust, Node, Python, Unknown }
+enum Stack {
+    Rust,
+    Node,
+    Python,
+    Unknown,
+}
 
 fn detect_stack(dir: &Path) -> Stack {
-    if dir.join("Cargo.toml").exists() { return Stack::Rust; }
-    if dir.join("package.json").exists() { return Stack::Node; }
-    if dir.join("pyproject.toml").exists() || dir.join("setup.py").exists() { return Stack::Python; }
+    if dir.join("Cargo.toml").exists() {
+        return Stack::Rust;
+    }
+    if dir.join("package.json").exists() {
+        return Stack::Node;
+    }
+    if dir.join("pyproject.toml").exists() || dir.join("setup.py").exists() {
+        return Stack::Python;
+    }
     Stack::Unknown
 }
 

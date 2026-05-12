@@ -14,7 +14,9 @@ impl SessionEngine {
         rule: &Rule,
         llm: &dyn LlmClient,
     ) -> Result<Option<Violation>> {
-        let aggregated = state.edits.iter()
+        let aggregated = state
+            .edits
+            .iter()
             .map(|e| format!("--- file: {} ---\n{}", e.file, e.diff))
             .collect::<Vec<_>>()
             .join("\n\n");

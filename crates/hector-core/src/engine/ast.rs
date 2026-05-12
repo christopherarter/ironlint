@@ -11,11 +11,12 @@ pub struct AstEngine;
 
 impl RuleEngine for AstEngine {
     fn run(&self, ctx: &RuleContext) -> Result<Option<Violation>> {
-        let pattern_str = ctx
-            .rule
-            .pattern
-            .as_ref()
-            .ok_or_else(|| anyhow!("rule {} is engine: ast but has no `pattern:` field", ctx.rule_id))?;
+        let pattern_str = ctx.rule.pattern.as_ref().ok_or_else(|| {
+            anyhow!(
+                "rule {} is engine: ast but has no `pattern:` field",
+                ctx.rule_id
+            )
+        })?;
         let lang_name = ctx
             .rule
             .language

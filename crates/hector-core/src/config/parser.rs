@@ -16,8 +16,8 @@ pub fn parse_str(input: &str) -> Result<Config> {
 }
 
 pub fn parse_file(path: &std::path::Path) -> Result<Config> {
-    let content = std::fs::read_to_string(path)
-        .with_context(|| format!("reading {}", path.display()))?;
+    let content =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     parse_str(&content)
 }
 

@@ -32,15 +32,51 @@ fn parse_disable_directives(line: &str) -> Vec<String> {
     let mut rest = line;
     while let Some(idx) = rest.find(marker) {
         let after = &rest[idx + marker.len()..];
-        let trimmed = after.trim_start();
-        let end = trimmed
-            .find(|c: char| c.is_whitespace() || c == '*' || c == '/')
-            .unwrap_or(trimmed.len());
-        let rule_id = &trimmed[..end];
-        if !rule_id.is_empty() {
-            out.push(rule_id.to_string());
-        }
-        rest = &after[end..];
+        let (ids, consumed) = collect_rule_ids(after);
+        out.extend(ids);
+        rest = &after[consumed..];
     }
     out
+}
+
+/// Collect comma- or whitespace-separated rule IDs after `hector-disable:`.
+/// Stops at end-of-input, the literal token `reason:`, or any `*`/`/` terminator
+/// (block-comment closers). Returns the rule IDs and the number of bytes consumed
+/// from `s` so the outer loop can continue scanning for additional directives.
+fn collect_rule_ids(s: &str) -> (Vec<String>, usize) {
+    let mut ids = Vec::new();
+    let mut i = 0;
+    let bytes = s.as_bytes();
+    while i < bytes.len() {
+        let c = bytes[i] as char;
+        if c.is_whitespace() || c == ',' {
+            i += 1;
+            continue;
+        }
+        if c == '*' || c == '/' {
+            break;
+        }
+        // Start of a token. Find its end.
+        let start = i;
+        while i < bytes.len() {
+            let c = bytes[i] as char;
+            if c.is_whitespace() || c == ',' || c == '*' || c == '/' {
+                break;
+            }
+            i += 1;
+        }
+        let token = &s[start..i];
+        // Strip trailing punctuation defensively (e.g. semicolons), though the
+        // walker above already excludes `,` from token bodies.
+        let token = token.trim_end_matches([',', ';']);
+        if token.is_empty() {
+            continue;
+        }
+        // The `reason:` keyword terminates the rule-id list. Don't push it.
+        if token == "reason:" {
+            break;
+        }
+        ids.push(token.to_string());
+    }
+    (ids, i)
 }

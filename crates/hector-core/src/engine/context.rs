@@ -26,7 +26,10 @@ pub fn expand_context(
             let p = file.ok_or_else(|| anyhow!("context: repo requires a file as anchor"))?;
             let content = std::fs::read_to_string(p)?;
             // Full repo expansion (file + 2-hop imports) deferred. For 0.1b, repo == file with note.
-            Ok((content, Some("(repo-context expansion deferred; using file content only)".to_string())))
+            Ok((
+                content,
+                Some("(repo-context expansion deferred; using file content only)".to_string()),
+            ))
         }
     }
 }

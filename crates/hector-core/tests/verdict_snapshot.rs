@@ -20,7 +20,7 @@ fn verdict_block_serializes_to_canonical_json() {
         passed_checks: vec!["no-as-any".into(), "test-coverage-on-auth".into()],
         elapsed_ms: 1340,
     };
-    insta::assert_json_snapshot!(v);
+    insta::assert_json_snapshot!(v, { ".hector_version" => "[VERSION]" });
 }
 
 #[test]
@@ -33,7 +33,7 @@ fn verdict_pass_with_no_violations() {
         passed_checks: vec!["no-console-log".into()],
         elapsed_ms: 12,
     };
-    insta::assert_json_snapshot!(v);
+    insta::assert_json_snapshot!(v, { ".hector_version" => "[VERSION]" });
 }
 
 #[test]
@@ -54,5 +54,5 @@ fn verdict_warn_from_violations() {
         55,
     );
     assert_eq!(v.status, Status::Warn);
-    insta::assert_json_snapshot!(v);
+    insta::assert_json_snapshot!(v, { ".hector_version" => "[VERSION]" });
 }

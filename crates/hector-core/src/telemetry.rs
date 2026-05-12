@@ -18,10 +18,7 @@ pub fn append(path: &Path, entry: &LogEntry) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let mut file = OpenOptions::new()
-        .append(true)
-        .create(true)
-        .open(path)?;
+    let mut file = OpenOptions::new().append(true).create(true).open(path)?;
     let line = serde_json::to_string(entry)?;
     writeln!(file, "{line}")?;
     Ok(())
