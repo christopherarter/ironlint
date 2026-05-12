@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. CLAUDE.md rule: every bugfix starts with a failing test — the failing test becomes the regression coverage.
 
-**Goal:** Land fixes for all 44 findings in `docs/2026-05-12-bug-audit.md` (10 P0 + 12 P1 + 22 P2), ordered so production breakage and the RCE chain land first, the verdict-shape changes land before the 0.3 freeze, and P2 cleanup ships incrementally.
+**Goal:** Land fixes for all 44 findings in `docs/audits/2026-05-12-bug-audit.md` (10 P0 + 12 P1 + 22 P2), ordered so production breakage and the RCE chain land first, the verdict-shape changes land before the 0.3 freeze, and P2 cleanup ships incrementally.
 
 **Architecture:** Phase-ordered. Phase 0 unblocks every downstream phase. Phases 1–4 close P0s. Phase 5 settles the verdict shape before freeze. Phases 6–7 close P1s. Phase 8 is parallel P2 cleanup. Within each phase, tasks are tagged `[parallel]` or `[serial]` based on file-conflict graph so a coordinator can fan out subagents safely.
 
@@ -1832,7 +1832,7 @@ After all phases are merged:
 - [ ] `cargo insta test` then `cargo insta review` (snapshots should be intentional after Phase 5)
 - [ ] Manual end-to-end: in a temp project with absolute paths, run the Claude Code adapter against a synthetic edit; assert a rule fires that previously didn't.
 - [ ] Run the dogfood `scripts/dogfood.sh` if it exists; assert exit 0 on a clean tree and exit 2 on a planted violation.
-- [ ] Re-read `docs/2026-05-12-bug-audit.md` and confirm every finding is closed. The "Rejected first-pass claims" section needs no action.
+- [ ] Re-read `docs/audits/2026-05-12-bug-audit.md` and confirm every finding is closed. The "Rejected first-pass claims" section needs no action.
 
 ---
 
