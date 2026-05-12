@@ -112,6 +112,17 @@ fn two_warnings_aggregate_to_warn_status() {
 }
 
 #[test]
+fn verdict_pass_constructor_returns_canonical_empty_verdict() {
+    let v = Verdict::pass();
+    assert_eq!(v.schema_version, SCHEMA_VERSION);
+    assert_eq!(v.status, Status::Pass);
+    assert!(v.violations.is_empty());
+    assert!(v.passed_checks.is_empty());
+    assert_eq!(v.elapsed_ms, 0);
+    assert_eq!(v.hector_version, env!("CARGO_PKG_VERSION"));
+}
+
+#[test]
 fn verdict_warn_from_violations() {
     let v = Verdict::from_violations(
         vec![Violation {
