@@ -1,5 +1,5 @@
 use hector_core::config::LlmConfig;
-use hector_core::llm::build_from_config;
+use hector_core::llm::{build_from_config, parse_verdicts, RuleStatus};
 use hector_core::runner::{CheckInput, HectorEngine};
 use hector_core::verdict::Status;
 use std::fs;
@@ -130,4 +130,49 @@ async fn hector_engine_load_auto_wires_llm_from_config() {
         "passed_checks should contain r1: {:?}",
         verdict.passed_checks
     );
+}
+
+// ---- P1-5: parse_verdicts must error on unknown status, not silently emit
+// a violation. Status matching is case-insensitive so models that emit
+// "Pass" / "PASS" / "Violation" still parse.
+
+#[test]
+fn parse_verdicts_returns_err_on_unknown_status() {
+    let body = r#"[{"rule_id": "r1", "status": "NEEDS_REVIEW"}]"#;
+    let err =
+        parse_verdicts(body).expect_err("unknown status must error, not yield a silent violation");
+    let s = format!("{err:#}");
+    assert!(
+        s.contains("NEEDS_REVIEW") || s.contains("unknown"),
+        "error must mention the bad status; got: {s}"
+    );
+    assert!(
+        s.contains("r1"),
+        "error should identify the offending rule id; got: {s}"
+    );
+}
+
+#[test]
+fn parse_verdicts_lowercases_status() {
+    // "pass", "PASS", and "Pass" must all parse as RuleStatus::Pass after
+    // case-insensitive matching. Likewise for "violation" / "VIOLATION".
+    let body = r#"[
+        {"rule_id":"r1","status":"pass"},
+        {"rule_id":"r2","status":"PASS"},
+        {"rule_id":"r3","status":"Pass"},
+        {"rule_id":"r4","status":"Violation","message":"bad"},
+        {"rule_id":"r5","status":"VIOLATION","message":"also bad","line":7}
+    ]"#;
+    let v = parse_verdicts(body).expect("all casings should parse");
+    assert!(matches!(v[0].status, RuleStatus::Pass));
+    assert!(matches!(v[1].status, RuleStatus::Pass));
+    assert!(matches!(v[2].status, RuleStatus::Pass));
+    assert!(matches!(v[3].status, RuleStatus::Violation { .. }));
+    match &v[4].status {
+        RuleStatus::Violation { message, line } => {
+            assert_eq!(message, "also bad");
+            assert_eq!(*line, Some(7));
+        }
+        other => panic!("expected Violation, got {other:?}"),
+    }
 }

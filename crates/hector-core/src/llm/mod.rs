@@ -110,7 +110,7 @@ struct WireVerdict {
 ///
 /// Tolerates extra prose around the array (some models wrap it in markdown
 /// fences or a sentence).
-pub(crate) fn parse_verdicts(text: &str) -> Result<Vec<RuleVerdict>> {
+pub fn parse_verdicts(text: &str) -> Result<Vec<RuleVerdict>> {
     let trimmed = text.trim();
     let start = trimmed
         .find('[')
@@ -121,21 +121,23 @@ pub(crate) fn parse_verdicts(text: &str) -> Result<Vec<RuleVerdict>> {
     let json = &trimmed[start..=end];
     let wire: Vec<WireVerdict> =
         serde_json::from_str(json).with_context(|| format!("parse verdict JSON: {json}"))?;
-    Ok(wire
-        .into_iter()
-        .map(|w| RuleVerdict {
-            rule_id: w.rule_id,
-            status: match w.status.as_str() {
-                "pass" => RuleStatus::Pass,
-                "violation" => RuleStatus::Violation {
-                    message: w.message.unwrap_or_default(),
-                    line: w.line,
-                },
-                other => RuleStatus::Violation {
-                    message: format!("unknown status from LLM: {other}"),
-                    line: None,
-                },
+    let mut out = Vec::with_capacity(wire.len());
+    for w in wire {
+        let status = match w.status.to_ascii_lowercase().as_str() {
+            "pass" => RuleStatus::Pass,
+            "violation" => RuleStatus::Violation {
+                message: w.message.unwrap_or_default(),
+                line: w.line,
             },
-        })
-        .collect())
+            other => bail!(
+                "unknown LLM status `{other}` for rule `{}`; expected `pass` or `violation`",
+                w.rule_id
+            ),
+        };
+        out.push(RuleVerdict {
+            rule_id: w.rule_id,
+            status,
+        });
+    }
+    Ok(out)
 }
