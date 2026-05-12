@@ -50,7 +50,7 @@ fn load_missing_path_returns_default() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("does_not_exist.json");
     let b = Baseline::load(&path).expect("missing path is OK");
-    assert!(b.fingerprints.is_empty());
+    assert!(b.entries.is_empty());
 }
 
 #[test]

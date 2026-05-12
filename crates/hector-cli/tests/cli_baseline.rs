@@ -144,11 +144,11 @@ fn baseline_skips_gitignored_and_target_dirs() {
     let baseline: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(root.join(".hector/baseline.json")).unwrap())
             .unwrap();
-    let fps = baseline["fingerprints"].as_array().unwrap();
-    let printed: Vec<String> = fps
-        .iter()
-        .map(|v| v.as_str().unwrap().to_string())
-        .collect();
+    // E1: on-disk shape switched from `fingerprints: [string]` to
+    // `entries: { string: option<string> }`. The keys are still the
+    // tuple-fingerprint strings.
+    let entries = baseline["entries"].as_object().unwrap();
+    let printed: Vec<String> = entries.keys().cloned().collect();
     assert!(
         printed.iter().any(|f| f.contains("src/foo.rs")),
         "src/foo.rs must be baselined: {printed:?}"

@@ -67,7 +67,7 @@ pub fn run(config: &Path, scan_glob: Option<String>) -> Result<i32> {
     println!(
         "baseline written: {} ({} entries)",
         baseline_path.display(),
-        baseline.fingerprints.len()
+        baseline.entries.len()
     );
     Ok(0)
 }
