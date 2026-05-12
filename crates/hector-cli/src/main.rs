@@ -13,6 +13,7 @@ fn main() -> Result<()> {
         }
         Command::Trust { config } => commands::trust::run(&config)?,
         Command::Validate { config } => commands::validate::run(&config)?,
+        Command::Init { dir } => commands::init::run(&dir)?,
     };
     std::process::exit(code);
 }

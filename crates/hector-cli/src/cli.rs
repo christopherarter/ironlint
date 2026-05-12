@@ -31,6 +31,11 @@ pub enum Command {
         #[arg(long, default_value = ".hector.yml")]
         config: PathBuf,
     },
+    /// Detect stack and scaffold a starter .hector.yml
+    Init {
+        #[arg(long, default_value = ".")]
+        dir: PathBuf,
+    },
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
