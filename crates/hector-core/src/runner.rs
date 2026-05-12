@@ -3,8 +3,31 @@ use crate::config::{Config, EngineKind, Rule};
 use crate::engine::{RuleContext, RuleEngine};
 use crate::verdict::{Verdict, Violation};
 use anyhow::{Context, Result};
+use rayon::prelude::*;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
+
+/// Per-rule evaluation result, before the runner-level baseline pass.
+///
+/// `passed` is `Some(rule_id)` when the rule produced no emitted violations
+/// (no match, no engine output, or every match suppressed by a disable
+/// directive); `None` otherwise. Splitting passed/violations from one
+/// `Result<Vec<Violation>>` keeps the parallel `collect` straightforward.
+struct RuleOutcome {
+    violations: Vec<Violation>,
+    passed: Option<String>,
+}
+
+/// Per-file inputs reused across every rule evaluation in one `check()`
+/// call. Bundled into a single struct so `evaluate_one_rule` stays under
+/// the workspace's argument-count lint.
+struct CheckInputs<'a> {
+    match_path: &'a Path,
+    path: &'a Path,
+    content: &'a str,
+    diff: &'a str,
+    disable_map: &'a crate::disable::DisableMap,
+}
 
 pub struct HectorEngine {
     config: Config,
@@ -133,6 +156,163 @@ impl HectorEngine {
         })
     }
 
+    /// Build a rayon thread pool sized by the precedence:
+    /// `HECTOR_MAX_WORKERS` env → `config.execution.max_workers` →
+    /// `min(8, num_cpus::get())`. A zero or unparseable env value falls back
+    /// to the next layer; a zero config value falls back to the default.
+    /// The final value is clamped to `>= 1` because `num_threads(0)` panics
+    /// in rayon.
+    fn execution_pool(&self) -> rayon::ThreadPool {
+        let env = std::env::var("HECTOR_MAX_WORKERS")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .filter(|n| *n > 0);
+        let cfg = self
+            .config
+            .execution
+            .as_ref()
+            .map(|e| e.max_workers)
+            .filter(|n| *n > 0);
+        let default = std::cmp::min(8, num_cpus::get().max(1));
+        let n = env.or(cfg).unwrap_or(default).max(1);
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(n)
+            .build()
+            .expect("rayon pool construction must not fail")
+    }
+
+    /// Evaluate a single rule against a single file. Pure helper extracted
+    /// so the parallel dispatch in `check()` can `par_iter().map(…)` over
+    /// it. Owns nothing — every input is borrowed; output is two owned
+    /// collections that merge cleanly via `extend`/`push` post-iteration.
+    fn evaluate_one_rule(
+        &self,
+        rule_id: &str,
+        rule: &Rule,
+        inputs: &CheckInputs<'_>,
+    ) -> RuleOutcome {
+        let matcher = crate::config::scope::ScopeMatcher::new(&rule.scope)
+            .expect("scope validated at load");
+        if !matcher.matches(inputs.match_path) {
+            return RuleOutcome {
+                violations: vec![],
+                passed: None,
+            };
+        }
+        // A3: short-circuit semantic dispatch when the diff cannot
+        // plausibly match — see `try_semantic_skip`.
+        if self.try_semantic_skip(rule_id, rule, inputs.path, inputs.diff) {
+            return RuleOutcome {
+                violations: vec![],
+                passed: Some(rule_id.to_string()),
+            };
+        }
+        let ctx = RuleContext {
+            rule_id,
+            rule,
+            file: inputs.path,
+            content: if inputs.content.is_empty() {
+                None
+            } else {
+                Some(inputs.content)
+            },
+            diff: if inputs.diff.is_empty() {
+                None
+            } else {
+                Some(inputs.diff)
+            },
+            cwd: &self.config_dir,
+            llm: self.llm.as_deref(),
+        };
+        let outcome: Result<Vec<Violation>> = match rule.engine {
+            EngineKind::Script => crate::engine::script::ScriptEngine.run(&ctx),
+            EngineKind::Ast => crate::engine::ast::AstEngine.run(&ctx),
+            EngineKind::Semantic => crate::engine::semantic::SemanticEngine.run(&ctx),
+            // Session is dispatched via `check_session`, not the per-file
+            // path; treat it as a pass here.
+            _ => Ok(Vec::new()),
+        };
+        Self::merge_engine_outcome(rule_id, inputs, outcome)
+    }
+
+    /// Post-process the engine's `Result<Vec<Violation>>` into a `RuleOutcome`.
+    /// Applies disable-directive suppression and converts engine errors into
+    /// `Engine::Internal` violations. Split out of `evaluate_one_rule` to
+    /// keep the per-rule cognitive complexity well below the workspace cap.
+    fn merge_engine_outcome(
+        rule_id: &str,
+        inputs: &CheckInputs<'_>,
+        outcome: Result<Vec<Violation>>,
+    ) -> RuleOutcome {
+        match outcome {
+            // P1-11: the engine may return many violations (AST emits one
+            // per match). Walk the vec, apply per-violation disable
+            // directives, and only record the rule as passed if every match
+            // was suppressed (or there were none to begin with).
+            Ok(vs) if vs.is_empty() => RuleOutcome {
+                violations: vec![],
+                passed: Some(rule_id.to_string()),
+            },
+            Ok(vs) => Self::apply_disables(rule_id, inputs.disable_map, vs),
+            Err(e) => {
+                // P1-1: engine runtime errors are Engine::Internal, not
+                // Engine::Trust. Trust failures halt at load time and never
+                // reach this arm.
+                let v = Violation {
+                    rule_id: format!("{rule_id}__internal"),
+                    severity: crate::verdict::Severity::Error,
+                    engine: crate::verdict::Engine::Internal,
+                    file: inputs.path.display().to_string(),
+                    line: None,
+                    column: None,
+                    message: format!("{e:#}"),
+                    suggestion: None,
+                    context: None,
+                };
+                RuleOutcome {
+                    violations: vec![v],
+                    passed: None,
+                }
+            }
+        }
+    }
+
+    /// Walk the engine's emitted violations, dropping any that match a
+    /// `hector-disable:` directive. P1-2: script/semantic emit file-level
+    /// violations with `line: None`, so we honour file-wide disable
+    /// directives anywhere in the file in that case.
+    fn apply_disables(
+        rule_id: &str,
+        disable_map: &crate::disable::DisableMap,
+        vs: Vec<Violation>,
+    ) -> RuleOutcome {
+        let mut kept: Vec<Violation> = Vec::new();
+        let mut any_emitted = false;
+        for v in vs {
+            let disabled = match v.line {
+                Some(line) => disable_map.is_disabled(line, rule_id),
+                None => disable_map.is_disabled_file_wide(rule_id),
+            };
+            if disabled {
+                continue;
+            }
+            kept.push(v);
+            any_emitted = true;
+        }
+        let passed = if any_emitted {
+            None
+        } else {
+            // Every match was suppressed by a disable directive — treat the
+            // rule as passing for this file so it shows up in
+            // `passed_checks` and telemetry.
+            Some(rule_id.to_string())
+        };
+        RuleOutcome {
+            violations: kept,
+            passed,
+        }
+    }
+
     // Central orchestration: input-mode normalization, skip short-circuit,
     // four-engine dispatch, telemetry. Decomposing further would split the
     // flow across helpers without making any individual piece easier to
@@ -195,84 +375,38 @@ impl HectorEngine {
 
         let match_path = relativize(&path, &self.config_dir);
 
-        for (rule_id, rule) in &self.config.rules {
-            let matcher = crate::config::scope::ScopeMatcher::new(&rule.scope)
-                .expect("scope validated at load");
-            if !matcher.matches(&match_path) {
-                continue;
-            }
-            // A3: short-circuit semantic dispatch when the diff cannot
-            // plausibly match — see `try_semantic_skip`.
-            if self.try_semantic_skip(rule_id, rule, &path, &diff) {
-                passed.push(rule_id.clone());
-                continue;
-            }
-            let ctx = RuleContext {
-                rule_id,
-                rule,
-                file: &path,
-                content: if content.is_empty() {
-                    None
-                } else {
-                    Some(&content)
-                },
-                diff: if diff.is_empty() { None } else { Some(&diff) },
-                cwd: &self.config_dir,
-                llm: self.llm.as_deref(),
-            };
-            let outcome: Result<Vec<Violation>> = match rule.engine {
-                EngineKind::Script => crate::engine::script::ScriptEngine.run(&ctx),
-                EngineKind::Ast => crate::engine::ast::AstEngine.run(&ctx),
-                EngineKind::Semantic => crate::engine::semantic::SemanticEngine.run(&ctx),
-                // Session is dispatched via `check_session`, not the per-file
-                // path; treat it as a pass here.
-                _ => Ok(Vec::new()),
-            };
-            match outcome {
-                // P1-11: the engine may return many violations (AST emits one
-                // per match). Walk the vec, apply per-violation disable
-                // directives, and only record the rule as passed if every
-                // match was suppressed (or there were none to begin with).
-                Ok(vs) if vs.is_empty() => passed.push(rule_id.clone()),
-                Ok(vs) => {
-                    let mut any_emitted = false;
-                    for v in vs {
-                        // P1-2: script/semantic emit file-level violations
-                        // with `line: None`. Honor `hector-disable:`
-                        // directives anywhere in the file in that case.
-                        let disabled = match v.line {
-                            Some(line) => disable_map.is_disabled(line, rule_id),
-                            None => disable_map.is_disabled_file_wide(rule_id),
-                        };
-                        if disabled {
-                            continue;
-                        }
-                        violations.push(v);
-                        any_emitted = true;
-                    }
-                    if !any_emitted {
-                        // Every match was suppressed by a disable directive —
-                        // treat the rule as passing for this file so it shows
-                        // up in `passed_checks` and telemetry.
-                        passed.push(rule_id.clone());
-                    }
-                }
-                Err(e) => {
-                    // P1-1: engine runtime errors are Engine::Internal, not
-                    // Engine::Trust. Trust failures halt at load time and
-                    // never reach this arm.
-                    violations.push(Violation {
-                        rule_id: format!("{rule_id}__internal"),
-                        severity: crate::verdict::Severity::Error,
-                        engine: crate::verdict::Engine::Internal,
-                        file: path.display().to_string(),
-                        line: None,
-                        column: None,
-                        message: format!("{e:#}"),
-                        suggestion: None,
-                        context: None,
-                    });
-                }
+        let inputs = CheckInputs {
+            match_path: &match_path,
+            path: &path,
+            content: &content,
+            diff: &diff,
+            disable_map: &disable_map,
+        };
+
+        // B1: dispatch rules in parallel. Output order matches input
+        // (`BTreeMap` key order) — `par_iter().collect::<Vec<_>>()` is
+        // deterministic. Single-rule configs skip pool construction entirely.
+        let outcomes: Vec<RuleOutcome> = if self.config.rules.len() <= 1 {
+            self.config
+                .rules
+                .iter()
+                .map(|(rule_id, rule)| self.evaluate_one_rule(rule_id, rule, &inputs))
+                .collect()
+        } else {
+            let pool = self.execution_pool();
+            let rules: Vec<(&String, &Rule)> = self.config.rules.iter().collect();
+            pool.install(|| {
+                rules
+                    .par_iter()
+                    .map(|(rule_id, rule)| self.evaluate_one_rule(rule_id, rule, &inputs))
+                    .collect()
+            })
+        };
+
+        for outcome in outcomes {
+            violations.extend(outcome.violations);
+            if let Some(id) = outcome.passed {
+                passed.push(id);
             }
         }
 

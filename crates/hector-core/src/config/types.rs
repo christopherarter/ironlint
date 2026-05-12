@@ -17,9 +17,11 @@ pub struct Config {
     pub rules: BTreeMap<String, Rule>,
 }
 
-/// Optional execution-tuning block. Controls the rayon pool that dispatches
-/// rules in parallel during `HectorEngine::check`. Absence = use the default
-/// of `min(8, num_cpus::get())`. The `HECTOR_MAX_WORKERS` env var overrides
+/// Optional execution-tuning block.
+///
+/// Controls the rayon pool that dispatches rules in parallel during
+/// `HectorEngine::check`. Absence = use the default of
+/// `min(8, num_cpus::get())`. The `HECTOR_MAX_WORKERS` env var overrides
 /// any value set here.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecutionConfig {
