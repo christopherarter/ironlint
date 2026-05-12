@@ -145,6 +145,43 @@ async fn openai_compat_returns_err_on_http_500() {
 }
 
 #[tokio::test]
+async fn openai_compat_error_body_is_truncated_and_redacted() {
+    // P2-15: openai-compat servers (Ollama, OpenRouter, debug proxies) may
+    // echo Authorization headers or keys back into 5xx bodies. Truncate + redact.
+    let server = MockServer::start().await;
+    let leaky = "error: Bearer sk-1234567890abcdef and more text".to_string()
+        + &"x".repeat(500);
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(500).set_body_string(leaky))
+        .mount(&server)
+        .await;
+    let base_url = server.uri();
+    let result = tokio::task::spawn_blocking(move || {
+        let client = OpenAICompatClient::new("test-key", "gpt-4o-mini", base_url);
+        let rule = make_semantic_rule();
+        client.evaluate(&[("r1", &rule)], "x", None)
+    })
+    .await
+    .unwrap();
+    let err = result.expect_err("non-2xx must error");
+    let s = format!("{err:#}");
+    assert!(
+        !s.contains("sk-1234567890abcdef"),
+        "raw API key must not appear in error: {s}"
+    );
+    assert!(
+        !s.to_lowercase().contains("bearer sk-"),
+        "raw Bearer token must be redacted: {s}"
+    );
+    assert!(
+        s.len() < 600,
+        "error body must be truncated; got {} chars",
+        s.len()
+    );
+}
+
+#[tokio::test]
 async fn openai_compat_returns_err_on_malformed_text() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))

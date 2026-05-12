@@ -85,7 +85,11 @@ impl LlmClient for AnthropicClient {
         if !response.status().is_success() {
             let status = response.status();
             let text = response.text().unwrap_or_default();
-            return Err(anyhow!("anthropic returned {status}: {text}"));
+            // P2-15: a misconfigured debug proxy or echo endpoint may return
+            // our own Bearer/API key in the body. Truncate to a debug-sized
+            // slice and redact secret-shaped tokens before bubbling up.
+            let safe = super::sanitize_error_body(&text);
+            return Err(anyhow!("anthropic returned {status}: {safe}"));
         }
         let message: Message = response.json().context("parse anthropic response")?;
         let text = message

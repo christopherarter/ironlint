@@ -102,6 +102,43 @@ async fn anthropic_returns_err_on_http_500() {
 }
 
 #[tokio::test]
+async fn anthropic_error_body_is_truncated_and_redacted() {
+    // P2-15: when the endpoint echoes a Bearer token or API key in its 5xx body,
+    // we must not propagate the raw secret. Truncate to ~200 chars and redact.
+    let server = MockServer::start().await;
+    let leaky = "error: Bearer sk-1234567890abcdef and more text".to_string()
+        + &"x".repeat(500);
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(500).set_body_string(leaky))
+        .mount(&server)
+        .await;
+    let base_url = server.uri();
+    let rule = make_semantic_rule();
+    let result = tokio::task::spawn_blocking(move || {
+        let client = AnthropicClient::new("test-key", "claude-sonnet-4-6", Some(base_url));
+        client.evaluate(&[("r1", &rule)], "x", None)
+    })
+    .await
+    .unwrap();
+    let err = result.expect_err("non-2xx must error");
+    let s = format!("{err:#}");
+    assert!(
+        !s.contains("sk-1234567890abcdef"),
+        "raw API key must not appear in error: {s}"
+    );
+    assert!(
+        !s.to_lowercase().contains("bearer sk-"),
+        "raw Bearer token must be redacted: {s}"
+    );
+    assert!(
+        s.len() < 600,
+        "error body must be truncated; got {} chars",
+        s.len()
+    );
+}
+
+#[tokio::test]
 async fn anthropic_returns_err_on_malformed_text_json() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))

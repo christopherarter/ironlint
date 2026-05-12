@@ -6,7 +6,9 @@ pub mod prompt;
 
 use crate::config::{LlmConfig, Rule};
 use anyhow::{anyhow, bail, Context, Result};
+use regex::Regex;
 use serde::Deserialize;
+use std::sync::LazyLock;
 
 pub use anthropic::AnthropicClient;
 pub use openai_compat::OpenAICompatClient;
@@ -94,6 +96,36 @@ fn read_api_key(cfg: &LlmConfig) -> Option<String> {
     }
 }
 
+/// Maximum response-body slice (in *characters*, not bytes) we include in an
+/// error message. A misbehaving endpoint can return megabytes; we only need
+/// enough context to debug the failure.
+const ERROR_BODY_CHAR_BUDGET: usize = 200;
+
+/// Pre-compiled key/token patterns. ASCII-safe; `LazyLock` so we pay the
+/// regex-build cost at most once per process.
+static SECRET_KEY_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?:sk|pk|api)-[A-Za-z0-9_-]{8,}").unwrap());
+static BEARER_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)bearer\s+[A-Za-z0-9_.\-]+").unwrap());
+
+/// Mask common secret shapes (sk-/pk-/api- prefixed keys, `Bearer <token>`)
+/// inside an arbitrary string. Used to scrub LLM-endpoint error bodies before
+/// they bubble up through `anyhow` (P2-15): a debug proxy or misconfigured
+/// server can echo the caller's API key back in the response.
+pub(crate) fn redact_secrets(s: &str) -> String {
+    let first = SECRET_KEY_RE.replace_all(s, "[REDACTED]");
+    let second = BEARER_RE.replace_all(&first, "[REDACTED]");
+    second.into_owned()
+}
+
+/// Truncate an error body to [`ERROR_BODY_CHAR_BUDGET`] chars (counted as
+/// Unicode scalars, so we never split a multi-byte sequence) and then redact
+/// any secret-like tokens inside the slice.
+pub(crate) fn sanitize_error_body(body: &str) -> String {
+    let truncated: String = body.chars().take(ERROR_BODY_CHAR_BUDGET).collect();
+    redact_secrets(&truncated)
+}
+
 // ---- Wire-format helpers shared by Anthropic + OpenAI-compat clients ----
 
 #[derive(Debug, Deserialize)]
@@ -140,4 +172,61 @@ pub fn parse_verdicts(text: &str) -> Result<Vec<RuleVerdict>> {
         });
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod redact_tests {
+    use super::{redact_secrets, sanitize_error_body, ERROR_BODY_CHAR_BUDGET};
+
+    #[test]
+    fn redacts_sk_prefixed_api_keys() {
+        let out = redact_secrets("token=sk-1234567890abcdef trailing");
+        assert!(!out.contains("sk-1234567890abcdef"), "got: {out}");
+        assert!(out.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn redacts_pk_and_api_prefixes() {
+        let out = redact_secrets("pk-ABCDEFGHIJ and api-XYZ12345678");
+        assert!(!out.contains("pk-ABCDEFGHIJ"));
+        assert!(!out.contains("api-XYZ12345678"));
+    }
+
+    #[test]
+    fn redacts_bearer_tokens_case_insensitive() {
+        let out = redact_secrets("Authorization: BEARER abc.DEF-123_xyz");
+        assert!(!out.to_lowercase().contains("bearer abc"));
+        assert!(out.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn leaves_innocuous_text_untouched() {
+        let s = "no secrets here, just words";
+        assert_eq!(redact_secrets(s), s);
+    }
+
+    #[test]
+    fn sanitize_truncates_to_char_budget() {
+        let huge = "x".repeat(5_000);
+        let out = sanitize_error_body(&huge);
+        assert_eq!(out.chars().count(), ERROR_BODY_CHAR_BUDGET);
+    }
+
+    #[test]
+    fn sanitize_handles_multibyte_at_boundary() {
+        // 220 "é" characters (2 bytes each). Truncation must respect char
+        // boundaries — splitting a UTF-8 sequence would panic on `String::from`.
+        let s: String = "é".repeat(220);
+        let out = sanitize_error_body(&s);
+        assert_eq!(out.chars().count(), ERROR_BODY_CHAR_BUDGET);
+    }
+
+    #[test]
+    fn sanitize_truncates_then_redacts() {
+        let leaky = format!("Bearer sk-supersecret-token {}", "x".repeat(500));
+        let out = sanitize_error_body(&leaky);
+        assert!(!out.contains("sk-supersecret-token"), "got: {out}");
+        assert!(out.contains("[REDACTED]"));
+        assert!(out.chars().count() <= ERROR_BODY_CHAR_BUDGET);
+    }
 }

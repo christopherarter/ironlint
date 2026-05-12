@@ -20,6 +20,7 @@ tokio.workspace = true
 chrono.workspace = true
 wait-timeout = "0.2"
 fs4.workspace = true
+regex.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 nix.workspace = true

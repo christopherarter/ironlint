@@ -90,7 +90,11 @@ impl LlmClient for OpenAICompatClient {
         if !response.status().is_success() {
             let status = response.status();
             let text = response.text().unwrap_or_default();
-            return Err(anyhow!("openai-compat server returned {status}: {text}"));
+            // P2-15: aggregator proxies (OpenRouter, etc.) and Ollama debug
+            // builds occasionally echo the Authorization header into 5xx
+            // bodies. Truncate + redact before propagating.
+            let safe = super::sanitize_error_body(&text);
+            return Err(anyhow!("openai-compat server returned {status}: {safe}"));
         }
         let payload: ChatResponse = response.json().context("parse openai-compat response")?;
         let text = payload
