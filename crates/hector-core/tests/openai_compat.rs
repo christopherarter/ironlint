@@ -171,6 +171,39 @@ async fn openai_compat_returns_err_on_malformed_text() {
 }
 
 #[tokio::test]
+async fn openai_compat_client_times_out_on_hung_request() {
+    // P1-7: a hung OpenAI-compatible endpoint must not block the entire check call.
+    // The client builds with a 30s timeout; a 120s server delay must surface
+    // as an Err in well under that, not block indefinitely.
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200).set_delay(std::time::Duration::from_secs(120)),
+        )
+        .mount(&server)
+        .await;
+    let base_url = server.uri();
+    let start = std::time::Instant::now();
+    let result = tokio::task::spawn_blocking(move || {
+        let client = OpenAICompatClient::new("test-key", "gpt-4o-mini", base_url);
+        let rule = make_semantic_rule();
+        client.evaluate(&[("r1", &rule)], "x", None)
+    })
+    .await
+    .unwrap();
+    let elapsed = start.elapsed();
+    assert!(result.is_err(), "hung request must time out");
+    // Our wall-clock budget is 30s. Allow 5s headroom for slow CI but reject
+    // a "blocked indefinitely" failure mode where the test only returns on
+    // wiremock's 120s set_delay.
+    assert!(
+        elapsed < std::time::Duration::from_secs(35),
+        "must time out close to 30s; took {elapsed:?}"
+    );
+}
+
+#[tokio::test]
 async fn openai_compat_returns_err_when_choices_missing_content() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))

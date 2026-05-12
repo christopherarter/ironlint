@@ -131,6 +131,39 @@ async fn anthropic_returns_err_on_malformed_text_json() {
 }
 
 #[tokio::test]
+async fn anthropic_client_times_out_on_hung_request() {
+    // P1-7: a hung Anthropic endpoint must not block the entire check call.
+    // The client builds with a 30s timeout; a 120s server delay must surface
+    // as an Err in well under that, not block indefinitely.
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(
+            ResponseTemplate::new(200).set_delay(std::time::Duration::from_secs(120)),
+        )
+        .mount(&server)
+        .await;
+    let base_url = server.uri();
+    let rule = make_semantic_rule();
+    let start = std::time::Instant::now();
+    let result = tokio::task::spawn_blocking(move || {
+        let client = AnthropicClient::new("test-key", "claude-sonnet-4-6", Some(base_url));
+        client.evaluate(&[("r1", &rule)], "x", None)
+    })
+    .await
+    .unwrap();
+    let elapsed = start.elapsed();
+    assert!(result.is_err(), "hung request must time out");
+    // Our wall-clock budget is 30s. Allow 5s headroom for slow CI but reject
+    // a "blocked indefinitely" failure mode where the test only returns on
+    // wiremock's 120s set_delay.
+    assert!(
+        elapsed < std::time::Duration::from_secs(35),
+        "must time out close to 30s; took {elapsed:?}"
+    );
+}
+
+#[tokio::test]
 async fn anthropic_returns_err_on_missing_text_block() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
