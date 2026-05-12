@@ -114,6 +114,24 @@ fn log_entry_with_reason_serializes_field() {
     assert!(content.contains("\"kind\":\"semantic_skipped\""));
 }
 
+#[test]
+fn telemetry_append_with_parentless_path_returns_error() {
+    use std::path::Path;
+    let result = append(
+        Path::new(""),
+        &LogEntry {
+            timestamp: "t".into(),
+            kind: "check".into(),
+            file: "f".into(),
+            rule_id: None,
+            status: "pass".into(),
+            elapsed_ms: 0,
+            reason: None,
+        },
+    );
+    assert!(result.is_err(), "empty path must surface an error, not panic");
+}
+
 #[cfg(unix)]
 #[test]
 fn telemetry_append_errors_when_parent_uncreatable() {

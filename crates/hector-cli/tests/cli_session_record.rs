@@ -132,6 +132,32 @@ fn session_record_concurrent_writers_do_not_clobber() {
     assert_eq!(diffs, want);
 }
 
+#[cfg(unix)]
+#[test]
+fn session_record_errors_when_state_dir_uncreatable() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempdir().unwrap();
+    let file = dir.path().join("a.txt");
+    fs::write(&file, "content\n").unwrap();
+    fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o555)).unwrap();
+    let assertion = Command::cargo_bin("hector")
+        .unwrap()
+        .args([
+            "session",
+            "record",
+            "--dir",
+            dir.path().to_str().unwrap(),
+            "--file",
+            file.to_str().unwrap(),
+            "--diff",
+            "diff",
+        ])
+        .assert()
+        .failure();
+    fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o755)).unwrap();
+    assertion.stderr(predicates::str::contains("creating"));
+}
+
 #[test]
 fn session_record_fails_on_corrupt_session_file() {
     let dir = tempdir().unwrap();

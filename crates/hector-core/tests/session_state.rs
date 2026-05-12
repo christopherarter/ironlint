@@ -121,6 +121,19 @@ fn session_state_clear_is_a_noop_when_file_is_absent() {
 }
 
 #[test]
+fn session_state_save_with_parentless_path_returns_error() {
+    use std::path::Path;
+    let mut s = SessionState::new("x");
+    s.append(EditRecord {
+        file: "a".into(),
+        diff: "b".into(),
+        timestamp: "t".into(),
+    });
+    let result = s.save(Path::new(""));
+    assert!(result.is_err(), "empty path must surface an error, not panic");
+}
+
+#[test]
 fn session_state_load_surfaces_parse_error_for_invalid_json() {
     let dir = tempdir().unwrap();
     let state_path = dir.path().join("session.json");
