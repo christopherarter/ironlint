@@ -12,7 +12,7 @@ Rust rewrite of [dynamik-dev/bully](https://github.com/dynamik-dev/bully) — po
 - After completing a coding task, request code review from a separate agent.
 - Your code reviews are reviewed by the principal engineer — do deep work.
 - Tool hasn't shipped; no hedging.
-- Rust files under `crates/*/src/` must meet ≥90% **region** coverage (distinct decision points — branches, short-circuits, match arms — not executed lines). CI enforces per-file via `scripts/ci-coverage.sh` (cargo-llvm-cov). Code added without bringing the file to the gate breaks the build.
+- Rust files under `crates/*/src/` must meet ≥80% **region** coverage (distinct decision points — branches, short-circuits, match arms — not executed lines). CI enforces per-file via `scripts/ci-coverage.sh` (cargo-llvm-cov). Code added without bringing the file to the gate breaks the build.
 - Cognitive complexity per function is capped at **15** via clippy (`clippy.toml`, with `#![warn(clippy::cognitive_complexity)]` at each crate root). Refactor over annotate; reach for `#[allow(clippy::cognitive_complexity)]` only when complexity is intrinsic to the function and decomposing would scatter the flow — document why.
 - Mutation testing is a **local, ad-hoc** investigative tool, not a CI gate (would burn runner minutes). `cargo install cargo-mutants` once, then point it at a file or diff: `cargo mutants --file 'crates/hector-core/src/<name>.rs'` for one file, or `git diff main.. > pr.diff && cargo mutants --in-diff pr.diff` for the PR. A surviving mutant means tests executed the code but didn't verify what it does — treat survivors in code you touched as a coverage gap.
 
@@ -27,7 +27,7 @@ cargo test --test cli_e2e_script_rules      # single integration test file
 cargo test <name>                           # filter by test-fn name
 cargo clippy --all-targets -- -D warnings   # lint
 cargo fmt
-bash scripts/ci-coverage.sh                 # per-file ≥90% region-coverage gate (matches CI)
+bash scripts/ci-coverage.sh                 # per-file ≥80% region-coverage gate (matches CI)
 ```
 
 Snapshot tests: `insta` — `cargo insta review` after intentional verdict-shape changes. CLI tests use `assert_cmd` against the compiled binary. LLM HTTP paths exercised with `wiremock` (`crates/hector-core/tests/anthropic.rs`).

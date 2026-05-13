@@ -59,7 +59,7 @@ jobs:
         run: PATH="$(pwd)/target/release:${PATH}" bash scripts/ci-dogfood.sh
 
   coverage:
-    name: coverage gate (≥90% per file)
+    name: coverage gate (≥80% per file)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

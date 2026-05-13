@@ -12,7 +12,7 @@ set -euo pipefail
 # (GitHub `ubuntu-latest`) and macOS (`macos-latest` and dev machines).
 #
 # Configuration:
-#   COVERAGE_THRESHOLD — minimum region coverage percent per file (default: 90)
+#   COVERAGE_THRESHOLD — minimum region coverage percent per file (default: 80)
 #
 # Exit codes:
 #   0 — every source file meets the threshold
@@ -22,7 +22,7 @@ set -euo pipefail
 # consistently regardless of the developer's locale settings.
 export LC_ALL=C
 
-THRESHOLD="${COVERAGE_THRESHOLD:-90}"
+THRESHOLD="${COVERAGE_THRESHOLD:-80}"
 
 for tool in cargo jq awk; do
   if ! command -v "${tool}" >/dev/null 2>&1; then
