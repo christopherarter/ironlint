@@ -108,9 +108,7 @@ fn format_tsv(
 /// Materialize the rule list once in deterministic id order. `BTreeMap`
 /// already iterates in key order; we re-sort defensively so the output
 /// contract isn't tied to the upstream container choice.
-fn sorted_rules(
-    cfg: &hector_core::config::Config,
-) -> Vec<(&String, &hector_core::config::Rule)> {
+fn sorted_rules(cfg: &hector_core::config::Config) -> Vec<(&String, &hector_core::config::Rule)> {
     let mut v: Vec<(&String, &hector_core::config::Rule)> = cfg.rules.iter().collect();
     v.sort_by(|a, b| a.0.cmp(b.0));
     v
@@ -145,10 +143,7 @@ fn format_yaml(
 /// line above each rule entry. Detects rule entries by matching lines
 /// of the form `^  <id>:$` *inside* the `rules:` block — every rule key
 /// in `ResolvedView` is two-space-indented.
-fn annotate_yaml_with_origins(
-    body: &str,
-    origins: &BTreeMap<String, PathBuf>,
-) -> String {
+fn annotate_yaml_with_origins(body: &str, origins: &BTreeMap<String, PathBuf>) -> String {
     let mut out = String::with_capacity(body.len() + 128);
     let mut in_rules_block = false;
     for line in body.lines() {
@@ -163,10 +158,7 @@ fn annotate_yaml_with_origins(
             // spaces and a trailing colon. Anything more deeply
             // indented is a field of the rule body, not a new rule.
             if let Some(stripped) = line.strip_prefix("  ") {
-                if !stripped.starts_with(' ')
-                    && stripped.ends_with(':')
-                    && stripped.len() > 1
-                {
+                if !stripped.starts_with(' ') && stripped.ends_with(':') && stripped.len() > 1 {
                     let id = &stripped[..stripped.len() - 1];
                     if let Some(origin) = origins.get(id) {
                         out.push_str(&format!("  # origin: {}\n", origin.display()));
@@ -283,10 +275,7 @@ mod tests {
             ("zeta", rule_for(vec!["*.md"], None)),
             ("alpha", rule_for(vec!["*.rs"], None)),
         ]);
-        let origins = origins_for(vec![
-            ("alpha", "/a/.hector.yml"),
-            ("zeta", "/a/parent.yml"),
-        ]);
+        let origins = origins_for(vec![("alpha", "/a/.hector.yml"), ("zeta", "/a/parent.yml")]);
         let out = format_json(&cfg, &origins).unwrap();
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         let keys: Vec<&str> = v["rules"]

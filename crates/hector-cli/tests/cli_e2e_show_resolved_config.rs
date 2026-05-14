@@ -273,11 +273,7 @@ fn missing_config_exits_one_with_hint() {
     let absent = dir.path().join(".hector.yml");
     let out = Command::cargo_bin("hector")
         .unwrap()
-        .args([
-            "show-resolved-config",
-            "--config",
-            absent.to_str().unwrap(),
-        ])
+        .args(["show-resolved-config", "--config", absent.to_str().unwrap()])
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(1));

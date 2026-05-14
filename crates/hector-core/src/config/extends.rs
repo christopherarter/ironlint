@@ -79,11 +79,13 @@ fn merge_inherited(local: &mut Config, inherited: Config) {
     // trust block is per-config; never inherited.
 }
 
-/// C3: resolve extends and return a side-channel mapping of every
-/// surviving rule id to the canonical path of the file it was defined
-/// in. Local definitions win on collision — same semantics as
-/// [`resolve`] — and the origin map reflects that (the local file's
-/// path is recorded for any rule the local config defined directly).
+/// C3: resolve extends and return a per-rule origin map.
+///
+/// The map attributes every surviving rule id to the canonical path of
+/// the file it was defined in. Local definitions win on collision —
+/// same semantics as [`resolve`] — and the origin map reflects that
+/// (the local file's path is recorded for any rule the local config
+/// defined directly).
 ///
 /// This entry point does **not** verify trust. `show-resolved-config`
 /// is a read-only inspection command and operators reach for it
@@ -152,15 +154,16 @@ fn merge_inherited_with_origin(
         .canonicalize()
         .unwrap_or_else(|_| inherited_from.to_path_buf());
     for (id, rule) in inherited.rules {
-        if !local.rules.contains_key(&id) {
-            // Only record the inherited file as origin when the local
-            // hasn't claimed the id. The recursive walker has already
-            // recorded the *defining* file (closest ancestor); only
-            // overwrite if no entry exists.
+        // Only fill in rules the local config (or a closer ancestor)
+        // hasn't already claimed. The recursive walker has already
+        // recorded the defining file for any closer-ancestor rule; we
+        // only record an origin here when the rule is genuinely new to
+        // the merged config.
+        if let std::collections::btree_map::Entry::Vacant(slot) = local.rules.entry(id.clone()) {
             origins
-                .entry(id.clone())
+                .entry(id)
                 .or_insert_with(|| inherited_canonical.clone());
-            local.rules.insert(id, rule);
+            slot.insert(rule);
         }
     }
     if local.llm.is_none() {
