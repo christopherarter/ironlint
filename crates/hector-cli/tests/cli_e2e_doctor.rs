@@ -254,3 +254,45 @@ fn doctor_runtime_state_pass_when_hector_dir_writable() {
     assert!(s.contains("runtime_state"), "expected runtime_state row: {s}");
     assert!(s.contains("ok"), "runtime_state should pass on a fresh tempdir: {s}");
 }
+
+#[test]
+fn doctor_json_output_snapshot_for_clean_v2_config() {
+    let dir = tempdir().unwrap();
+    let home = tempdir().unwrap();
+    write_trusted(
+        dir.path(),
+        "schema_version: 2\nrules:\n  r:\n    description: \"x\"\n    engine: script\n    scope: [\"*\"]\n    severity: error\n    script: \"true\"\n",
+    );
+    let out = Command::cargo_bin("hector")
+        .unwrap()
+        .env("HOME", home.path())
+        .args([
+            "doctor",
+            "--dir", dir.path().to_str().unwrap(),
+            "--format", "json",
+        ])
+        .assert()
+        .code(0)
+        .get_output()
+        .stdout
+        .clone();
+    let mut value: serde_json::Value = serde_json::from_slice(&out)
+        .expect("doctor --format json must produce valid JSON");
+    // Redact volatile fields before snapshotting:
+    //   - hector_version: changes every release
+    //   - per-check `detail`: contains absolute paths and sizes
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert("hector_version".into(), serde_json::Value::String("[REDACTED]".into()));
+    }
+    if let Some(checks) = value.get_mut("checks").and_then(|c| c.as_array_mut()) {
+        for c in checks {
+            if let Some(o) = c.as_object_mut() {
+                o.insert("detail".into(), serde_json::Value::String("[REDACTED]".into()));
+                if o.get("remediation").is_some_and(|r| !r.is_null()) {
+                    o.insert("remediation".into(), serde_json::Value::String("[REDACTED]".into()));
+                }
+            }
+        }
+    }
+    insta::assert_json_snapshot!(value);
+}
