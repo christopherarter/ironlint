@@ -48,6 +48,7 @@ fn main() -> Result<()> {
                 diff,
                 session_id,
             } => commands::session::record(&dir, &file, &diff, session_id)?,
+            cli::SessionAction::Start { dir } => commands::session::start(&dir)?,
         },
     };
     std::process::exit(code);

@@ -104,6 +104,11 @@ pub enum SessionAction {
         #[arg(long)]
         session_id: Option<String>,
     },
+    /// Stamp a `session_init` record into the telemetry log.
+    Start {
+        #[arg(long, default_value = ".")]
+        dir: PathBuf,
+    },
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]

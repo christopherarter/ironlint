@@ -1,7 +1,32 @@
 use anyhow::{Context, Result};
 use hector_core::session_state::{EditRecord, SessionState};
+use hector_core::telemetry::{append as append_telemetry, LogEntry, SCHEMA_VERSION as TELEMETRY_SCHEMA};
 use std::fs::OpenOptions;
 use std::path::Path;
+
+/// D1: emit a `session_init` telemetry record carrying this binary's
+/// version + the telemetry schema version. Best-effort: telemetry
+/// append failures stderr-warn and do not surface as a non-zero exit
+/// (matches the runner's posture).
+fn emit_session_init(log_path: &Path) {
+    let entry = LogEntry::SessionInit {
+        ts: chrono::Utc::now().to_rfc3339(),
+        hector_version: env!("CARGO_PKG_VERSION").to_string(),
+        schema_version: TELEMETRY_SCHEMA,
+    };
+    if let Err(e) = append_telemetry(log_path, &entry) {
+        eprintln!("hector: telemetry append failed: {e:#}");
+    }
+}
+
+/// D1: stamp a `session_init` telemetry record. Each invocation appends —
+/// every `hector session start` call writes one record, matching bully's
+/// session-boundary stamping behavior.
+pub fn start(dir: &Path) -> Result<i32> {
+    let log = dir.join(".hector/log.jsonl");
+    emit_session_init(&log);
+    Ok(0)
+}
 
 pub fn record(dir: &Path, file: &Path, diff: &str, session_id: Option<String>) -> Result<i32> {
     let hector_dir = dir.join(".hector");
@@ -42,6 +67,10 @@ pub fn record(dir: &Path, file: &Path, diff: &str, session_id: Option<String>) -
     let mut state = if state_path.exists() {
         SessionState::load(&state_path)?
     } else {
+        // D1: first edit of a session — stamp a session_init alongside
+        // the session.json creation, matching bully's behavior. Failures
+        // here are best-effort: the edit record is the source of truth.
+        emit_session_init(&hector_dir.join("log.jsonl"));
         let id =
             session_id.unwrap_or_else(|| format!("session-{}", chrono::Utc::now().timestamp()));
         SessionState::new(id)
