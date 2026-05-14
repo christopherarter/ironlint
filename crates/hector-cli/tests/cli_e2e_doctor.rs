@@ -41,3 +41,82 @@ fn doctor_runs_and_reports_binary_check() {
     assert!(s.contains("binary"), "doctor output must mention the binary check: {s}");
     assert!(s.contains(env!("CARGO_PKG_VERSION")), "doctor output must include the running hector version: {s}");
 }
+
+#[test]
+fn doctor_fails_when_config_missing() {
+    let dir = tempdir().unwrap();
+    let home = tempdir().unwrap();
+    let out = Command::cargo_bin("hector")
+        .unwrap()
+        .env("HOME", home.path())
+        .args(["doctor", "--dir", dir.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1), "missing config must exit 1");
+    let s = String::from_utf8_lossy(&out.stdout);
+    assert!(s.contains("config") && s.contains("fail"), "expected a failing `config` row: {s}");
+    assert!(s.contains("hector init"), "remediation must hint at `hector init`: {s}");
+}
+
+#[test]
+fn doctor_fails_when_trust_fingerprint_broken() {
+    let dir = tempdir().unwrap();
+    let home = tempdir().unwrap();
+    // Write a config with a *wrong* trust fingerprint.
+    let cfg = dir.path().join(".hector.yml");
+    let body = "schema_version: 2\nrules:\n  r:\n    description: \"x\"\n    engine: script\n    scope: [\"*\"]\n    severity: error\n    script: \"true\"\ntrust:\n  fingerprint: sha256:0000000000000000000000000000000000000000000000000000000000000000\n";
+    fs::write(&cfg, body).unwrap();
+    let out = Command::cargo_bin("hector")
+        .unwrap()
+        .env("HOME", home.path())
+        .args(["doctor", "--dir", dir.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let s = String::from_utf8_lossy(&out.stdout);
+    assert!(s.contains("trust") && s.contains("fail"), "expected a failing `trust` row: {s}");
+    // Parses-OK before trust-FAIL: distinguish parse failures from trust failures.
+    assert!(s.contains("parses"), "parses check must still appear before trust: {s}");
+    assert!(s.contains("hector trust"), "remediation must hint at `hector trust`: {s}");
+}
+
+#[test]
+fn doctor_warns_on_legacy_schema_version_one() {
+    // schema v1 fails at the parses step (extends::resolve_trusted refuses v1
+    // before trust is verified — see config/extends.rs `peek_schema_version`).
+    // Doctor must surface that as a `parses` fail with a `hector migrate` hint.
+    let dir = tempdir().unwrap();
+    let home = tempdir().unwrap();
+    let cfg = dir.path().join(".hector.yml");
+    fs::write(&cfg, "schema_version: 1\nrules: {}\n").unwrap();
+    let out = Command::cargo_bin("hector")
+        .unwrap()
+        .env("HOME", home.path())
+        .args(["doctor", "--dir", dir.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let s = String::from_utf8_lossy(&out.stdout);
+    assert!(s.contains("hector migrate"), "v1 remediation must hint at migrate: {s}");
+}
+
+#[test]
+fn doctor_passes_on_clean_v2_config() {
+    let dir = tempdir().unwrap();
+    let home = tempdir().unwrap();
+    write_trusted(
+        dir.path(),
+        "schema_version: 2\nrules:\n  r:\n    description: \"x\"\n    engine: script\n    scope: [\"*\"]\n    severity: error\n    script: \"true\"\n",
+    );
+    let out = Command::cargo_bin("hector")
+        .unwrap()
+        .env("HOME", home.path())
+        .args(["doctor", "--dir", dir.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let s = String::from_utf8_lossy(&out.stdout);
+    for needle in ["binary", "config", "parses", "trust", "schema"] {
+        assert!(s.contains(needle), "expected `{needle}` row in: {s}");
+    }
+}
