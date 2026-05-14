@@ -61,6 +61,62 @@ pub struct RenderedPrompt {
     pub user: String,
 }
 
+/// C2: snapshot of which rules are in scope for a given file, plus any
+/// skip-pattern hit. Returned by [`HectorEngine::scope_outcomes`] and
+/// rendered by `hector explain` / `hector guide` in the CLI.
+///
+/// This is the *read-only* counterpart to `check_inner`'s scope walk. No
+/// engine runs, no LLM is constructed, no telemetry is written.
+#[derive(Debug, Clone)]
+pub struct ScopeOutcomes {
+    /// `Some(hit)` if the file matches a built-in or user skip pattern.
+    /// `explain` prints a `SKIPPED` banner first and *still* enumerates
+    /// per-rule rows so the author sees the full scope picture; `guide`
+    /// short-circuits to an empty list (skipped files have no applicable
+    /// guidance).
+    pub skip: Option<SkipHit>,
+    /// One entry per rule in the resolved (extends-merged) config, in
+    /// `BTreeMap` key order — same iteration order `check_inner` uses, so
+    /// the explain output is deterministic and bisectable against
+    /// `hector check`.
+    pub rules: Vec<RuleScopeEntry>,
+}
+
+/// C2: which skip pattern (built-in or user-supplied) matched the file.
+/// `pattern` is the *raw* glob string the matcher was built from — what
+/// the author would put in `skip:` to reproduce or override the hit.
+#[derive(Debug, Clone)]
+pub struct SkipHit {
+    pub pattern: String,
+}
+
+/// C2: per-rule scope outcome. `engine`, `severity`, and `description`
+/// are mirrored here (cheap clones of `Copy` enums + a `String`) so
+/// `guide` can render its `<rule-id> [<severity>] <description>` line
+/// without re-borrowing the engine — that lets the helper be called once
+/// and the result rendered out into either format.
+#[derive(Debug, Clone)]
+pub struct RuleScopeEntry {
+    pub rule_id: String,
+    pub engine: EngineKind,
+    pub severity: crate::config::Severity,
+    pub description: String,
+    pub scope_match: ScopeMatch,
+}
+
+/// C2: scope-match outcome for one rule against one file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScopeMatch {
+    /// File matches the rule's scope. `glob` is the *first* scope glob
+    /// that matched (deterministic — the rule's `scope:` list is iterated
+    /// in author order).
+    Match { glob: String },
+    /// File does not match any of the rule's scope globs. `scopes` is the
+    /// rule's full scope list (verbatim) so `explain` can surface them
+    /// in the `skip <rule-id> scope=<globs>` line.
+    NoMatch { scopes: Vec<String> },
+}
+
 /// Per-rule evaluation result, before the runner-level baseline pass.
 ///
 /// `passed` is `Some(rule_id)` when the rule produced no emitted violations
@@ -130,6 +186,73 @@ fn relativize(path: &std::path::Path, root: &std::path::Path) -> std::path::Path
         .strip_prefix(&canon_root)
         .map(PathBuf::from)
         .unwrap_or(canon_path)
+}
+
+/// C2: identify which raw skip glob matched a path. Mirrors the
+/// construction order in `SkipMatcher::with_built_ins` (built-ins first,
+/// user extras second) so the reported pattern matches what the author
+/// would type to reproduce the skip. Returns `None` when no pattern
+/// matches — the caller should treat that as "file is in scope for the
+/// usual rule walk." Silently returns `None` on any glob construction
+/// error, since the same globs already round-tripped through
+/// `SkipMatcher::with_built_ins` at engine load time.
+fn first_matching_skip_glob(file: &std::path::Path, extras: &[String]) -> Option<String> {
+    use globset::{Glob, GlobSetBuilder};
+    let candidates: Vec<String> = crate::config::skip::built_in_skip_globs()
+        .iter()
+        .map(|s| (*s).to_string())
+        .chain(extras.iter().cloned())
+        .collect();
+    for raw in candidates {
+        let mut b = GlobSetBuilder::new();
+        let Ok(g) = Glob::new(&raw) else {
+            continue;
+        };
+        b.add(g);
+        if !raw.contains('/') {
+            let Ok(g2) = Glob::new(&format!("**/{raw}")) else {
+                continue;
+            };
+            b.add(g2);
+        } else if let Some(prefix) = raw.strip_suffix("/**") {
+            if !prefix.is_empty() && !prefix.contains('*') {
+                let Ok(g3) = Glob::new(&format!("**/{prefix}/**")) else {
+                    continue;
+                };
+                b.add(g3);
+            }
+        }
+        let Ok(set) = b.build() else { continue };
+        if set.is_match(file) {
+            return Some(raw);
+        }
+    }
+    None
+}
+
+/// C2: walk a rule's scope list in author order and return the first
+/// glob that matches `path`. Returns `None` if no glob matches. Mirrors
+/// the right-anchored bare-pattern semantics of
+/// `crate::config::scope::ScopeMatcher` (a bare `*.py` also matches at
+/// any depth via the `**/<pattern>` form).
+fn first_matching_scope_glob(scopes: &[String], path: &std::path::Path) -> Option<String> {
+    use globset::{Glob, GlobSetBuilder};
+    for raw in scopes {
+        let mut b = GlobSetBuilder::new();
+        let Ok(g) = Glob::new(raw) else { continue };
+        b.add(g);
+        if !raw.contains('/') {
+            let Ok(g2) = Glob::new(&format!("**/{raw}")) else {
+                continue;
+            };
+            b.add(g2);
+        }
+        let Ok(set) = b.build() else { continue };
+        if set.is_match(path) {
+            return Some(raw.clone());
+        }
+    }
+    None
 }
 
 pub struct HectorEngineBuilder {
@@ -216,6 +339,51 @@ impl HectorEngine {
     /// dispatch happens.
     pub fn config_rule_ids(&self) -> impl Iterator<Item = &str> {
         self.config.rules.keys().map(|k| k.as_str())
+    }
+
+    /// C2: read-only scope walk. Returns the skip-pattern hit (if any)
+    /// and a per-rule scope outcome for every rule in the resolved config.
+    /// No engine runs; no LLM is constructed; no telemetry is written.
+    ///
+    /// Used by `hector explain <file>` and `hector guide <file>` so they
+    /// share one source of truth for "what's in scope for this path?"
+    /// with `hector check`'s dispatch loop. The path is relativized
+    /// against the config dir using the same fallback rules as the
+    /// regular check path, so an absolute `/etc/passwd` and a relative
+    /// `etc/passwd` produce the same per-rule outcome shape.
+    pub fn scope_outcomes(&self, file: &std::path::Path) -> ScopeOutcomes {
+        let match_path = relativize(file, &self.config_dir);
+
+        // Skip resolution. Mirror `load_with`'s extras assembly so the
+        // helper sees the same union of project + user-global globs.
+        let mut extras = self.config.skip.clone();
+        if let Some(home) = home_dir() {
+            let ignore_path = home.join(USER_GLOBAL_IGNORE_FILENAME);
+            if let Ok(raw) = std::fs::read_to_string(&ignore_path) {
+                extras.extend(parse_user_global_ignore(&raw));
+            }
+        }
+        let skip =
+            first_matching_skip_glob(&match_path, &extras).map(|pattern| SkipHit { pattern });
+
+        let mut rules: Vec<RuleScopeEntry> = Vec::with_capacity(self.config.rules.len());
+        for (rule_id, rule) in &self.config.rules {
+            let matched = first_matching_scope_glob(&rule.scope, &match_path);
+            let scope_match = match matched {
+                Some(glob) => ScopeMatch::Match { glob },
+                None => ScopeMatch::NoMatch {
+                    scopes: rule.scope.clone(),
+                },
+            };
+            rules.push(RuleScopeEntry {
+                rule_id: rule_id.clone(),
+                engine: rule.engine,
+                severity: rule.severity,
+                description: rule.description.clone(),
+                scope_match,
+            });
+        }
+        ScopeOutcomes { skip, rules }
     }
 
     fn load_with(
