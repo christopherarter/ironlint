@@ -67,6 +67,7 @@ pub fn run(dir: &Path, format: OutputFormat) -> Result<i32> {
         check_schema_version(&ctx),
         check_scope_globs(&ctx),
         check_engines(&ctx),
+        check_adapter(),
     ];
     let report = Report {
         hector_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -405,6 +406,78 @@ fn llm_block_status(cfg: Option<&hector_core::config::LlmConfig>) -> CheckResult
     }
 }
 
+/// Locate `~/.claude/settings.json` (honoring `HOME`/`USERPROFILE`).
+/// Returns `None` if the home dir is unresolvable or the file is absent —
+/// caller maps that to a `warn` row.
+fn load_claude_settings() -> Option<(PathBuf, serde_json::Value)> {
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))?;
+    let path = PathBuf::from(home).join(".claude").join("settings.json");
+    let raw = std::fs::read_to_string(&path).ok()?;
+    let value = serde_json::from_str(&raw).ok()?;
+    Some((path, value))
+}
+
+/// Walk the parsed `~/.claude/settings.json` looking for a PostToolUse
+/// hook whose `command` references `hector` (the binary) or a Hector
+/// adapter `hook.sh`. Returns true on first match.
+fn claude_hook_wired(settings: &serde_json::Value) -> bool {
+    let Some(post) = settings
+        .get("hooks")
+        .and_then(|h| h.get("PostToolUse"))
+        .and_then(|p| p.as_array())
+    else {
+        return false;
+    };
+    post.iter().any(|matcher_block| {
+        matcher_block
+            .get("hooks")
+            .and_then(|hs| hs.as_array())
+            .map(|hooks| {
+                hooks.iter().any(|h| {
+                    h.get("command")
+                        .and_then(|c| c.as_str())
+                        .is_some_and(|cmd| cmd.contains("hector") || cmd.contains("hook.sh"))
+                })
+            })
+            .unwrap_or(false)
+    })
+}
+
+/// Adapter presence is best-effort: missing `~/.claude/settings.json`
+/// is `warn` (not every user runs Claude Code); present-without-hector
+/// is `warn`; wired is `pass`. Never `fail` — hector is editor-agnostic
+/// and the CLI is fully usable without an adapter.
+fn check_adapter() -> CheckResult {
+    let Some((path, settings)) = load_claude_settings() else {
+        return CheckResult {
+            name: "adapter",
+            status: Status::Warn,
+            detail: "Claude Code adapter not detected (~/.claude/settings.json missing)".into(),
+            remediation: Some(
+                "if you use Claude Code, install the adapter — see docs/adapters/claude-code.md".into(),
+            ),
+        };
+    };
+    if claude_hook_wired(&settings) {
+        CheckResult {
+            name: "adapter",
+            status: Status::Pass,
+            detail: format!("Claude Code PostToolUse hook references hector ({})", path.display()),
+            remediation: None,
+        }
+    } else {
+        CheckResult {
+            name: "adapter",
+            status: Status::Warn,
+            detail: format!("{} present but no PostToolUse hook references hector", path.display()),
+            remediation: Some(
+                "install the adapter or add a PostToolUse entry calling hector — see docs/adapters/claude-code.md".into(),
+            ),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -596,5 +669,41 @@ mod tests {
         fs::write(d.path().join(".hector.yml"), trusted).unwrap();
         let r = check_scope_globs(&ctx_with(d.path()));
         assert_eq!(r.status, Status::Pass);
+    }
+
+    #[test]
+    fn hook_wired_finds_hector_command() {
+        let v: serde_json::Value = serde_json::from_str(
+            r#"{"hooks":{"PostToolUse":[{"hooks":[{"type":"command","command":"hector check"}]}]}}"#,
+        ).unwrap();
+        assert!(claude_hook_wired(&v));
+    }
+
+    #[test]
+    fn hook_wired_finds_adapter_hook_sh() {
+        let v: serde_json::Value = serde_json::from_str(
+            r#"{"hooks":{"PostToolUse":[{"hooks":[{"type":"command","command":"$ROOT/hooks/hook.sh post"}]}]}}"#,
+        ).unwrap();
+        assert!(claude_hook_wired(&v));
+    }
+
+    #[test]
+    fn hook_wired_rejects_unrelated_command() {
+        let v: serde_json::Value = serde_json::from_str(
+            r#"{"hooks":{"PostToolUse":[{"hooks":[{"type":"command","command":"echo hi"}]}]}}"#,
+        ).unwrap();
+        assert!(!claude_hook_wired(&v));
+    }
+
+    #[test]
+    fn hook_wired_rejects_missing_post_tool_use() {
+        let v: serde_json::Value = serde_json::from_str(r#"{"hooks":{}}"#).unwrap();
+        assert!(!claude_hook_wired(&v));
+    }
+
+    #[test]
+    fn hook_wired_rejects_empty_object() {
+        let v: serde_json::Value = serde_json::from_str(r#"{}"#).unwrap();
+        assert!(!claude_hook_wired(&v));
     }
 }

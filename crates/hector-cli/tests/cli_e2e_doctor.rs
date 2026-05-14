@@ -164,3 +164,73 @@ fn doctor_pass_engines_when_no_llm_rules() {
     let s = String::from_utf8_lossy(&out.stdout);
     assert!(s.contains("engines") && s.contains("ok"), "engines should pass: {s}");
 }
+
+#[test]
+fn doctor_adapter_warn_when_settings_missing() {
+    let dir = tempdir().unwrap();
+    let home = tempdir().unwrap(); // empty: no ~/.claude/settings.json
+    write_trusted(
+        dir.path(),
+        "schema_version: 2\nrules:\n  r:\n    description: \"x\"\n    engine: script\n    scope: [\"*\"]\n    severity: error\n    script: \"true\"\n",
+    );
+    let out = Command::cargo_bin("hector")
+        .unwrap()
+        .env("HOME", home.path())
+        .args(["doctor", "--dir", dir.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let s = String::from_utf8_lossy(&out.stdout);
+    assert!(s.contains("adapter") && s.contains("warn"), "expected `adapter warn`: {s}");
+}
+
+#[test]
+fn doctor_adapter_pass_when_hook_wired() {
+    let dir = tempdir().unwrap();
+    let home = tempdir().unwrap();
+    let claude = home.path().join(".claude");
+    fs::create_dir_all(&claude).unwrap();
+    // Wire a PostToolUse hook whose command references `hector` so the
+    // detector recognizes it without needing the real adapter installed.
+    let settings = r#"{"hooks":{"PostToolUse":[{"matcher":"Edit|Write","hooks":[{"type":"command","command":"hector check --diff -"}]}]}}"#;
+    fs::write(claude.join("settings.json"), settings).unwrap();
+    write_trusted(
+        dir.path(),
+        "schema_version: 2\nrules:\n  r:\n    description: \"x\"\n    engine: script\n    scope: [\"*\"]\n    severity: error\n    script: \"true\"\n",
+    );
+    let out = Command::cargo_bin("hector")
+        .unwrap()
+        .env("HOME", home.path())
+        .args(["doctor", "--dir", dir.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let s = String::from_utf8_lossy(&out.stdout);
+    assert!(s.contains("adapter") && s.contains("ok"), "expected `adapter ok`: {s}");
+}
+
+#[test]
+fn doctor_adapter_warn_when_settings_present_but_no_hector_hook() {
+    let dir = tempdir().unwrap();
+    let home = tempdir().unwrap();
+    let claude = home.path().join(".claude");
+    fs::create_dir_all(&claude).unwrap();
+    fs::write(
+        claude.join("settings.json"),
+        r#"{"hooks":{"PostToolUse":[{"matcher":"Edit","hooks":[{"type":"command","command":"echo unrelated"}]}]}}"#,
+    ).unwrap();
+    write_trusted(
+        dir.path(),
+        "schema_version: 2\nrules:\n  r:\n    description: \"x\"\n    engine: script\n    scope: [\"*\"]\n    severity: error\n    script: \"true\"\n",
+    );
+    let out = Command::cargo_bin("hector")
+        .unwrap()
+        .env("HOME", home.path())
+        .args(["doctor", "--dir", dir.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let s = String::from_utf8_lossy(&out.stdout);
+    assert!(s.contains("adapter") && s.contains("warn"), "expected `adapter warn` when no hector hook: {s}");
+    assert!(s.contains("docs/adapters/claude-code.md") || s.contains("install"), "expected adapter install hint: {s}");
+}
