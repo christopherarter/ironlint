@@ -257,11 +257,11 @@ fn semantic_skipped_telemetry_uses_typed_variant() {
 
     let log = std::fs::read_to_string(dir.path().join(".hector/log.jsonl")).unwrap();
     // D1: typed shape with `type` discriminator.
+    assert!(log.contains("\"type\":\"semantic_skipped\""), "log:\n{log}");
     assert!(
-        log.contains("\"type\":\"semantic_skipped\""),
+        log.contains("\"reason\":\"whitespace_only\""),
         "log:\n{log}"
     );
-    assert!(log.contains("\"reason\":\"whitespace_only\""), "log:\n{log}");
     assert!(
         log.contains("\"rule\":\"no-unwrap\""),
         "rule field, not rule_id; log:\n{log}"
@@ -302,8 +302,7 @@ rules:
         })
         .unwrap();
 
-    let entries =
-        hector_core::telemetry::read_all(&dir.path().join(".hector/log.jsonl")).unwrap();
+    let entries = hector_core::telemetry::read_all(&dir.path().join(".hector/log.jsonl")).unwrap();
     let has_engine_error = entries.iter().any(|e| {
         matches!(
             e, hector_core::telemetry::LogEntry::Check { rules, .. }

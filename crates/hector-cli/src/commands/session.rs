@@ -1,6 +1,8 @@
 use anyhow::{Context, Result};
 use hector_core::session_state::{EditRecord, SessionState};
-use hector_core::telemetry::{append as append_telemetry, LogEntry, SCHEMA_VERSION as TELEMETRY_SCHEMA};
+use hector_core::telemetry::{
+    append as append_telemetry, LogEntry, SCHEMA_VERSION as TELEMETRY_SCHEMA,
+};
 use std::fs::OpenOptions;
 use std::path::Path;
 

@@ -11,7 +11,11 @@ fn fixture_path(name: &str) -> PathBuf {
 #[test]
 fn legacy_log_jsonl_loads_and_lifts_to_typed_variants() {
     let entries = read_all(&fixture_path("log_legacy.jsonl")).expect("legacy fixture must load");
-    assert_eq!(entries.len(), 5, "all 5 legacy lines must lift, none dropped");
+    assert_eq!(
+        entries.len(),
+        5,
+        "all 5 legacy lines must lift, none dropped"
+    );
 
     // Line 1: kind=check → Check{rules:[]}
     match &entries[0] {

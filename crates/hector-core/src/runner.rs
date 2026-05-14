@@ -97,6 +97,15 @@ struct RuleOutcome {
     record: Option<PerRuleRecord>,
 }
 
+/// D1: per-call accumulators for `check_session`. Bundled into a single
+/// struct so `absorb_session_outcome` stays under the workspace's
+/// argument-count lint while still owning the three independent vecs.
+struct SessionAcc<'a> {
+    violations: &'a mut Vec<Violation>,
+    passed: &'a mut Vec<String>,
+    records: &'a mut Vec<PerRuleRecord>,
+}
+
 /// Per-file inputs reused across every rule evaluation in one `check()`
 /// call. Bundled into a single struct so `evaluate_one_rule` stays under
 /// the workspace's argument-count lint.
@@ -400,7 +409,11 @@ impl HectorEngine {
         if rule.engine == EngineKind::Semantic {
             if let Ok(ref vs) = outcome {
                 let verdict_str = if vs.is_empty() { "pass" } else { "violation" };
-                self.append_semantic_verdict(rule_id, Some(&inputs.path.display().to_string()), verdict_str);
+                self.append_semantic_verdict(
+                    rule_id,
+                    Some(&inputs.path.display().to_string()),
+                    verdict_str,
+                );
             }
         }
         Self::merge_engine_outcome(rule_id, rule.engine, inputs, outcome, rule_elapsed)
@@ -842,28 +855,25 @@ impl HectorEngine {
 
     /// D1: split the per-rule arms of `check_session` out so the loop
     /// body stays under the cognitive-complexity cap. Pushes per-rule
-    /// outcomes into the shared `violations` / `passed` / `records`
-    /// accumulators and emits a `SemanticVerdict` for each rule that
-    /// actually reached the LLM.
+    /// outcomes into the shared accumulators and emits a
+    /// `SemanticVerdict` for each rule that actually reached the LLM.
     fn absorb_session_outcome(
         &self,
         rule_id: &str,
         rule: &Rule,
         evaluation: Result<Option<Violation>>,
         elapsed: u64,
-        violations: &mut Vec<Violation>,
-        passed: &mut Vec<String>,
-        records: &mut Vec<PerRuleRecord>,
+        acc: &mut SessionAcc<'_>,
     ) {
         match evaluation {
             Ok(Some(v)) => {
-                violations.push(v);
+                acc.violations.push(v);
                 self.append_semantic_verdict(rule_id, None, "violation");
                 let status = match rule.severity {
                     crate::config::Severity::Error => Status::Block,
                     crate::config::Severity::Warning => Status::Warn,
                 };
-                records.push(PerRuleRecord {
+                acc.records.push(PerRuleRecord {
                     rule_id: rule_id.to_string(),
                     engine: crate::verdict::Engine::Session,
                     status,
@@ -872,9 +882,9 @@ impl HectorEngine {
                 });
             }
             Ok(None) => {
-                passed.push(rule_id.to_string());
+                acc.passed.push(rule_id.to_string());
                 self.append_semantic_verdict(rule_id, None, "pass");
-                records.push(PerRuleRecord {
+                acc.records.push(PerRuleRecord {
                     rule_id: rule_id.to_string(),
                     engine: crate::verdict::Engine::Session,
                     status: Status::Pass,
@@ -884,7 +894,7 @@ impl HectorEngine {
             }
             // P1-1: session-engine runtime errors are Engine::Internal.
             Err(e) => {
-                violations.push(crate::verdict::Violation {
+                acc.violations.push(crate::verdict::Violation {
                     rule_id: format!("{rule_id}__internal"),
                     severity: crate::verdict::Severity::Error,
                     engine: crate::verdict::Engine::Internal,
@@ -895,7 +905,7 @@ impl HectorEngine {
                     suggestion: None,
                     context: None,
                 });
-                records.push(PerRuleRecord {
+                acc.records.push(PerRuleRecord {
                     rule_id: rule_id.to_string(),
                     engine: crate::verdict::Engine::Session,
                     status: Status::Block,
@@ -958,15 +968,12 @@ impl HectorEngine {
             let rule_start = Instant::now();
             let evaluation = session_engine.evaluate(&scoped_state, rule_id, rule, llm);
             let rule_elapsed = rule_start.elapsed().as_millis() as u64;
-            self.absorb_session_outcome(
-                rule_id,
-                rule,
-                evaluation,
-                rule_elapsed,
-                &mut violations,
-                &mut passed,
-                &mut records,
-            );
+            let mut acc = SessionAcc {
+                violations: &mut violations,
+                passed: &mut passed,
+                records: &mut records,
+            };
+            self.absorb_session_outcome(rule_id, rule, evaluation, rule_elapsed, &mut acc);
         }
         let verdict = crate::verdict::Verdict::from_violations(
             violations,
