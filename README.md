@@ -23,14 +23,15 @@ cargo build --release
 
 See [docs/quickstart.md](docs/quickstart.md).
 
-## Commands
+## Inspect
 
-### Inspection
+Read-only commands that never run engines, call LLMs, or write telemetry. Exit `0` on success, `1` on config error — never `2`.
 
-- `hector explain <file>` — show which rules are in scope for a file and which scope glob matched (or which skip pattern suppressed it). Read-only.
-- `hector guide <file>` — list rules whose scope matches the file with their severity and description. Read-only.
+- `hector explain <file>` — show which rules are in scope for a file and which scope glob matched (or which skip pattern suppressed it). `--format human|json` (default `human`).
+- `hector guide <file>` — list rules whose scope matches the file with their severity and description. `--format human|json` (default `human`).
+- `hector show-resolved-config [--format tsv|yaml|json]` — print the post-`extends:` merged rule set, with each rule annotated by the file that defined it. See [docs/show-resolved-config.md](docs/show-resolved-config.md).
 
-Both honor `--config <path>` (default `.hector.yml`) and `--format human|json` (default `human`). Exit 0 on success, 1 on config error. They never run engines, call LLMs, or write telemetry — they only read config and report scope/skip resolution.
+All three honor `--config <path>` (default `.hector.yml`).
 
 ## Specs
 

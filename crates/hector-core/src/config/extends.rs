@@ -1,7 +1,7 @@
 use super::parser::parse_str;
 use super::types::Config;
 use anyhow::{anyhow, Context, Result};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
 /// Resolve extends recursively.
@@ -77,4 +77,101 @@ fn merge_inherited(local: &mut Config, inherited: Config) {
         }
     }
     // trust block is per-config; never inherited.
+}
+
+/// C3: resolve extends and return a per-rule origin map.
+///
+/// The map attributes every surviving rule id to the canonical path of
+/// the file it was defined in. Local definitions win on collision —
+/// same semantics as [`resolve`] — and the origin map reflects that
+/// (the local file's path is recorded for any rule the local config
+/// defined directly).
+///
+/// This entry point does **not** verify trust. `show-resolved-config`
+/// is a read-only inspection command and operators reach for it
+/// precisely when debugging an as-yet-unsigned config; gating it on
+/// trust would defeat the purpose. Callers that intend to *execute*
+/// rules must continue to use [`resolve_trusted`].
+pub fn resolve_with_origin(root: &Path) -> Result<(Config, BTreeMap<String, PathBuf>)> {
+    let mut seen = HashSet::new();
+    let mut origins: BTreeMap<String, PathBuf> = BTreeMap::new();
+    let cfg = resolve_inner_with_origin(root, &mut seen, &mut origins)?;
+    Ok((cfg, origins))
+}
+
+fn resolve_inner_with_origin(
+    path: &Path,
+    seen: &mut HashSet<PathBuf>,
+    origins: &mut BTreeMap<String, PathBuf>,
+) -> Result<Config> {
+    let canonical = path
+        .canonicalize()
+        .with_context(|| format!("canonicalizing {}", path.display()))?;
+    if !seen.insert(canonical.clone()) {
+        return Err(anyhow!("extends cycle detected at {}", canonical.display()));
+    }
+    let content = std::fs::read_to_string(&canonical)
+        .with_context(|| format!("reading {}", canonical.display()))?;
+    if matches!(super::parser::peek_schema_version(&content), Some(1)) {
+        return Err(anyhow!(
+            "{} is schema_version 1 (legacy bully); run `hector migrate` to upgrade to schema_version 2",
+            canonical.display()
+        ));
+    }
+    let mut cfg = parse_str(&content)?;
+
+    // Record every rule defined *directly* in this file. A closer
+    // ancestor (i.e. the call frame above us in the DFS, which is
+    // closer to the local config) may have already claimed the id —
+    // and "closer wins" mirrors `merge_inherited`'s "local wins on
+    // collision". Use `entry().or_insert_with` so an outer (closer)
+    // frame's recording is never overwritten by an inner (further)
+    // frame.
+    for id in cfg.rules.keys() {
+        origins
+            .entry(id.clone())
+            .or_insert_with(|| canonical.clone());
+    }
+
+    let parent_dir = canonical.parent().unwrap_or_else(|| Path::new("."));
+    let extends = std::mem::take(&mut cfg.extends);
+    for relative in &extends {
+        let abs = parent_dir.join(relative);
+        let inherited = resolve_inner_with_origin(&abs, seen, origins)?;
+        merge_inherited_with_origin(&mut cfg, inherited, origins, &abs);
+    }
+    seen.remove(&canonical);
+    Ok(cfg)
+}
+
+fn merge_inherited_with_origin(
+    local: &mut Config,
+    inherited: Config,
+    origins: &mut BTreeMap<String, PathBuf>,
+    inherited_from: &Path,
+) {
+    let inherited_canonical = inherited_from
+        .canonicalize()
+        .unwrap_or_else(|_| inherited_from.to_path_buf());
+    for (id, rule) in inherited.rules {
+        // Only fill in rules the local config (or a closer ancestor)
+        // hasn't already claimed. The recursive walker has already
+        // recorded the defining file for any closer-ancestor rule; we
+        // only record an origin here when the rule is genuinely new to
+        // the merged config.
+        if let std::collections::btree_map::Entry::Vacant(slot) = local.rules.entry(id.clone()) {
+            origins
+                .entry(id)
+                .or_insert_with(|| inherited_canonical.clone());
+            slot.insert(rule);
+        }
+    }
+    if local.llm.is_none() {
+        local.llm = inherited.llm;
+    }
+    for g in inherited.skip {
+        if !local.skip.contains(&g) {
+            local.skip.push(g);
+        }
+    }
 }
