@@ -49,6 +49,7 @@ fn main() -> Result<()> {
                 session_id,
             } => commands::session::record(&dir, &file, &diff, session_id)?,
         },
+        Command::Doctor { dir, format } => commands::doctor::run(&dir, format)?,
     };
     std::process::exit(code);
 }

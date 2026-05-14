@@ -81,6 +81,18 @@ pub enum Command {
         #[command(subcommand)]
         action: SessionAction,
     },
+    /// Diagnose the local install, config, trust, engine availability, and adapter wiring.
+    ///
+    /// Read-only. Exits 0 if every check passes or only warns; exits 1 on any failure.
+    Doctor {
+        /// Directory containing `.hector.yml`. Defaults to cwd.
+        #[arg(long, default_value = ".")]
+        dir: PathBuf,
+        /// Output format. `human` (default) prints a checklist; `json` prints a
+        /// machine-readable report — see `docs/doctor.md` for the schema.
+        #[arg(long, default_value = "human")]
+        format: OutputFormat,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Subcommand)]

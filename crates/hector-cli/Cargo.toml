@@ -13,6 +13,7 @@ path = "src/main.rs"
 hector-core = { path = "../hector-core" }
 clap.workspace = true
 anyhow.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
 globset.workspace = true
