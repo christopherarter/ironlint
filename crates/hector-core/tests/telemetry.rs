@@ -173,3 +173,142 @@ fn log_entry_without_reason_omits_field() {
     let content = std::fs::read_to_string(&log).unwrap();
     assert!(!content.contains("\"reason\""));
 }
+
+// --- D1: typed telemetry --------------------------------------------------
+
+use hector_core::telemetry::{PerRuleRecord, SCHEMA_VERSION as TELEMETRY_SCHEMA};
+use hector_core::verdict::{Engine, Status};
+
+#[test]
+fn session_init_round_trips() {
+    let entry = LogEntry::SessionInit {
+        ts: "2026-05-13T12:00:00Z".into(),
+        hector_version: "0.2.2".into(),
+        schema_version: TELEMETRY_SCHEMA,
+    };
+    let line = serde_json::to_string(&entry).unwrap();
+    assert!(
+        line.contains("\"type\":\"session_init\""),
+        "discriminator field present: {line}"
+    );
+    assert!(line.contains("\"hector_version\":\"0.2.2\""));
+    assert!(line.contains("\"schema_version\":1"));
+    let back: LogEntry = serde_json::from_str(&line).unwrap();
+    assert_eq!(back, entry);
+}
+
+#[test]
+fn check_round_trips_with_per_rule_records() {
+    let entry = LogEntry::Check {
+        ts: "2026-05-13T12:00:01Z".into(),
+        file: "src/lib.rs".into(),
+        status: Status::Pass,
+        elapsed_ms: 12,
+        rules: vec![
+            PerRuleRecord {
+                rule_id: "no-unwrap".into(),
+                engine: Engine::Semantic,
+                status: Status::Pass,
+                elapsed_ms: 8,
+                reason: None,
+            },
+            PerRuleRecord {
+                rule_id: "no-todo".into(),
+                engine: Engine::Script,
+                status: Status::Warn,
+                elapsed_ms: 4,
+                reason: None,
+            },
+        ],
+    };
+    let line = serde_json::to_string(&entry).unwrap();
+    assert!(line.contains("\"type\":\"check\""), "discriminator: {line}");
+    assert!(line.contains("\"rules\":["));
+    assert!(line.contains("\"engine\":\"semantic\""));
+    assert!(line.contains("\"engine\":\"script\""));
+    let back: LogEntry = serde_json::from_str(&line).unwrap();
+    assert_eq!(back, entry);
+}
+
+#[test]
+fn check_with_zero_rules_round_trips_and_marks_a_skipped_file() {
+    // A2 skip-pattern fold: file was checked, no rule ran.
+    let entry = LogEntry::Check {
+        ts: "2026-05-13T12:00:02Z".into(),
+        file: "Cargo.lock".into(),
+        status: Status::Pass,
+        elapsed_ms: 0,
+        rules: vec![],
+    };
+    let line = serde_json::to_string(&entry).unwrap();
+    assert!(
+        line.contains("\"rules\":[]"),
+        "empty rules array preserved: {line}"
+    );
+    let back: LogEntry = serde_json::from_str(&line).unwrap();
+    assert_eq!(back, entry);
+}
+
+#[test]
+fn semantic_verdict_round_trips() {
+    let entry = LogEntry::SemanticVerdict {
+        ts: "2026-05-13T12:00:03Z".into(),
+        rule: "no-secrets".into(),
+        verdict: "pass".into(),
+        file: Some("src/auth.rs".into()),
+    };
+    let line = serde_json::to_string(&entry).unwrap();
+    assert!(line.contains("\"type\":\"semantic_verdict\""));
+    assert!(line.contains("\"file\":\"src/auth.rs\""));
+    let back: LogEntry = serde_json::from_str(&line).unwrap();
+    assert_eq!(back, entry);
+}
+
+#[test]
+fn semantic_verdict_with_no_file_round_trips() {
+    let entry = LogEntry::SemanticVerdict {
+        ts: "2026-05-13T12:00:04Z".into(),
+        rule: "session-rule".into(),
+        verdict: "pass".into(),
+        file: None,
+    };
+    let line = serde_json::to_string(&entry).unwrap();
+    let back: LogEntry = serde_json::from_str(&line).unwrap();
+    assert_eq!(back, entry);
+}
+
+#[test]
+fn semantic_skipped_round_trips() {
+    let entry = LogEntry::SemanticSkipped {
+        ts: "2026-05-13T12:00:05Z".into(),
+        file: "src/lib.rs".into(),
+        rule: "no-unwrap".into(),
+        reason: "pure_deletion".into(),
+    };
+    let line = serde_json::to_string(&entry).unwrap();
+    assert!(line.contains("\"type\":\"semantic_skipped\""));
+    assert!(line.contains("\"reason\":\"pure_deletion\""));
+    let back: LogEntry = serde_json::from_str(&line).unwrap();
+    assert_eq!(back, entry);
+}
+
+#[test]
+fn snake_case_field_names_match_spec() {
+    // Spec §D1 says fields are snake_case. Pin against accidental rename.
+    let entry = LogEntry::SessionInit {
+        ts: "t".into(),
+        hector_version: "x".into(),
+        schema_version: 1,
+    };
+    let value: serde_json::Value = serde_json::to_value(&entry).unwrap();
+    let obj = value.as_object().unwrap();
+    assert!(obj.contains_key("type"));
+    assert!(obj.contains_key("ts"));
+    assert!(obj.contains_key("hector_version"));
+    assert!(obj.contains_key("schema_version"));
+    assert!(
+        !obj.contains_key("hectorVersion"),
+        "must be snake_case, not camelCase"
+    );
+    assert!(!obj.contains_key("hector-version"));
+}
