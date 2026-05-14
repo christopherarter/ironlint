@@ -13,7 +13,6 @@ A plan owns its own progress via its checkboxes — that's the source of truth. 
 
 The 0.2.0 bully-parity cohort (A1 prompt-injection, A2 skip patterns, A3 diff pre-filter) shipped, then B1 (parallel rule execution), E1 (baseline checksum), and C4 (`--rule` / `--explain` / `--print-prompt`) followed it. Four queued plans below cover the next batch from [`specs/2026-05-12-bully-parity-closures.md`](../specs/2026-05-12-bully-parity-closures.md).
 
-- [`2026-05-13-hector-c1-doctor`](2026-05-13-hector-c1-doctor.md) — `hector doctor` diagnostic subcommand. **0.2.0 release blocker.**
 - [`2026-05-13-hector-d1-typed-telemetry`](2026-05-13-hector-d1-typed-telemetry.md) — `serde(tag = "type")` enum for `LogEntry`; back-compat reader for the deprecation window. Foundation for D2/D3.
 - [`2026-05-13-hector-c2-explain-guide`](2026-05-13-hector-c2-explain-guide.md) — `hector explain <file>` and `hector guide <file>` read-only inspection commands.
 - [`2026-05-13-hector-c3-show-resolved-config`](2026-05-13-hector-c3-show-resolved-config.md) — `hector show-resolved-config` (TSV / YAML / JSON) with per-rule origin tracking.
@@ -39,6 +38,7 @@ Completed plans live in [`archive/`](archive/). They're frozen design records.
 - [`2026-05-12-hector-e1-baseline-checksum`](archive/2026-05-12-hector-e1-baseline-checksum.md) — `line_sha256` fingerprinting in `Baseline`; v1-format read tolerance; new `hector baseline refresh` subcommand.
 - [`2026-05-12-hector-b1-parallel-rules`](archive/2026-05-12-hector-b1-parallel-rules.md) — rayon-driven parallel rule dispatch in `HectorEngine::check`; `execution.max_workers` config + `HECTOR_MAX_WORKERS` env override; deterministic output order via BTreeMap iteration.
 - [`2026-05-12-hector-c4-check-flags`](archive/2026-05-12-hector-c4-check-flags.md) — `hector check --rule <id>` (repeatable) restricts evaluation upstream of the parallel pool; `--explain` prints a per-rule outcome report to stderr; `--print-prompt` renders the semantic prompt without dispatching to the LLM.
+- [`2026-05-13-hector-c1-doctor`](archive/2026-05-13-hector-c1-doctor.md) — `hector doctor` diagnostic subcommand: 9 checks (binary, config, parses, trust, schema, scope_globs, engines, adapter, runtime_state); JSON contract under `docs/doctor.md`; exit code 0 on pass-or-warn, 1 on any fail.
 
 ## Conventions
 
