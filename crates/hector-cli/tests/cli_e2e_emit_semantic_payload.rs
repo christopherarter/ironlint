@@ -99,6 +99,7 @@ fn flag_omitted_means_no_envelope() {
 
     let out = Command::cargo_bin("hector")
         .unwrap()
+        .env_remove("ANTHROPIC_API_KEY")
         .arg("check")
         .arg("--config")
         .arg(&path)
