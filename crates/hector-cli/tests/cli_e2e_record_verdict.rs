@@ -143,3 +143,36 @@ fn record_verdict_writes_session_init_lazily() {
         "first record in a fresh log must be session_init, got: {first_line}"
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn record_verdict_returns_1_on_telemetry_write_failure() {
+    // Point --dir at a read-only directory. telemetry::append's
+    // create_dir_all + open(append) chain will fail, and run() must
+    // return 1 with a stderr message.
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempdir().unwrap();
+    let readonly = tmp.path().join("readonly");
+    std::fs::create_dir(&readonly).unwrap();
+    let mut perms = std::fs::metadata(&readonly).unwrap().permissions();
+    perms.set_mode(0o500); // r-x for owner; no write
+    std::fs::set_permissions(&readonly, perms).unwrap();
+
+    Command::cargo_bin("hector")
+        .unwrap()
+        .arg("record-verdict")
+        .arg("--rule")
+        .arg("r1")
+        .arg("--verdict")
+        .arg("pass")
+        .arg("--dir")
+        .arg(&readonly)
+        .assert()
+        .code(1)
+        .stderr(predicates::str::contains("ERROR:"));
+
+    // Cleanup: restore write so the tempdir teardown succeeds.
+    let mut perms = std::fs::metadata(&readonly).unwrap().permissions();
+    perms.set_mode(0o700);
+    std::fs::set_permissions(&readonly, perms).unwrap();
+}
