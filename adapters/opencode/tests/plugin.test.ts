@@ -1,5 +1,5 @@
 import { test, expect, beforeAll, afterAll, beforeEach } from "bun:test"
-import { mkdtempSync, writeFileSync, rmSync, existsSync, mkdirSync } from "node:fs"
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync, mkdirSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { $ } from "bun"
@@ -50,69 +50,205 @@ beforeEach(() => {
   rmSync(join(project, ".hector", "session.json"), { force: true })
 })
 
-test("registers no hooks when .hector.yml is absent", async () => {
+test("hooks no-op when .hector.yml is absent at load time", async () => {
+  // Hooks are always registered so that a project that becomes a hector
+  // project mid-session starts gating without an opencode restart. When
+  // .hector.yml is missing, every invocation short-circuits silently.
   const empty = mkdtempSync(join(tmpdir(), "hector-opencode-empty-"))
   try {
     const hooks = await HectorPlugin(fakeCtx(empty))
-    expect(Object.keys(hooks)).toHaveLength(0)
+    expect(hooks["tool.execute.before"]).toBeDefined()
+    const file = join(empty, "anything.txt")
+    await expect(
+      hooks["tool.execute.before"]!(
+        { tool: "write", sessionID: "s", callID: "c" },
+        { args: { filePath: file, content: "this has DEBUG\n" } },
+      ),
+    ).resolves.toBeUndefined()
+    expect(existsSync(file)).toBe(false) // shadow-write never happened
   } finally {
     rmSync(empty, { recursive: true, force: true })
   }
 })
 
-test("tool.execute.after on clean file passes", async () => {
-  const file = join(project, "clean.txt")
-  writeFileSync(file, "ok\n")
-  const hooks = await HectorPlugin(fakeCtx(project))
-  const after = hooks["tool.execute.after"]
-  expect(after).toBeDefined()
-  await expect(
-    after!(
-      { tool: "edit", sessionID: "s", callID: "c", args: { filePath: file } },
-      { title: "", output: "", metadata: {} },
-    ),
-  ).resolves.toBeUndefined()
+test("gate activates when .hector.yml is created after plugin load", async () => {
+  // Regression test for the silent-disable bug: opencode loads plugins once
+  // at startup. If `.hector.yml` doesn't exist yet, the original plugin
+  // returned `{}` and the gate was dead for the rest of the session. The
+  // existsSync check now runs per-invocation, so late-init `hector init`
+  // starts gating immediately.
+  const root = mkdtempSync(join(tmpdir(), "hector-opencode-late-"))
+  try {
+    const hooks = await HectorPlugin(fakeCtx(root))
+    const file = join(root, "dirty.txt")
+
+    // Sanity: no gating yet.
+    await expect(
+      hooks["tool.execute.before"]!(
+        { tool: "write", sessionID: "s", callID: "c" },
+        { args: { filePath: file, content: "this has DEBUG\n" } },
+      ),
+    ).resolves.toBeUndefined()
+
+    // Now create + trust the config and re-invoke the SAME hook closure.
+    writeFileSync(join(root, ".hector.yml"), HECTOR_YML)
+    await $`hector trust --config ${join(root, ".hector.yml")}`.quiet()
+
+    await expect(
+      hooks["tool.execute.before"]!(
+        { tool: "write", sessionID: "s", callID: "c" },
+        { args: { filePath: file, content: "this has DEBUG\n" } },
+      ),
+    ).rejects.toThrow(/hector blocked this edit/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })
 
-test("tool.execute.after on dirty file blocks (throws)", async () => {
-  const file = join(project, "dirty.txt")
-  writeFileSync(file, "this has DEBUG in it\n")
+test("module exposes both default and named HectorPlugin exports", async () => {
+  // The opencode plugin docs consistently show named exports
+  // (`export const MyPlugin = ...`). The published Claude Code adapter and
+  // our own tests use the default import. Keep both alive so neither
+  // loader pattern silently no-ops.
+  const mod = await import("../src/index.ts")
+  expect(typeof mod.default).toBe("function")
+  expect(typeof mod.HectorPlugin).toBe("function")
+  expect(mod.default).toBe(mod.HectorPlugin)
+})
+
+test("before-hook on clean Write content passes", async () => {
+  const file = join(project, "clean-write.txt")
+  rmSync(file, { force: true })
   const hooks = await HectorPlugin(fakeCtx(project))
-  const after = hooks["tool.execute.after"]
   await expect(
-    after!(
-      { tool: "edit", sessionID: "s", callID: "c", args: { filePath: file } },
-      { title: "", output: "", metadata: {} },
+    hooks["tool.execute.before"]!(
+      { tool: "write", sessionID: "s", callID: "c" },
+      { args: { filePath: file, content: "ok\n" } },
+    ),
+  ).resolves.toBeUndefined()
+  // Shadow-write must be undone on the pass path so opencode's real
+  // write is what lands on disk.
+  expect(existsSync(file)).toBe(false)
+})
+
+test("before-hook on Write with DEBUG blocks and leaves no file behind", async () => {
+  const file = join(project, "dirty-write.txt")
+  rmSync(file, { force: true })
+  const hooks = await HectorPlugin(fakeCtx(project))
+  await expect(
+    hooks["tool.execute.before"]!(
+      { tool: "write", sessionID: "s", callID: "c" },
+      { args: { filePath: file, content: "this has DEBUG\n" } },
     ),
   ).rejects.toThrow(/hector blocked this edit/)
+  expect(existsSync(file)).toBe(false)
 })
 
-test("tool.execute.after ignores non-gated tools", async () => {
-  // Even with DEBUG in the file, a `read` or `bash` tool call should pass
-  // through — we only gate edit/write.
-  const file = join(project, "dirty-but-ignored.txt")
-  writeFileSync(file, "this has DEBUG too\n")
+test("before-hook on Edit that would introduce DEBUG blocks; file is unchanged", async () => {
+  const file = join(project, "edit-introduce-debug.txt")
+  writeFileSync(file, "hello world\n")
+  const hooks = await HectorPlugin(fakeCtx(project))
+
+  await expect(
+    hooks["tool.execute.before"]!(
+      { tool: "edit", sessionID: "s", callID: "c" },
+      { args: { filePath: file, oldString: "world", newString: "DEBUG" } },
+    ),
+  ).rejects.toThrow(/hector blocked this edit/)
+
+  expect(readFileSync(file, "utf8")).toBe("hello world\n")
+})
+
+test("before-hook handles opencode's native find/replace arg shape", async () => {
+  // Regression: opencode's edit tool ships `find` / `replace` (and
+  // `replaceAll`), not `oldString` / `newString`. The plugin was silently
+  // falling into the Write branch with empty content and never seeing the
+  // proposed content.
+  const file = join(project, "edit-find-replace.txt")
+  writeFileSync(file, "hello world\n")
+  const hooks = await HectorPlugin(fakeCtx(project))
+
+  await expect(
+    hooks["tool.execute.before"]!(
+      { tool: "edit", sessionID: "s", callID: "c" },
+      { args: { filePath: file, find: "world", replace: "DEBUG" } },
+    ),
+  ).rejects.toThrow(/hector blocked this edit/)
+
+  expect(readFileSync(file, "utf8")).toBe("hello world\n")
+})
+
+test("before-hook honours replaceAll", async () => {
+  const file = join(project, "edit-replace-all.txt")
+  writeFileSync(file, "clean clean clean\n")
+  const hooks = await HectorPlugin(fakeCtx(project))
+
+  await expect(
+    hooks["tool.execute.before"]!(
+      { tool: "edit", sessionID: "s", callID: "c" },
+      { args: { filePath: file, find: "clean", replace: "DEBUG", replaceAll: true } },
+    ),
+  ).rejects.toThrow(/hector blocked this edit/)
+
+  expect(readFileSync(file, "utf8")).toBe("clean clean clean\n")
+})
+
+test("before-hook on clean Edit passes and leaves file unchanged (opencode writes next)", async () => {
+  const file = join(project, "edit-clean.txt")
+  writeFileSync(file, "hello world\n")
+  const hooks = await HectorPlugin(fakeCtx(project))
+
+  await expect(
+    hooks["tool.execute.before"]!(
+      { tool: "edit", sessionID: "s", callID: "c" },
+      { args: { filePath: file, oldString: "world", newString: "there" } },
+    ),
+  ).resolves.toBeUndefined()
+
+  // The shadow content must be restored so opencode's own write is the
+  // canonical one. We only assert pre-state here; opencode does the real
+  // write after the before-hook returns.
+  expect(readFileSync(file, "utf8")).toBe("hello world\n")
+})
+
+test("before-hook skips gate when Edit's oldString is not in the file", async () => {
+  // If we can't simulate the edit, we can't produce a faithful proposed
+  // content — and opencode's Edit will fail anyway. Skip the gate rather
+  // than write garbage.
+  const file = join(project, "edit-no-match.txt")
+  writeFileSync(file, "hello world\n")
   const hooks = await HectorPlugin(fakeCtx(project))
   await expect(
-    hooks["tool.execute.after"]!(
-      { tool: "read", sessionID: "s", callID: "c", args: { filePath: file } },
-      { title: "", output: "", metadata: {} },
+    hooks["tool.execute.before"]!(
+      { tool: "edit", sessionID: "s", callID: "c" },
+      { args: { filePath: file, oldString: "nonexistent", newString: "DEBUG" } },
+    ),
+  ).resolves.toBeUndefined()
+  expect(readFileSync(file, "utf8")).toBe("hello world\n")
+})
+
+test("before-hook ignores non-gated tools", async () => {
+  const hooks = await HectorPlugin(fakeCtx(project))
+  await expect(
+    hooks["tool.execute.before"]!(
+      { tool: "read", sessionID: "s", callID: "c" },
+      { args: { filePath: "anything" } },
     ),
   ).resolves.toBeUndefined()
   await expect(
-    hooks["tool.execute.after"]!(
-      { tool: "bash", sessionID: "s", callID: "c", args: { command: "ls" } },
-      { title: "", output: "", metadata: {} },
+    hooks["tool.execute.before"]!(
+      { tool: "bash", sessionID: "s", callID: "c" },
+      { args: { command: "ls" } },
     ),
   ).resolves.toBeUndefined()
 })
 
-test("tool.execute.after no-ops when filePath is missing", async () => {
+test("before-hook no-ops when filePath is missing", async () => {
   const hooks = await HectorPlugin(fakeCtx(project))
   await expect(
-    hooks["tool.execute.after"]!(
-      { tool: "edit", sessionID: "s", callID: "c", args: {} },
-      { title: "", output: "", metadata: {} },
+    hooks["tool.execute.before"]!(
+      { tool: "edit", sessionID: "s", callID: "c" },
+      { args: {} },
     ),
   ).resolves.toBeUndefined()
 })
