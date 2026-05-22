@@ -116,14 +116,34 @@ fn run_best_effort_macos(
     caps: &Capabilities,
     env: &[(&str, &str)],
 ) -> Result<ExecOutcome> {
-    use crate::config::WritesPolicy;
-    // macOS: caps are advisory; log the limitation, run normally.
-    if !caps.network || !matches!(caps.writes, WritesPolicy::Unrestricted) {
+    use std::sync::atomic::AtomicBool;
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    if should_warn_macos_with(caps, &WARNED) {
         eprintln!(
             "hector: capability enforcement is best-effort on this platform (see docs/security.md); running command unrestricted"
         );
     }
     spawn_with_timeout(cmd, cwd, env)
+}
+
+/// Decide whether the macOS best-effort warning should fire for `caps`.
+///
+/// Returns `true` exactly once across all calls that share `warned`, and only
+/// when at least one capability would have been enforced on Linux. Pulled out
+/// of [`run_best_effort_macos`] so the dedup behaviour can be tested without
+/// stderr capture, and so callers can supply their own flag in tests.
+///
+/// Uses `Ordering::Relaxed` for the swap — same as the Linux warning path —
+/// because correctness here only requires "fires at most once," not any
+/// happens-before relationship with surrounding loads.
+#[cfg(not(target_os = "linux"))]
+fn should_warn_macos_with(caps: &Capabilities, warned: &std::sync::atomic::AtomicBool) -> bool {
+    use crate::config::WritesPolicy;
+    use std::sync::atomic::Ordering;
+    if caps.network && matches!(caps.writes, WritesPolicy::Unrestricted) {
+        return false;
+    }
+    !warned.swap(true, Ordering::Relaxed)
 }
 
 /// Spawn `sh -c <cmd>` in `cwd` with `env` overrides, enforcing both a
@@ -181,4 +201,31 @@ fn spawn_with_timeout(cmd: &str, cwd: &Path, env: &[(&str, &str)]) -> Result<Exe
         stderr,
         exit_code: status.code().unwrap_or(-1),
     })
+}
+
+#[cfg(all(test, not(target_os = "linux")))]
+mod tests {
+    use super::*;
+    use crate::config::WritesPolicy;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[test]
+    fn macos_warning_fires_once_then_dedupes() {
+        let warned = AtomicBool::new(false);
+        let caps = Capabilities::default();
+        assert!(should_warn_macos_with(&caps, &warned));
+        assert!(!should_warn_macos_with(&caps, &warned));
+        assert!(!should_warn_macos_with(&caps, &warned));
+    }
+
+    #[test]
+    fn macos_warning_skipped_when_unrestricted() {
+        let warned = AtomicBool::new(false);
+        let caps = Capabilities {
+            network: true,
+            writes: WritesPolicy::Unrestricted,
+        };
+        assert!(!should_warn_macos_with(&caps, &warned));
+        assert!(!warned.load(Ordering::Relaxed));
+    }
 }
