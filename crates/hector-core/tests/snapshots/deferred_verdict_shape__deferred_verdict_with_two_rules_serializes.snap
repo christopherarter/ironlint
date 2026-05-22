@@ -1,0 +1,37 @@
+---
+source: crates/hector-core/tests/deferred_verdict_shape.rs
+expression: "&v"
+---
+{
+  "schema_version": 1,
+  "deferred": true,
+  "hector_version": "0.2.x",
+  "passed_checks": [
+    "det-1",
+    "det-2"
+  ],
+  "payload": {
+    "file": "src/foo.rs",
+    "diff": "@@ -1,1 +1,1 @@\n-old\n+new\n",
+    "passed_checks": [
+      "det-1",
+      "det-2"
+    ],
+    "evaluate": [
+      {
+        "id": "no-debug",
+        "description": "no DEBUG prints",
+        "severity": "error",
+        "engine": "semantic"
+      },
+      {
+        "id": "schema-needs-migration",
+        "description": "schema edits require a migration file",
+        "severity": "warning",
+        "engine": "session"
+      }
+    ],
+    "_evaluator_input": "<TRUSTED_POLICY>...</UNTRUSTED_EVIDENCE>"
+  },
+  "elapsed_ms": 42
+}

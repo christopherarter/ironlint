@@ -13,3 +13,4 @@ pub mod session_state;
 pub mod telemetry;
 pub mod trust;
 pub mod verdict;
+pub mod verdict_deferred;
