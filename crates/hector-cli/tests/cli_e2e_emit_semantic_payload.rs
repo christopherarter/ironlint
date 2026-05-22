@@ -119,3 +119,64 @@ fn flag_omitted_means_no_envelope() {
         "standard Verdict has status field"
     );
 }
+
+#[test]
+fn deterministic_block_suppresses_deferred_envelope() {
+    // A script rule that exits non-zero (block) plus a semantic rule
+    // that would be deferred. The expected behaviour: the script
+    // violation is the verdict, exit 2; no DeferredVerdict on stdout.
+    let tmp = tempdir().unwrap();
+    let cfg = r#"
+schema_version: 2
+trust:
+  fingerprint: PLACEHOLDER
+llm:
+  provider: claude-code-subagent
+  model: ignored
+rules:
+  no-debug-script:
+    description: no DEBUG via grep
+    engine: script
+    scope: ["**/*.rs"]
+    severity: error
+    script: "grep -n 'DEBUG' {file} && exit 1 || exit 0"
+    capabilities:
+      network: false
+      writes: none
+  no-debug-semantic:
+    description: no DEBUG prints in committed code
+    engine: semantic
+    scope: ["**/*.rs"]
+    severity: error
+"#;
+    let path = tmp.path().join(".hector.yml");
+    fs::write(&path, cfg).unwrap();
+    let yaml = fs::read_to_string(&path).unwrap();
+    let new = hector_core::trust::write_trust_block(&yaml).unwrap();
+    fs::write(&path, new).unwrap();
+    let src = tmp.path().join("foo.rs");
+    fs::write(&src, "fn main() { println!(\"DEBUG\"); }\n").unwrap();
+
+    let out = Command::cargo_bin("hector")
+        .unwrap()
+        .arg("check")
+        .arg("--config")
+        .arg(&path)
+        .arg("--file")
+        .arg(&src)
+        .arg("--emit-semantic-payload")
+        .arg("--format")
+        .arg("json")
+        .assert()
+        .code(2)
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8(out).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert!(
+        v.get("deferred").is_none(),
+        "block suppresses deferred envelope"
+    );
+    assert_eq!(v["status"].as_str(), Some("block"));
+}
