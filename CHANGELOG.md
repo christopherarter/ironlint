@@ -4,6 +4,15 @@ Notable changes to Hector, newest first. In-flight work lives in `plans/`.
 
 ## Unreleased
 
+### Subagent semantic-eval — deferred-payload path (H1)
+
+- New CLI flag `hector check --emit-semantic-payload` and new config value `llm.provider: claude-code-subagent`. When either is active, `engine: semantic` and `engine: session` rules are collected into a `DeferredVerdict` JSON envelope on stdout instead of being dispatched to the configured LLM. The envelope is byte-compatible with bully's `additionalContext` payload — the Claude Code adapter (H3, separate plan) wraps it for in-session subagent dispatch.
+- Exit code semantics unchanged: deterministic block → 2 (deferred suppressed); pass + envelope → 0; pass + no envelope → 0.
+- New module `hector_core::verdict_deferred` exposes `DeferredVerdict`, `DeferredPayload`, `DeferredRule`, and `DEFERRED_SCHEMA_VERSION` (independent of `Verdict::SCHEMA_VERSION`).
+- New helper `hector_core::llm::prompt::build_evaluator_input(rules, primary, context)` — concatenates the (system, user) tuple from `build_prompt_split` for inclusion in the envelope's `_evaluator_input` field.
+- Wire format documented in [`docs/emit-semantic-payload.md`](docs/emit-semantic-payload.md).
+- **Library-additive only.** No `Verdict` change, no exit-code change. Existing direct-API users (anthropic / openrouter / ollama) are unaffected.
+
 ### Script engine — `output: parsed | passthrough` (E2)
 
 - New per-rule `output:` field on `Rule`. `Parsed` (default) feeds the chosen stream through `engine::output::parse`, which extracts `file:line:col: msg` structure from canonical lint output (clippy `--message-format short`, `ruff`, `eslint --format compact`) and the `grep -n` `<line>:<text>` shape — populating `Violation.line` / `Violation.column`. `Passthrough` preserves the 0.1 behaviour: stdout+stderr land verbatim in `message` with `line: None`.
