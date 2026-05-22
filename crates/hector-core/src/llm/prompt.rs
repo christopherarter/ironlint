@@ -141,6 +141,22 @@ pub fn build_prompt_split(
     (system, user)
 }
 
+/// Render the bully-compatible `_evaluator_input` string for H1's deferred payload.
+///
+/// Concatenates the `(system, user)` tuple from
+/// [`build_prompt_split`] with a single newline — byte-identical to what
+/// the model would receive on the direct-API path, with the same
+/// sentinel-tag boundary and the same content sanitization. The subagent
+/// reads this verbatim.
+pub fn build_evaluator_input(
+    rules: &[(&str, &Rule)],
+    primary: &str,
+    context: Option<&str>,
+) -> String {
+    let (system, user) = build_prompt_split(rules, primary, context);
+    format!("{system}\n{user}")
+}
+
 /// Apply the three defenses for any user-controlled blob before it enters
 /// the prompt:
 ///
@@ -369,6 +385,36 @@ mod tests {
         let rule = sample_rule("any");
         let (_system, user) = build_prompt_split(&[("r1", &rule)], "```\nattack\n```\n", None);
         assert!(!user.contains("```"));
+    }
+
+    #[test]
+    fn build_evaluator_input_concatenates_split_prompt() {
+        // H1: `_evaluator_input` is the byte-identical concatenation of the
+        // (system, user) tuple `build_prompt_split` already produces. Locking
+        // this assertion means the subagent and the direct-API path read
+        // exactly the same content — no prompt drift between routes.
+        let rule = sample_rule("no DEBUG prints in committed code");
+        let rules = vec![("no-debug", &rule)];
+        let (sys, usr) = build_prompt_split(&rules, "let x = 1;\n", None);
+        let evaluator = build_evaluator_input(&rules, "let x = 1;\n", None);
+        assert_eq!(
+            evaluator,
+            format!("{sys}\n{usr}"),
+            "evaluator input must be (system, user) joined with one newline"
+        );
+    }
+
+    #[test]
+    fn build_evaluator_input_with_context() {
+        let rule = sample_rule("describe foo");
+        let rules = vec![("no-foo", &rule)];
+        let (sys, usr) = build_prompt_split(&rules, "primary content", Some("ctx content"));
+        let evaluator = build_evaluator_input(&rules, "primary content", Some("ctx content"));
+        assert_eq!(evaluator, format!("{sys}\n{usr}"));
+        // Sanity: both ends are present in the evaluator string.
+        assert!(evaluator.contains("<TRUSTED_POLICY>"));
+        assert!(evaluator.contains("<UNTRUSTED_EVIDENCE>"));
+        assert!(evaluator.contains("ctx content"));
     }
 
     fn sample_rule(desc: &str) -> crate::config::Rule {
