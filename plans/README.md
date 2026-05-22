@@ -11,15 +11,26 @@ A plan owns its own progress via its checkboxes — that's the source of truth. 
 
 ## Active
 
-The 0.2.0 bully-parity cohort (A1 prompt-injection, A2 skip patterns, A3 diff pre-filter) shipped, then B1 (parallel rule execution), E1 (baseline checksum), and C4 (`--rule` / `--explain` / `--print-prompt`) followed it. Four queued plans below cover the next batch from [`specs/2026-05-12-bully-parity-closures.md`](../specs/2026-05-12-bully-parity-closures.md).
-
-_(nothing queued — the four 0.2.x plans from `specs/2026-05-12-bully-parity-closures.md` all shipped on 2026-05-14. Lift items from `Future` below when the next cohort takes shape.)_
+_(nothing queued — H1/H2 plans land next, covering [`specs/2026-05-14-subagent-semantic-eval.md`](../specs/2026-05-14-subagent-semantic-eval.md))_
 
 ## Future
 
 Ideas that haven't graduated to plans. When something here has enough definition to write a plan against, lift it into a dated plan file.
 
-- _(nothing queued yet — add bullets here as the next cohort takes shape)_
+- **H1–H4 subagent semantic eval** ([spec](../specs/2026-05-14-subagent-semantic-eval.md)). Restores bully's Claude Code in-session subagent path so subscription users can run `engine: semantic` without an `ANTHROPIC_API_KEY`. H1 `--emit-semantic-payload` + H2 `record-verdict` are core scaffolding; H3 is the adapter mode; H4 is the docs walkback. H1 and H2 are independent and can ship in parallel.
+- **D2 `hector coverage`** and **D3 `hector debt`** ([spec §D](../specs/2026-05-12-bully-parity-closures.md)) — telemetry-derived rule-coverage and tech-debt reports. D1 (typed telemetry) shipped; these consume it.
+- **A4 `context.lines`** — per-rule context-line count override on the semantic prompt.
+- **C5 `validate --execute-dry-run`** — invoke `script:` rules in a sandbox during `validate`, surface failures early.
+- **F1 declarative session rules** — `when.changed_any` / `require.changed_any` as a deterministic alternative to LLM-driven session eval.
+- **G1 trust+rules split CI lint** (stop-gap; full trust-model decision blocks 0.3 freeze).
+
+### Shipped without a plan file
+
+Small/medium changes that landed direct-to-`main` without a dedicated plan; recorded here so they aren't invisible.
+
+- **2026-05-22** — E2 script-engine output modes (`Parsed` / `Passthrough`); see [`CHANGELOG.md`](../CHANGELOG.md#unreleased) and commit `3241026`.
+- **2026-05-22** — OpenCode adapter pre-flight gate (moved to `tool.execute.before` + shadow-write + late-init fix); commit `069cc74`.
+- **2026-05-22** — macOS capability-warning dedup (once per process instead of per script invocation); commit `f47ef82`.
 
 ## Archive
 
