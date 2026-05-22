@@ -21,6 +21,23 @@ fn engine_kind_to_verdict_engine(kind: EngineKind) -> crate::verdict::Engine {
     }
 }
 
+/// H1: decide whether a semantic or session rule should be collected
+/// into the deferred envelope instead of dispatched. Returns true only
+/// when the option is set AND the engine is one of the two LLM-dispatch
+/// engines — `Script` and `Ast` always run.
+fn should_defer(engine: EngineKind, options: &CheckOptions) -> bool {
+    options.emit_semantic_payload && matches!(engine, EngineKind::Semantic | EngineKind::Session)
+}
+
+/// H1: render a `Severity` as the bully-compatible string the deferred
+/// envelope's `severity` field carries.
+fn severity_string(s: crate::config::Severity) -> String {
+    match s {
+        crate::config::Severity::Error => "error".into(),
+        crate::config::Severity::Warning => "warning".into(),
+    }
+}
+
 /// C4: optional per-run knobs for `HectorEngine::check`. Plumbed via
 /// `HectorEngine::builder().with_options(...)` so the public `check`
 /// signature stays stable across additions.
@@ -33,6 +50,10 @@ pub struct CheckOptions {
     pub rules: HashSet<String>,
     /// If true, capture per-rule outcomes for the explain report.
     pub explain: bool,
+    /// H1: when true, `engine: semantic` and `engine: session` rules are
+    /// not dispatched — they are collected into [`CheckReport::deferred`]
+    /// for an in-session Claude Code subagent to evaluate.
+    pub emit_semantic_payload: bool,
 }
 
 /// C4: one row of the `--explain` report. Stays out of the verdict JSON
@@ -63,6 +84,12 @@ pub enum ExplainOutcome {
 pub struct CheckReport {
     pub verdict: Verdict,
     pub explain: Vec<RuleExplain>,
+    /// H1: present when `CheckOptions::emit_semantic_payload` was true
+    /// and at least one semantic/session rule survived scope/skip/
+    /// diff-prefilter. `None` otherwise. The CLI inspects this to
+    /// decide whether to emit a `DeferredVerdict` or a standard
+    /// `Verdict`.
+    pub deferred: Option<crate::verdict_deferred::DeferredVerdict>,
 }
 
 /// C4: one rendered semantic prompt. `system` + `user` mirror Anthropic's
@@ -369,6 +396,13 @@ impl HectorEngine {
     /// dispatch happens.
     pub fn config_rule_ids(&self) -> impl Iterator<Item = &str> {
         self.config.rules.keys().map(|k| k.as_str())
+    }
+
+    /// H1: lookup a rule by id from the loaded config. Used to resolve
+    /// `DeferredRule` ids back to their full definitions when building
+    /// the evaluator-input string.
+    pub fn config_rule(&self, id: &str) -> Option<&crate::config::Rule> {
+        self.config.rules.get(id)
     }
 
     /// C2: read-only scope walk. Returns the skip-pattern hit (if any)
@@ -819,6 +853,7 @@ impl HectorEngine {
             return Ok(CheckReport {
                 verdict,
                 explain: Vec::new(),
+                deferred: None,
             });
         }
 
@@ -845,13 +880,50 @@ impl HectorEngine {
         // set = run every rule. The collected pair list also keeps the
         // single-rule fast-path measurable (skip pool construction when
         // the filter narrows down to one rule).
+        //
+        // H1: when `emit_semantic_payload` is set, partition out the
+        // semantic/session rules into `deferred_rules` and drop them
+        // from the dispatch queue. Deterministic engines (script, ast)
+        // still run on the same per-file path. In-scope deferred rules
+        // are recorded for the envelope; out-of-scope deferred rules
+        // never enter the deferred payload (same scope discipline as
+        // the dispatch path).
         let filter: &HashSet<String> = &self.options.rules;
-        let selected: Vec<(&String, &Rule)> = self
-            .config
-            .rules
-            .iter()
-            .filter(|(rule_id, _)| filter.is_empty() || filter.contains(rule_id.as_str()))
-            .collect();
+        let mut selected: Vec<(&String, &Rule)> = Vec::new();
+        let mut deferred_rules: Vec<crate::verdict_deferred::DeferredRule> = Vec::new();
+        for (rule_id, rule) in &self.config.rules {
+            if !filter.is_empty() && !filter.contains(rule_id.as_str()) {
+                continue;
+            }
+            if should_defer(rule.engine, &self.options) {
+                let matcher = crate::config::scope::ScopeMatcher::new(&rule.scope)
+                    .expect("scope validated at load");
+                if !matcher.matches(&match_path) {
+                    continue;
+                }
+                deferred_rules.push(crate::verdict_deferred::DeferredRule {
+                    id: rule_id.clone(),
+                    description: rule.description.clone(),
+                    severity: severity_string(rule.severity),
+                    engine: match rule.engine {
+                        EngineKind::Semantic => "semantic".into(),
+                        EngineKind::Session => "session".into(),
+                        _ => unreachable!("should_defer guards on Semantic/Session"),
+                    },
+                });
+                if collect_explain {
+                    explain.push(RuleExplain {
+                        rule_id: rule_id.clone(),
+                        engine: rule.engine,
+                        outcome: ExplainOutcome::Skipped {
+                            reason: "deferred_subagent".into(),
+                        },
+                    });
+                }
+                continue;
+            }
+            selected.push((rule_id, rule));
+        }
 
         // B1: dispatch rules in parallel. Output order matches input
         // (`BTreeMap` key order, preserved by the `filter()` above) —
@@ -929,7 +1001,59 @@ impl HectorEngine {
         ) {
             eprintln!("hector: telemetry append failed: {e:#}");
         }
-        Ok(CheckReport { verdict, explain })
+        let deferred =
+            self.build_deferred_envelope(deferred_rules, &path, &content, &diff, &verdict);
+        Ok(CheckReport {
+            verdict,
+            explain,
+            deferred,
+        })
+    }
+
+    /// H1: assemble the `DeferredVerdict` envelope from the rules that
+    /// were short-circuited by `should_defer`. Returns `None` when the
+    /// list is empty so the CLI can branch on a single `Option`. Lives
+    /// outside `check_inner` to keep that function's cognitive
+    /// complexity below the workspace cap.
+    fn build_deferred_envelope(
+        &self,
+        deferred_rules: Vec<crate::verdict_deferred::DeferredRule>,
+        path: &Path,
+        content: &str,
+        diff: &str,
+        verdict: &Verdict,
+    ) -> Option<crate::verdict_deferred::DeferredVerdict> {
+        if deferred_rules.is_empty() {
+            return None;
+        }
+        // Resolve each deferred id back to its full `Rule` so the
+        // evaluator-input string sees the same `(id, &Rule)` slice the
+        // direct-API path would have seen.
+        let rule_refs: Vec<(&str, &crate::config::Rule)> = deferred_rules
+            .iter()
+            .filter_map(|d| self.config_rule(&d.id).map(|r| (d.id.as_str(), r)))
+            .collect();
+        let primary = if diff.is_empty() {
+            content.to_string()
+        } else {
+            diff.to_string()
+        };
+        let evaluator_input = crate::llm::prompt::build_evaluator_input(&rule_refs, &primary, None);
+
+        Some(crate::verdict_deferred::DeferredVerdict {
+            schema_version: crate::verdict_deferred::DEFERRED_SCHEMA_VERSION,
+            deferred: true,
+            hector_version: env!("CARGO_PKG_VERSION").to_string(),
+            passed_checks: verdict.passed_checks.clone(),
+            payload: crate::verdict_deferred::DeferredPayload {
+                file: path.display().to_string(),
+                diff: diff.to_string(),
+                passed_checks: verdict.passed_checks.clone(),
+                evaluate: deferred_rules,
+                evaluator_input,
+            },
+            elapsed_ms: verdict.elapsed_ms,
+        })
     }
 
     /// C4: render the LLM prompts that *would* be sent for every in-scope

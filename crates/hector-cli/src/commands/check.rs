@@ -35,6 +35,7 @@ pub fn run(
     let options = CheckOptions {
         rules: rule_set,
         explain,
+        ..CheckOptions::default()
     };
     let engine = match HectorEngine::builder().with_options(options).load(config) {
         Ok(e) => e,
