@@ -19,6 +19,7 @@ fn main() -> Result<()> {
             rules,
             explain,
             print_prompt,
+            emit_semantic_payload,
         } => commands::check::run(
             file,
             diff,
@@ -28,6 +29,7 @@ fn main() -> Result<()> {
             rules,
             explain,
             print_prompt,
+            emit_semantic_payload,
         )?,
         Command::Trust { config } => commands::trust::run(&config)?,
         Command::Validate { config } => commands::validate::run(&config)?,

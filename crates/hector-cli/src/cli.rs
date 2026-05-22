@@ -36,6 +36,16 @@ pub enum Command {
         /// without dispatching to the LLM. Debug-only.
         #[arg(long = "print-prompt")]
         print_prompt: bool,
+        /// H1: instead of dispatching `engine: semantic` and
+        /// `engine: session` rules to the configured LLM, collect them
+        /// into a `DeferredVerdict` JSON envelope for an in-session
+        /// Claude Code subagent to evaluate. Adapter-internal.
+        #[arg(
+            long = "emit-semantic-payload",
+            conflicts_with = "session",
+            conflicts_with = "print_prompt"
+        )]
+        emit_semantic_payload: bool,
     },
     /// Compute the trust fingerprint and write it to the config.
     Trust {

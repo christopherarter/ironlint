@@ -5,7 +5,11 @@ use hector_core::verdict::{Status, Verdict};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-#[allow(clippy::too_many_arguments)]
+// `run` is the single entry point dispatched from `main` — its argument
+// list mirrors the clap variant. Refactoring the four flag bools into a
+// flags struct would scatter the call-site without simplifying the
+// branching here, so the lint is suppressed locally.
+#[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
 pub fn run(
     file: Option<PathBuf>,
     diff: Option<PathBuf>,
@@ -15,6 +19,7 @@ pub fn run(
     rules: Vec<String>,
     explain: bool,
     print_prompt: bool,
+    emit_semantic_payload: bool,
 ) -> Result<i32> {
     // First load without options so we can validate `--rule` against the
     // resolved rule list at the CLI boundary. The trust-and-parse work is
@@ -35,7 +40,7 @@ pub fn run(
     let options = CheckOptions {
         rules: rule_set,
         explain,
-        ..CheckOptions::default()
+        emit_semantic_payload,
     };
     let engine = match HectorEngine::builder().with_options(options).load(config) {
         Ok(e) => e,
@@ -71,8 +76,24 @@ pub fn run(
             if explain {
                 print_explain(&report.explain);
             }
+            if let Some(d) = &report.deferred {
+                // Deterministic block still wins — never emit deferred on
+                // top of an error-severity violation. (Verdict::status was
+                // built from the deterministic violations only; semantic/
+                // session were collected, not dispatched.)
+                if matches!(report.verdict.status, Status::Block) {
+                    emit(&report.verdict, format)?;
+                    return Ok(2);
+                }
+                emit_deferred(d, format)?;
+                return Ok(0);
+            }
             emit(&report.verdict, format)?;
             Ok(exit_code(&report.verdict))
+        }
+        (None, Some(_)) if emit_semantic_payload => {
+            eprintln!("ERROR: --emit-semantic-payload is not supported with --diff yet (multi-file envelope aggregation is a follow-up)");
+            Ok(1)
         }
         (None, Some(d)) => {
             let unified_diff = std::fs::read_to_string(&d)?;
@@ -207,6 +228,21 @@ fn exit_code(v: &Verdict) -> i32 {
 /// leaves `.hector/session.json` intact for re-inspection.
 fn should_clear_session(status: Status) -> bool {
     matches!(status, Status::Pass | Status::Warn)
+}
+
+fn emit_deferred(
+    d: &hector_core::verdict_deferred::DeferredVerdict,
+    format: OutputFormat,
+) -> Result<()> {
+    match format {
+        OutputFormat::Json | OutputFormat::Human => {
+            // For deferred envelopes, JSON is always the wire format —
+            // the adapter parses it via `jq`. `--format human` falls back
+            // to JSON because the envelope is machine-only.
+            println!("{}", serde_json::to_string_pretty(d)?);
+        }
+    }
+    Ok(())
 }
 
 fn emit(v: &Verdict, format: OutputFormat) -> Result<()> {
