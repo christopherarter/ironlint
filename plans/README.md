@@ -17,7 +17,7 @@ _(nothing queued — H1/H2 plans land next, covering [`specs/2026-05-14-subagent
 
 Ideas that haven't graduated to plans. When something here has enough definition to write a plan against, lift it into a dated plan file.
 
-- **H3–H4 subagent semantic eval** ([spec](../specs/2026-05-14-subagent-semantic-eval.md)). H1 shipped 2026-05-22 → [archive](archive/2026-05-14-hector-h1-emit-semantic-payload.md); H2 shipped 2026-05-22 → [archive](archive/2026-05-14-hector-h2-record-verdict.md). H3 is the Claude Code adapter mode that consumes H1's envelope and calls H2's CLI; H4 is the docs walkback.
+- **H3–H4 subagent semantic eval** ([spec](../specs/2026-05-14-subagent-semantic-eval.md)). Restores bully's Claude Code in-session subagent path so subscription users can run `engine: semantic` without an `ANTHROPIC_API_KEY`. H1 shipped 2026-05-22 → [archive](archive/2026-05-14-hector-h1-emit-semantic-payload.md); H2 shipped 2026-05-22 → [archive](archive/2026-05-14-hector-h2-record-verdict.md). H3 is the Claude Code adapter mode that consumes H1's envelope and calls H2's CLI; H4 is the docs walkback.
 - **D2 `hector coverage`** and **D3 `hector debt`** ([spec §D](../specs/2026-05-12-bully-parity-closures.md)) — telemetry-derived rule-coverage and tech-debt reports. D1 (typed telemetry) shipped; these consume it.
 - **A4 `context.lines`** — per-rule context-line count override on the semantic prompt.
 - **C5 `validate --execute-dry-run`** — invoke `script:` rules in a sandbox during `validate`, surface failures early.
