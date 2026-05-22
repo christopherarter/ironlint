@@ -13,6 +13,15 @@ Notable changes to Hector, newest first. In-flight work lives in `plans/`.
 - Wire format documented in [`docs/emit-semantic-payload.md`](docs/emit-semantic-payload.md).
 - **Library-additive only.** No `Verdict` change, no exit-code change. Existing direct-API users (anthropic / openrouter / ollama) are unaffected.
 
+### Subagent semantic-eval — `hector record-verdict` (H2)
+
+- New CLI subcommand `hector record-verdict --rule <id> --verdict <pass|violation> [--file <path>] [--dir <path>]`. Appends one `LogEntry::SemanticVerdict` record to `.hector/log.jsonl` so subagent-evaluated rules show up in coverage reports. Consumed by the Claude Code adapter's interpreter skill (H3, separate plan).
+- `--verdict` is a clap `ValueEnum`; invalid values are rejected at parse time.
+- First invocation against a fresh log lazily stamps a `session_init` record so the log starts with the canonical first-record type.
+- Exit codes: `0` success, `1` telemetry write failure. Never `2` — `record-verdict` is not a gate.
+- Wire format and trust model documented in [`docs/record-verdict.md`](docs/record-verdict.md).
+- **Library-additive only.** No new core surface; reuses `hector_core::telemetry::{append, LogEntry::SemanticVerdict}` shipped in D1.
+
 ### Script engine — `output: parsed | passthrough` (E2)
 
 - New per-rule `output:` field on `Rule`. `Parsed` (default) feeds the chosen stream through `engine::output::parse`, which extracts `file:line:col: msg` structure from canonical lint output (clippy `--message-format short`, `ruff`, `eslint --format compact`) and the `grep -n` `<line>:<text>` shape — populating `Violation.line` / `Violation.column`. `Passthrough` preserves the 0.1 behaviour: stdout+stderr land verbatim in `message` with `line: None`.
