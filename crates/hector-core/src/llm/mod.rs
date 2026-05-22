@@ -76,8 +76,16 @@ pub fn build_from_config(cfg: &LlmConfig) -> Result<Option<Box<dyn LlmClient>>> 
                 key, &cfg.model, base,
             ))))
         }
+        "claude-code-subagent" => {
+            // H1: the deferred-payload path. No LLM client is constructed;
+            // the runner detects None and emits a DeferredVerdict that the
+            // Claude Code adapter routes to an in-session subagent. We do
+            // NOT emit the missing-API-key warning here — that path is for
+            // misconfiguration; this is an opt-in routing choice.
+            Ok(None)
+        }
         other => {
-            bail!("unknown LLM provider `{other}`. Supported: anthropic, ollama, openrouter")
+            bail!("unknown LLM provider `{other}`. Supported: anthropic, claude-code-subagent, ollama, openrouter")
         }
     }
 }
