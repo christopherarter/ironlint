@@ -926,9 +926,9 @@ impl HectorEngine {
         }
 
         // B1: dispatch rules in parallel. Output order matches input
-        // (`BTreeMap` key order, preserved by the `filter()` above) —
-        // `par_iter().collect::<Vec<_>>()` is deterministic. Single-rule
-        // workloads skip pool construction entirely.
+        // (`BTreeMap` key order, preserved by the partitioning loop
+        // above) — `par_iter().collect::<Vec<_>>()` is deterministic.
+        // Single-rule workloads skip pool construction entirely.
         let outcomes: Vec<RuleOutcome> = if selected.len() <= 1 {
             selected
                 .iter()

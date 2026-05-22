@@ -120,3 +120,53 @@ fn deferred_mode_envelope_carries_diff_in_diff_input() {
         hector_core::runner::ExplainOutcome::Skipped { reason } if reason == "deferred_subagent"
     )));
 }
+
+#[test]
+fn deferred_mode_no_envelope_when_scope_misses() {
+    // Regression: a deferred rule whose scope doesn't match the input
+    // must NOT appear in the envelope. The whole envelope should be
+    // None when no deferred rules survive scope matching.
+    let tmp = tempdir().unwrap();
+    let cfg_yaml = r#"
+schema_version: 2
+trust:
+  fingerprint: PLACEHOLDER
+llm:
+  provider: claude-code-subagent
+  model: ignored
+rules:
+  py-only:
+    description: only fires on python files
+    engine: semantic
+    scope: ["**/*.py"]
+    severity: error
+"#;
+    let cfg_path = tmp.path().join(".hector.yml");
+    fs::write(&cfg_path, cfg_yaml).unwrap();
+    let yaml = fs::read_to_string(&cfg_path).unwrap();
+    let new = hector_core::trust::write_trust_block(&yaml).unwrap();
+    fs::write(&cfg_path, new).unwrap();
+
+    let src = tmp.path().join("foo.rs");
+    fs::write(&src, "fn main() {}\n").unwrap();
+
+    let opts = CheckOptions {
+        rules: HashSet::new(),
+        explain: false,
+        emit_semantic_payload: true,
+    };
+    let engine = HectorEngine::builder()
+        .with_options(opts)
+        .load(&cfg_path)
+        .expect("config loads");
+    let content = fs::read_to_string(&src).unwrap();
+    let report = engine
+        .check_with_explain(CheckInput::File { path: src, content })
+        .expect("check succeeds");
+
+    assert!(
+        report.deferred.is_none(),
+        "no deferred rule survives scope matching → no envelope; got {:?}",
+        report.deferred
+    );
+}
