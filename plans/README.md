@@ -17,7 +17,7 @@ _(nothing queued — H1/H2 plans land next, covering [`specs/2026-05-14-subagent
 
 Ideas that haven't graduated to plans. When something here has enough definition to write a plan against, lift it into a dated plan file.
 
-- **H2–H4 subagent semantic eval** ([spec](../specs/2026-05-14-subagent-semantic-eval.md)). Restores bully's Claude Code in-session subagent path so subscription users can run `engine: semantic` without an `ANTHROPIC_API_KEY`. H1 shipped 2026-05-22 → [archive](archive/2026-05-14-hector-h1-emit-semantic-payload.md); H2 `record-verdict` is the remaining core scaffolding; H3 is the adapter mode; H4 is the docs walkback.
+- **H3–H4 subagent semantic eval** ([spec](../specs/2026-05-14-subagent-semantic-eval.md)). H1 shipped 2026-05-22 → [archive](archive/2026-05-14-hector-h1-emit-semantic-payload.md); H2 shipped 2026-05-22 → [archive](archive/2026-05-14-hector-h2-record-verdict.md). H3 is the Claude Code adapter mode that consumes H1's envelope and calls H2's CLI; H4 is the docs walkback.
 - **D2 `hector coverage`** and **D3 `hector debt`** ([spec §D](../specs/2026-05-12-bully-parity-closures.md)) — telemetry-derived rule-coverage and tech-debt reports. D1 (typed telemetry) shipped; these consume it.
 - **A4 `context.lines`** — per-rule context-line count override on the semantic prompt.
 - **C5 `validate --execute-dry-run`** — invoke `script:` rules in a sandbox during `validate`, surface failures early.
@@ -52,6 +52,7 @@ Completed plans live in [`archive/`](archive/). They're frozen design records.
 - [`2026-05-13-hector-c2-explain-guide`](archive/2026-05-13-hector-c2-explain-guide.md) — `hector explain <file>` and `hector guide <file>` read-only inspection subcommands; shared `scope_outcomes` helper in `hector-core`; JSON snapshots locked with insta.
 - [`2026-05-13-hector-c3-show-resolved-config`](archive/2026-05-13-hector-c3-show-resolved-config.md) — `hector show-resolved-config` (TSV / YAML / JSON) with per-rule origin tracking; `extends::resolve_with_origin` core helper.
 - [`2026-05-14-hector-h1-emit-semantic-payload`](archive/2026-05-14-hector-h1-emit-semantic-payload.md) — `hector check --emit-semantic-payload` flag + `llm.provider: claude-code-subagent` provider arm + `DeferredVerdict` envelope (`hector_core::verdict_deferred`); enables H3 (Claude Code adapter subagent mode).
+- [`2026-05-14-hector-h2-record-verdict`](archive/2026-05-14-hector-h2-record-verdict.md) — `hector record-verdict` subcommand appends one `SemanticVerdict` record to `.hector/log.jsonl`; consumed by the Claude Code interpreter skill (H3) to keep coverage reports accurate under subagent-mediated semantic eval.
 
 ## Conventions
 
