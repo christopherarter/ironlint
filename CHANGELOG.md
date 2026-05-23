@@ -4,6 +4,12 @@ Notable changes to Hector, newest first. In-flight work lives in `plans/`.
 
 ## Unreleased
 
+### Script engine — `output:` default flipped to `passthrough` (R4)
+
+- **Breaking (config):** Per-rule `output:` field default changes from `parsed` → `passthrough`. Existing configs that depended on parsed-mode violation extraction must now set `output: parsed` explicitly. The set of supported parsed formats does not grow — we will not chase a parser per tool.
+- Rationale: first real-world test (2026-05-23) showed `parsed` mis-handling biome's pretty diagnostic frame as a chain of false violations. Bully's design is passthrough; we match it.
+- `hector init` scaffold no longer emits `output: parsed`.
+
 ### Subagent semantic-eval — deferred-payload path (H1)
 
 - New CLI flag `hector check --emit-semantic-payload` and new config value `llm.provider: claude-code-subagent`. When either is active, `engine: semantic` and `engine: session` rules are collected into a `DeferredVerdict` JSON envelope on stdout instead of being dispatched to the configured LLM. The envelope is byte-compatible with bully's `additionalContext` payload — the Claude Code adapter (H3, separate plan) wraps it for in-session subagent dispatch.

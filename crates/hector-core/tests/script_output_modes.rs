@@ -59,21 +59,34 @@ fn parsed_mode_extracts_line_from_grep_n_output() {
 }
 
 #[test]
-fn parsed_mode_is_the_default_when_field_omitted() {
-    // `OutputMode::default()` is `Parsed`. Confirms that a rule
-    // constructed without explicitly setting `output:` behaves the
-    // same as one with `output: parsed` — matters because YAML configs
-    // with no `output:` field rely on serde-default to land here.
+fn passthrough_mode_is_the_default_when_field_omitted() {
+    // R4 (2026-05-23): default flipped from Parsed → Passthrough so
+    // unconfigured `output:` lands the verbatim stream in `message`. This
+    // test pins the new default: a script whose stdout *would* parse cleanly
+    // under the old parsed default (`42:beta` → `line=42, message=beta`)
+    // must instead come through verbatim, with `line: None`. If this fails
+    // with `vs[0].line == Some(42)` the default is silently parsed again
+    // and biome-style frames will mangle (see audit transcript 2 lines
+    // 38–90).
     let dir = tempdir().unwrap();
     let file = dir.path().join("dirty.txt");
     std::fs::write(&file, "alpha\n42:beta\n").unwrap();
-    // Explicit print of `42:beta` so we don't depend on grep's exit
-    // semantics — we just need the script to fail with parseable output.
+    // Explicit print of `42:beta`: under the old default this parsed as
+    // grep-n shape; under the new default it must land verbatim.
     let rule = make_rule("printf '42:beta\\n' && exit 1", OutputMode::default());
     let vs = run_script_rule("default-mode", &rule, &file, "", dir.path()).expect("run");
-    assert_eq!(vs.len(), 1);
-    assert_eq!(vs[0].line, Some(42));
-    assert_eq!(vs[0].message, "beta");
+    assert_eq!(vs.len(), 1, "expected one violation, got {vs:?}");
+    assert_eq!(
+        vs[0].line, None,
+        "passthrough default must not extract a line number, got {:?}",
+        vs[0]
+    );
+    assert_eq!(
+        vs[0].message.trim(),
+        "42:beta",
+        "passthrough default must preserve the verbatim stream, got {:?}",
+        vs[0].message
+    );
 }
 
 #[test]

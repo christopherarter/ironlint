@@ -22,12 +22,12 @@ impl RuleEngine for ScriptEngine {
 
 /// Run a single script rule and return every violation it produced.
 ///
-/// E2 (bully parity): when the rule opts into `output: parsed` (the
-/// default), the chosen stream is fed to [`output::parse`] and one
-/// `Violation` is emitted per [`ParsedRecord`] — populating `line` and
-/// `column` for canonical lint output. `output: passthrough` preserves
-/// the 0.1 behaviour: one violation, full stream in `message`, `line:
-/// None`. Either way, an exit code of 0 still means "no violations."
+/// `output: passthrough` (default since R4, 2026-05-23) emits one violation
+/// with the verbatim stdout+stderr in `message` and `line: None` — matches
+/// bully and keeps pretty-printed linter frames intact.
+/// `output: parsed` opts into [`output::parse`], which extracts structured
+/// records (`file:line:col: msg`, `grep -n`, JSON) and emits one `Violation`
+/// per record. Either way, an exit code of 0 still means "no violations."
 pub fn run_script_rule(
     rule_id: &str,
     rule: &Rule,

@@ -69,13 +69,16 @@ pub struct Rule {
 
     /// E2 (bully parity): how to interpret the script's stdout/stderr.
     ///
-    /// `Parsed` (default) runs the output through
-    /// [`crate::engine::output::parse`], which extracts `file:line:col`
-    /// structure from canonical lint output (ruff, eslint --format
-    /// compact, clippy --message-format short, …) and the `grep -n` shape.
-    /// `Passthrough` keeps the historical 0.1 behaviour: the chosen
-    /// stream lands verbatim in `Violation.message` with `line: None`,
-    /// for cases where the script already formats its own diagnostic.
+    /// `Passthrough` (default since R4, 2026-05-23) keeps the chosen stream
+    /// verbatim in `Violation.message` with `line: None` — matches bully's
+    /// design and avoids mis-parsing pretty-printed linter frames (biome,
+    /// eslint pretty, clippy default, …) as chains of false violations.
+    /// `Parsed` is opt-in for the formats we explicitly support
+    /// ([`crate::engine::output::parse`] handles canonical
+    /// `file:line:col: msg` from ruff / eslint --format compact /
+    /// clippy --message-format short, the `grep -n` `<line>:<text>` shape,
+    /// and JSON objects/arrays). The supported-format set does not grow —
+    /// we will not chase a parser per linter.
     ///
     /// Only consulted by the script engine. Other engines ignore this
     /// field — they construct violations from in-process structure.
@@ -83,14 +86,17 @@ pub struct Rule {
     pub output: OutputMode,
 }
 
-/// E2: per-rule script-output interpretation. Default is [`OutputMode::Parsed`]
-/// to match bully — most lint tools emit canonical `file:line:col: msg`
-/// and authors expect Hector to surface that structure.
+/// Per-rule script-output interpretation.
+///
+/// Default is [`OutputMode::Passthrough`] (R4, 2026-05-23) — matches bully
+/// and keeps unconfigured rules safe against pretty-printed linter frames.
+/// [`OutputMode::Parsed`] is opt-in; see the [`Rule::output`] docs for the
+/// list of formats it knows.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum OutputMode {
-    #[default]
     Parsed,
+    #[default]
     Passthrough,
 }
 
