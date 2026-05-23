@@ -4,6 +4,16 @@ Notable changes to Hector, newest first. In-flight work lives in `plans/`.
 
 ## Unreleased
 
+### `hector init` — workspace & linter detection (R1)
+
+- Scaffolds scopes from the detected workspace shape (`pnpm-workspace.yaml`, `package.json` `workspaces`, Cargo `[workspace] members`, `go.work`). Single-package repos still get `src/**/*.<ext>`; monorepos get per-workspace globs like `apps/**/src/**/*.ts`.
+- Detects existing linters (biome, eslint, ruff) and:
+  - Skips grep rules that would duplicate the linter (e.g. no `no-console-log` when biome is configured).
+  - Scaffolds a passthrough wrapper rule (`biome-check` / `eslint-check`) instead, using the project's package-manager exec command (`pnpm exec` / `yarn exec` / `npx`).
+- Always appends a commented-out `llm:` block + example semantic rule so the subagent path is discoverable without docs.
+- No flags added — detection is automatic.
+- `init.rs` split into a submodule (`commands/init/{mod.rs, detect.rs}`) so detection is testable in isolation.
+
 ### Verdict — surface deferred semantic rules on blocked verdicts (R6)
 
 - `Verdict` now carries an optional `deferred_rules: Vec<DeferredRuleRef>` field listing rules that would have been evaluated by the subagent path but were suppressed because a deterministic rule blocked the edit first. Each entry is `{ rule_id, severity, reason }`. Closes the "silently dropped my semantic rule" gap surfaced by the first-run audit (transcript 2).
