@@ -200,7 +200,7 @@ Recreates current Bully behavior.
 - **Hook:** `PostToolUse` matcher `Edit|Write`. Bash wrapper invokes `hector check --diff <stdin> --format json`, exits `2` on block, `0` otherwise.
 - **Plugin manifest:** `plugin.json` for the `/plugin install` flow.
 - **Skills:** `hector-init`, `hector-author`, `hector-review` (ported from Bully).
-- **Subagent removed:** semantic evaluation goes directly through the configured LLM provider, not through a Claude Code subagent. This drops a Claude-Code-specific coupling and reduces token usage. Behavior should be observably equivalent.
+- **Two semantic-eval paths.** Direct-API mode (default, set via `llm.provider: anthropic | openrouter | ollama`) calls the configured LLM provider directly. Subagent mode (opt-in via `llm.provider: claude-code-subagent`) routes through an in-session Claude Code subagent — required for subscription-only users since headless `claude -p` is not subscription-funded. The hook detects mode via `hector show-resolved-config` and emits a `hookSpecificOutput.additionalContext` envelope under subagent mode; the `hector` skill interprets it and dispatches the `hector-evaluator` subagent. See [`specs/2026-05-14-subagent-semantic-eval.md`](./2026-05-14-subagent-semantic-eval.md).
 
 ### 7.2 Aider (`adapters/aider/`)
 
@@ -279,6 +279,6 @@ Rule semantics are preserved exactly; the user-visible config change is purely c
 
 4. **Rule packs / registry.** Should we ship `hector pack add react-strict` for curated rule sets from a registry, or keep everything user-authored as Bully does today? Defer to post-1.0; design the namespacing now so it's not painful to add later.
 
-5. **Subagent-removal impact.** Existing Bully users may benefit from the Claude Code subagent's context isolation. Direct API calls have different cost/latency characteristics. Benchmark a representative repo (10–20 rules, mixed engines) before committing to the removal.
+5. **Subagent-removal impact.** ~~Existing Bully users may benefit from the Claude Code subagent's context isolation. Direct API calls have different cost/latency characteristics. Benchmark a representative repo (10–20 rules, mixed engines) before committing to the removal.~~ **Resolved (2026-05-23).** The `claude -p` allowance withdrawal made the subagent path the only viable option for Claude Code subscription users, which changed the math: rather than benchmarking direct-vs-subagent, both ship as user-selectable modes. See [`specs/2026-05-14-subagent-semantic-eval.md`](./2026-05-14-subagent-semantic-eval.md) and the §7.1 update above.
 
 6. **Mojo bindings, eventually.** The trait-based LLM client means a Mojo-backed `LlmClient` could ship later if a Mojo HTTP/async story matures. Not on the roadmap; noted to avoid foreclosing it.

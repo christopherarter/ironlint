@@ -11,13 +11,12 @@ A plan owns its own progress via its checkboxes — that's the source of truth. 
 
 ## Active
 
-_(nothing queued — H1/H2 plans land next, covering [`specs/2026-05-14-subagent-semantic-eval.md`](../specs/2026-05-14-subagent-semantic-eval.md))_
+_(nothing queued)_
 
 ## Future
 
 Ideas that haven't graduated to plans. When something here has enough definition to write a plan against, lift it into a dated plan file.
 
-- **H3–H4 subagent semantic eval** ([spec](../specs/2026-05-14-subagent-semantic-eval.md)). Restores bully's Claude Code in-session subagent path so subscription users can run `engine: semantic` without an `ANTHROPIC_API_KEY`. H1 shipped 2026-05-22 → [archive](archive/2026-05-14-hector-h1-emit-semantic-payload.md); H2 shipped 2026-05-22 → [archive](archive/2026-05-14-hector-h2-record-verdict.md). H3 is the Claude Code adapter mode that consumes H1's envelope and calls H2's CLI; H4 is the docs walkback.
 - **D2 `hector coverage`** and **D3 `hector debt`** ([spec §D](../specs/2026-05-12-bully-parity-closures.md)) — telemetry-derived rule-coverage and tech-debt reports. D1 (typed telemetry) shipped; these consume it.
 - **A4 `context.lines`** — per-rule context-line count override on the semantic prompt.
 - **C5 `validate --execute-dry-run`** — invoke `script:` rules in a sandbox during `validate`, surface failures early.
@@ -31,6 +30,7 @@ Small/medium changes that landed direct-to-`main` without a dedicated plan; reco
 - **2026-05-22** — E2 script-engine output modes (`Parsed` / `Passthrough`); see [`CHANGELOG.md`](../CHANGELOG.md#unreleased) and commit `3241026`.
 - **2026-05-22** — OpenCode adapter pre-flight gate (moved to `tool.execute.before` + shadow-write + late-init fix); commit `069cc74`.
 - **2026-05-22** — macOS capability-warning dedup (once per process instead of per script invocation); commit `f47ef82`.
+- **2026-05-23** — H4 spec + docs walkback: `specs/overview.md` §7.1 rewritten as two-paths (direct-API + subagent), §11.5 marked resolved, H3 plan archived. See merge commit.
 
 ## Archive
 
@@ -53,6 +53,7 @@ Completed plans live in [`archive/`](archive/). They're frozen design records.
 - [`2026-05-13-hector-c3-show-resolved-config`](archive/2026-05-13-hector-c3-show-resolved-config.md) — `hector show-resolved-config` (TSV / YAML / JSON) with per-rule origin tracking; `extends::resolve_with_origin` core helper.
 - [`2026-05-14-hector-h1-emit-semantic-payload`](archive/2026-05-14-hector-h1-emit-semantic-payload.md) — `hector check --emit-semantic-payload` flag + `llm.provider: claude-code-subagent` provider arm + `DeferredVerdict` envelope (`hector_core::verdict_deferred`); enables H3 (Claude Code adapter subagent mode).
 - [`2026-05-14-hector-h2-record-verdict`](archive/2026-05-14-hector-h2-record-verdict.md) — `hector record-verdict` subcommand appends one `SemanticVerdict` record to `.hector/log.jsonl`; consumed by the Claude Code interpreter skill (H3) to keep coverage reports accurate under subagent-mediated semantic eval.
+- [`2026-05-14-hector-h3-adapter-subagent-mode`](archive/2026-05-14-hector-h3-adapter-subagent-mode.md) — Claude Code adapter subagent mode: hook routes `llm.provider: claude-code-subagent` through `--emit-semantic-payload`, wraps the result in `hookSpecificOutput.additionalContext`; new `hector` interpreter skill + `hector-evaluator` subagent close the loop. Restores bully parity for subscription users.
 
 ## Conventions
 
