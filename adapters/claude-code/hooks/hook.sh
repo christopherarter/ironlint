@@ -91,22 +91,63 @@ case "${MODE}" in
     # 1. Record the edit into session state (non-blocking).
     hector session record --dir "${PROJECT_ROOT}" --file "${FILE}" --diff "${DIFF}" >/dev/null 2>&1 || true
 
-    # 2. Gate the edit by running checks. Differentiate hector exit codes:
-    #    0 = pass/warn, 2 = block (rule violation), 1 = internal error.
+    # 2. Detect mode. `hector show-resolved-config --format json` is cheap
+    #    (no LLM, no engine dispatch). `.llm.provider // empty` falls through
+    #    to the direct-API branch when no `llm:` block is configured.
+    PROVIDER=$(hector show-resolved-config --config "${CONFIG}" --format json 2>/dev/null \
+      | jq -r '.llm.provider // empty' 2>/dev/null || true)
+
+    # 3. Gate the edit by running checks. Differentiate hector exit codes:
+    #    0 = pass/warn (or deferred payload under subagent mode),
+    #    2 = block (rule violation),
+    #    1 = internal error.
     TMP_VERDICT=$(mktemp -t hector-verdict.XXXXXX)
     EC=0
-    hector check --file "${FILE}" --config "${CONFIG}" --format json > "${TMP_VERDICT}" || EC=$?
-    case "${EC}" in
-      0) exit 0 ;;
-      2)
-        cat "${TMP_VERDICT}" >&2
-        exit 2
-        ;;
-      *)
-        echo "hector: internal error checking ${FILE} (exit ${EC})" >&2
-        [[ -s "${TMP_VERDICT}" ]] && cat "${TMP_VERDICT}" >&2
-        exit 1
-        ;;
-    esac
+    if [[ "${PROVIDER}" == "claude-code-subagent" ]]; then
+      # Subagent mode: ask core to emit a deferred-semantic payload instead
+      # of dispatching to an LLM.
+      hector check --file "${FILE}" --config "${CONFIG}" --format json \
+        --emit-semantic-payload > "${TMP_VERDICT}" 2>/dev/null || EC=$?
+      case "${EC}" in
+        0)
+          # Either a DeferredVerdict (envelope on stdout) or a clean standard
+          # verdict (no envelope, no stdout).
+          if jq -e '.deferred == true' < "${TMP_VERDICT}" >/dev/null 2>&1; then
+            jq -n --slurpfile p "${TMP_VERDICT}" '{
+              hookSpecificOutput: {
+                hookEventName: "PostToolUse",
+                additionalContext: ("AGENTIC LINT SEMANTIC EVALUATION REQUIRED:\n\n" + ($p[0].payload | tojson))
+              }
+            }'
+          fi
+          exit 0
+          ;;
+        2)
+          cat "${TMP_VERDICT}" >&2
+          exit 2
+          ;;
+        *)
+          echo "hector: internal error checking ${FILE} (exit ${EC})" >&2
+          [[ -s "${TMP_VERDICT}" ]] && cat "${TMP_VERDICT}" >&2
+          exit 1
+          ;;
+      esac
+    else
+      # Direct-API mode (anthropic / openrouter / ollama / no llm at all).
+      # Unchanged from pre-H3 behaviour.
+      hector check --file "${FILE}" --config "${CONFIG}" --format json > "${TMP_VERDICT}" || EC=$?
+      case "${EC}" in
+        0) exit 0 ;;
+        2)
+          cat "${TMP_VERDICT}" >&2
+          exit 2
+          ;;
+        *)
+          echo "hector: internal error checking ${FILE} (exit ${EC})" >&2
+          [[ -s "${TMP_VERDICT}" ]] && cat "${TMP_VERDICT}" >&2
+          exit 1
+          ;;
+      esac
+    fi
     ;;
 esac
