@@ -22,6 +22,15 @@ Notable changes to Hector, newest first. In-flight work lives in `plans/`.
 - Wire format and trust model documented in [`docs/record-verdict.md`](docs/record-verdict.md).
 - **Library-additive only.** No new core surface; reuses `hector_core::telemetry::{append, LogEntry::SemanticVerdict}` shipped in D1.
 
+### Subagent semantic-eval — Claude Code adapter mode (H3)
+
+- New Claude Code adapter mode activated by `llm.provider: claude-code-subagent` in `.hector.yml`. The `PostToolUse` hook routes through `hector check --emit-semantic-payload` (H1) and wraps the resulting `DeferredVerdict` in Claude Code's `hookSpecificOutput.additionalContext` envelope, preamble `AGENTIC LINT SEMANTIC EVALUATION REQUIRED:`. Restores bully's in-session subagent path for Claude Code subscription users — no `ANTHROPIC_API_KEY` required.
+- New interpreter skill `adapters/claude-code/skills/hector/SKILL.md` activates on the preamble, judges short single-rule payloads inline, dispatches the `hector-evaluator` subagent for everything else, applies error-severity fixes via `Edit`, and records each rule's verdict through `hector record-verdict` (H2) so coverage telemetry remains accurate.
+- New subagent definition `adapters/claude-code/agents/hector-evaluator.md` — read-only, returns `VIOLATIONS:` / `NO_VIOLATIONS:` text, no `Read`/`Grep`/`Glob` tools.
+- Direct-API mode (anthropic / openrouter / ollama) is unchanged — the hook only diverges when `.llm.provider == "claude-code-subagent"`.
+- Plugin version bumped 0.1.0 → 0.2.0.
+- Adapter README documents both modes and the `model:` placeholder requirement.
+
 ### Script engine — `output: parsed | passthrough` (E2)
 
 - New per-rule `output:` field on `Rule`. `Parsed` (default) feeds the chosen stream through `engine::output::parse`, which extracts `file:line:col: msg` structure from canonical lint output (clippy `--message-format short`, `ruff`, `eslint --format compact`) and the `grep -n` `<line>:<text>` shape — populating `Violation.line` / `Violation.column`. `Passthrough` preserves the 0.1 behaviour: stdout+stderr land verbatim in `message` with `line: None`.
