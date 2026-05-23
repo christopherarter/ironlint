@@ -1040,6 +1040,16 @@ impl HectorEngine {
         };
         let evaluator_input = crate::llm::prompt::build_evaluator_input(&rule_refs, &primary, None);
 
+        // R5: thread the optional evaluator_model override from the
+        // loaded `llm:` block into the payload. Only the subagent
+        // provider reads this; other providers never construct a
+        // deferred envelope so the value would be meaningless anyway.
+        let evaluator_model = self
+            .config
+            .llm
+            .as_ref()
+            .and_then(|l| l.evaluator_model.clone());
+
         Some(crate::verdict_deferred::DeferredVerdict {
             schema_version: crate::verdict_deferred::DEFERRED_SCHEMA_VERSION,
             deferred: true,
@@ -1051,6 +1061,7 @@ impl HectorEngine {
                 passed_checks: verdict.passed_checks.clone(),
                 evaluate: deferred_rules,
                 evaluator_input,
+                evaluator_model,
             },
             elapsed_ms: verdict.elapsed_ms,
         })

@@ -10,7 +10,8 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 fn lcfg(provider: &str, api_key_env: Option<&str>, base_url: Option<&str>) -> LlmConfig {
     LlmConfig {
         provider: provider.to_string(),
-        model: "test-model".to_string(),
+        model: Some("test-model".to_string()),
+        evaluator_model: None,
         api_key_env: api_key_env.map(str::to_string),
         base_url: base_url.map(str::to_string),
     }

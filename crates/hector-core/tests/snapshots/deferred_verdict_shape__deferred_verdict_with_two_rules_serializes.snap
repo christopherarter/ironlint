@@ -3,7 +3,7 @@ source: crates/hector-core/tests/deferred_verdict_shape.rs
 expression: "&v"
 ---
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "deferred": true,
   "hector_version": "0.2.x",
   "passed_checks": [

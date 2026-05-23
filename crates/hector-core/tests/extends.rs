@@ -69,7 +69,7 @@ fn extends_inherits_llm_when_local_omits_it() {
     let cfg = parse_file_with_extends(&child_path).expect("parse");
     let llm = cfg.llm.expect("llm should be inherited from parent");
     assert_eq!(llm.provider, "anthropic");
-    assert_eq!(llm.model, "claude-test");
+    assert_eq!(llm.model.as_deref(), Some("claude-test"));
 }
 
 #[test]

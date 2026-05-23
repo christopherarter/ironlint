@@ -9,7 +9,7 @@ fn parses_v2_minimal() {
 
     let llm = cfg.llm.as_ref().expect("llm block");
     assert_eq!(llm.provider, "anthropic");
-    assert_eq!(llm.model, "claude-sonnet-4-6");
+    assert_eq!(llm.model.as_deref(), Some("claude-sonnet-4-6"));
     assert_eq!(llm.api_key_env.as_deref(), Some("ANTHROPIC_API_KEY"));
 
     let r = cfg.rules.get("no-console-log").expect("rule present");

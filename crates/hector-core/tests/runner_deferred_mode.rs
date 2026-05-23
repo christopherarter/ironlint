@@ -13,7 +13,6 @@ trust:
   fingerprint: PLACEHOLDER
 llm:
   provider: claude-code-subagent
-  model: ignored
 rules:
   no-debug:
     description: no DEBUG prints in committed code
@@ -133,7 +132,6 @@ trust:
   fingerprint: PLACEHOLDER
 llm:
   provider: claude-code-subagent
-  model: ignored
 rules:
   py-only:
     description: only fires on python files

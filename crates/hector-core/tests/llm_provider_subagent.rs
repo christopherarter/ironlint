@@ -9,7 +9,11 @@ use hector_core::llm::build_from_config;
 fn claude_code_subagent_provider_returns_none_without_warning() {
     let cfg = LlmConfig {
         provider: "claude-code-subagent".to_string(),
-        model: "ignored".to_string(),
+        // R2: model is now optional for the subagent provider. Passing
+        // None here is the canonical shape; pre-R2 this field had to be
+        // `Some("ignored")` literally just to satisfy the parser.
+        model: None,
+        evaluator_model: None,
         api_key_env: None,
         base_url: None,
     };
@@ -28,7 +32,8 @@ fn unknown_provider_still_errors() {
     // into silent passes.
     let cfg = LlmConfig {
         provider: "definitely-not-a-real-provider".to_string(),
-        model: "ignored".to_string(),
+        model: Some("ignored".to_string()),
+        evaluator_model: None,
         api_key_env: None,
         base_url: None,
     };

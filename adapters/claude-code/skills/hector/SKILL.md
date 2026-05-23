@@ -58,6 +58,17 @@ Parse the `additionalContext` JSON. If it contains a top-level `_evaluator_input
 
 Call the Agent tool with `subagent_type: hector-evaluator` and a 3-5 word `description` (e.g. "Evaluate lint rules"). The agent returns:
 
+#### Optional `evaluator_model` override (R5, payload schema v2)
+
+If the payload includes a top-level `evaluator_model` field (e.g. `"evaluator_model": "haiku"`), the policy author wants the evaluator subagent to run under that model — typically to keep policy checks cheap. Claude Code's Agent / Task tool does NOT accept a per-dispatch `model:` override today; the subagent's `model:` is set in `adapters/claude-code/agents/hector-evaluator.md`'s frontmatter. So:
+
+1. Dispatch the `hector-evaluator` subagent normally (it will run under whatever model its frontmatter pins).
+2. Prepend a single advisory note to your reply to the user, before any fixes are applied:
+
+   `note: policy requested evaluator_model=<value>; the hector-evaluator subagent's frontmatter pins the model — edit adapters/claude-code/agents/hector-evaluator.md (the installed copy in your plugins directory, not the dev repo) to honor the override.`
+
+This surfaces the policy intent without silently dropping it. If/when Claude Code adds dispatch-time model overrides, swap step 1 for an inline `--model <value>` flag and drop the advisory.
+
 ```
 VIOLATIONS:
 - [rule-id] line N: <what's wrong>

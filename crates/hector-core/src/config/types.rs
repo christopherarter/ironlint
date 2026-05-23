@@ -34,11 +34,28 @@ pub struct ExecutionConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmConfig {
     pub provider: String,
-    pub model: String,
+    /// R2 (2026-05-23): now `Option<String>`. Required at load time for
+    /// direct-API providers (`anthropic`, `openrouter`, `ollama`); optional
+    /// for `provider: claude-code-subagent` because that provider never
+    /// reads it — the in-session subagent uses the Claude Code session's
+    /// model. Validation lives in `runner::HectorEngine::load`, not in
+    /// the serde derivation, so the missing-model error message can name
+    /// the provider explicitly rather than surfacing a generic serde
+    /// "missing field" diagnostic.
+    #[serde(default)]
+    pub model: Option<String>,
     #[serde(default)]
     pub api_key_env: Option<String>,
     #[serde(default)]
     pub base_url: Option<String>,
+    /// R5 (2026-05-23): optional model id propagated through the deferred
+    /// envelope so the Claude Code skill can dispatch the
+    /// `hector-evaluator` subagent under a specific model (e.g. `haiku`
+    /// for cheap policy checks). Free-form: Claude Code's subagent
+    /// dispatch validates the value at the right layer. Ignored when
+    /// `provider != claude-code-subagent`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evaluator_model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

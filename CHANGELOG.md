@@ -4,6 +4,13 @@ Notable changes to Hector, newest first. In-flight work lives in `plans/`.
 
 ## Unreleased
 
+### LLM config — surface cleanup for `claude-code-subagent` (R2 + R5)
+
+- `llm.model` is now optional when `provider == claude-code-subagent`. Previously it was required-but-ignored. If set, hector emits a one-time stderr warning per process noting that the subagent uses the Claude Code session's model.
+- New optional `llm.evaluator_model: <model-id>` propagates through the `DeferredVerdict` payload so the Claude Code interpreter skill can dispatch the `hector-evaluator` subagent under a specific model (e.g. `haiku` for cheap policy checks). When unset, the subagent's frontmatter `model:` is used. Today Claude Code's subagent dispatch does not accept a per-call model override; the skill surfaces the requested value as an advisory pointing the user at the subagent's frontmatter file. If/when Claude Code adds inline overrides, the skill will pass the value through directly.
+- `DEFERRED_SCHEMA_VERSION` bumped to `2` to reflect the new optional payload field. Envelopes without `evaluator_model` are byte-compatible with the prior shape (`skip_serializing_if = "Option::is_none"`).
+- **Library-additive only** for direct-API providers (anthropic / openrouter / ollama). Their `model` field stays required.
+
 ### Adapters — skip self-check of policy files (R3)
 
 - Both adapters (`adapters/claude-code/hooks/hook.sh`, `adapters/opencode/src/index.ts`) now exit 0 without invoking `hector` when the changed file is `.hector.yml` or `.bully.yml`. Editing the policy file itself no longer fires the trust gate mid-edit and surfaces a misleading "internal error" to the user.

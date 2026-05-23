@@ -20,8 +20,9 @@ trap 'rm -rf "${PROJECT}"' EXIT
 cat > "${PROJECT}/.hector.yml" <<'YAML'
 schema_version: 2
 llm:
+  # R2 (2026-05-23): model: omitted intentionally — the subagent
+  # provider does not read it. Pre-R2 this was required-but-ignored.
   provider: claude-code-subagent
-  model: subagent
 rules:
   no-debug:
     description: "no DEBUG markers in source"

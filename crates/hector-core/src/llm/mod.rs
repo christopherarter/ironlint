@@ -8,6 +8,7 @@ use crate::config::{LlmConfig, Rule};
 use anyhow::{anyhow, bail, Context, Result};
 use regex::Regex;
 use serde::Deserialize;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::LazyLock;
 
 pub use anthropic::AnthropicClient;
@@ -47,9 +48,23 @@ pub fn build_from_config(cfg: &LlmConfig) -> Result<Option<Box<dyn LlmClient>>> 
     // "env var unset" stderr warning that would otherwise fire for
     // a user who copy-pasted an Anthropic config and only switched
     // `provider:`.
+    //
+    // R2 (2026-05-23): also warn-once if the user supplied an explicit
+    // `model:` value here — it's never read for this provider, and
+    // surfacing that fact at load time saves a confused "why isn't my
+    // model setting taking effect?" investigation.
     if cfg.provider == "claude-code-subagent" {
+        warn_subagent_model_ignored(cfg.model.as_deref());
         return Ok(None);
     }
+    // R2: direct-API providers still require `model:`. The error names
+    // the provider so the diagnostic points at the right config field.
+    let model = cfg.model.as_deref().ok_or_else(|| {
+        anyhow!(
+            "llm.model is required for provider `{}` (optional only for `claude-code-subagent`)",
+            cfg.provider
+        )
+    })?;
     let api_key = read_api_key(cfg);
     match cfg.provider.as_str() {
         "anthropic" => {
@@ -58,7 +73,7 @@ pub fn build_from_config(cfg: &LlmConfig) -> Result<Option<Box<dyn LlmClient>>> 
             };
             Ok(Some(Box::new(AnthropicClient::new(
                 key,
-                &cfg.model,
+                model,
                 cfg.base_url.clone(),
             ))))
         }
@@ -70,9 +85,7 @@ pub fn build_from_config(cfg: &LlmConfig) -> Result<Option<Box<dyn LlmClient>>> 
                 .base_url
                 .clone()
                 .unwrap_or_else(|| "https://openrouter.ai/api/v1".to_string());
-            Ok(Some(Box::new(OpenAICompatClient::new(
-                key, &cfg.model, base,
-            ))))
+            Ok(Some(Box::new(OpenAICompatClient::new(key, model, base))))
         }
         "ollama" => {
             let base = cfg
@@ -80,9 +93,7 @@ pub fn build_from_config(cfg: &LlmConfig) -> Result<Option<Box<dyn LlmClient>>> 
                 .clone()
                 .unwrap_or_else(|| "http://localhost:11434/v1".to_string());
             let key = api_key.unwrap_or_default();
-            Ok(Some(Box::new(OpenAICompatClient::new(
-                key, &cfg.model, base,
-            ))))
+            Ok(Some(Box::new(OpenAICompatClient::new(key, model, base))))
         }
         "claude-code-subagent" => {
             // H1 follow-up: handled by the early-return above so that
@@ -96,6 +107,30 @@ pub fn build_from_config(cfg: &LlmConfig) -> Result<Option<Box<dyn LlmClient>>> 
             bail!("unknown LLM provider `{other}`. Supported: anthropic, claude-code-subagent, ollama, openrouter")
         }
     }
+}
+
+/// R2: one-time per-process stderr warning when a user supplies
+/// `llm.model:` under `provider: claude-code-subagent`. The subagent
+/// uses whatever model the parent Claude Code session is running, so
+/// the value is silently ignored — surfacing that fact saves debugging.
+///
+/// Dedup pattern mirrors `engine::capability::should_warn_macos_with`:
+/// an `AtomicBool` swap with `Ordering::Relaxed`. Correctness only
+/// requires "fires at most once", no happens-before with surrounding
+/// loads. Pulled into a free function so the swap target is reachable
+/// from tests if we ever need to assert dedup.
+fn warn_subagent_model_ignored(model: Option<&str>) {
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    if model.is_none() {
+        return;
+    }
+    if WARNED.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    eprintln!(
+        "hector: llm.model is ignored when provider == claude-code-subagent \
+         (the subagent uses the Claude Code session's model)"
+    );
 }
 
 /// C1: side-effect-free probe used by `hector doctor`.

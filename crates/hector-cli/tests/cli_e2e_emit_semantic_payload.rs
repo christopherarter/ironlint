@@ -12,7 +12,6 @@ trust:
   fingerprint: PLACEHOLDER
 llm:
   provider: claude-code-subagent
-  model: ignored
 rules:
   no-debug:
     description: no DEBUG prints in committed code
@@ -56,7 +55,9 @@ fn flag_emits_deferred_verdict_envelope() {
     let v: serde_json::Value = serde_json::from_str(&stdout)
         .unwrap_or_else(|_| panic!("stdout must be valid JSON, got: {stdout}"));
     assert_eq!(v["deferred"], serde_json::Value::Bool(true));
-    assert_eq!(v["schema_version"], serde_json::Value::Number(1.into()));
+    // R5 bumped DEFERRED_SCHEMA_VERSION 1 → 2 for the optional
+    // payload.evaluator_model field.
+    assert_eq!(v["schema_version"], serde_json::Value::Number(2.into()));
     assert_eq!(v["payload"]["evaluate"][0]["id"].as_str(), Some("no-debug"));
     assert!(v["payload"]["_evaluator_input"]
         .as_str()
@@ -87,8 +88,16 @@ fn flag_omitted_means_no_envelope() {
     // change — no behaviour drift for existing call-sites.
     let tmp = tempdir().unwrap();
     // Use a non-subagent provider so direct-dispatch is attempted but the
-    // missing API key makes semantic skip silently.
-    let cfg = CONFIG_YAML.replace("claude-code-subagent", "anthropic");
+    // missing API key makes semantic skip silently. R2 (2026-05-23) made
+    // `model:` mandatory for direct-API providers (it was implicitly
+    // required before, and the subagent stanza omits it now), so we
+    // splice a model field back in here.
+    let cfg = CONFIG_YAML
+        .replace("claude-code-subagent", "anthropic")
+        .replace(
+            "provider: anthropic",
+            "provider: anthropic\n  model: claude-sonnet-4-6",
+        );
     let path = tmp.path().join(".hector.yml");
     fs::write(&path, cfg).unwrap();
     let yaml = fs::read_to_string(&path).unwrap();
@@ -132,7 +141,6 @@ trust:
   fingerprint: PLACEHOLDER
 llm:
   provider: claude-code-subagent
-  model: ignored
 rules:
   no-debug-script:
     description: no DEBUG via grep

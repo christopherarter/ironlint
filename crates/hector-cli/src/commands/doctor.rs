@@ -364,7 +364,14 @@ fn llm_block_status(cfg: Option<&hector_core::config::LlmConfig>) -> CheckResult
         return CheckResult {
             name: "engines",
             status: Status::Pass,
-            detail: format!("provider=ollama, model={}", llm.model),
+            // R2: `model` is `Option<String>` since 0.2.x. Ollama still
+            // *requires* it at runtime (`build_from_config` errors when
+            // None), so the doctor row reflects the configured value or
+            // "(unset)" to surface the misconfiguration.
+            detail: format!(
+                "provider=ollama, model={}",
+                llm.model.as_deref().unwrap_or("(unset)")
+            ),
             remediation: None,
         };
     }
@@ -385,9 +392,13 @@ fn llm_block_status(cfg: Option<&hector_core::config::LlmConfig>) -> CheckResult
         CheckResult {
             name: "engines",
             status: Status::Pass,
+            // R2: render `(unset)` instead of panicking when model is
+            // None. Direct-API providers must set it; the doctor row
+            // surfaces the misconfiguration rather than masking it.
             detail: format!(
                 "provider={}, model={}, ${env_name} resolves",
-                llm.provider, llm.model
+                llm.provider,
+                llm.model.as_deref().unwrap_or("(unset)")
             ),
             remediation: None,
         }
@@ -707,7 +718,8 @@ mod tests {
     fn engines_pass_for_ollama_without_key() {
         let cfg = hector_core::config::LlmConfig {
             provider: "ollama".into(),
-            model: "llama3".into(),
+            model: Some("llama3".into()),
+            evaluator_model: None,
             api_key_env: None,
             base_url: None,
         };
@@ -719,7 +731,8 @@ mod tests {
     fn engines_warn_when_api_key_env_unset() {
         let cfg = hector_core::config::LlmConfig {
             provider: "anthropic".into(),
-            model: "claude".into(),
+            model: Some("claude".into()),
+            evaluator_model: None,
             api_key_env: Some("HECTOR_DOCTOR_TEST_DEFINITELY_UNSET_AAA".into()),
             base_url: None,
         };
@@ -736,7 +749,8 @@ mod tests {
     fn engines_pass_when_api_key_env_set() {
         let cfg = hector_core::config::LlmConfig {
             provider: "anthropic".into(),
-            model: "claude".into(),
+            model: Some("claude".into()),
+            evaluator_model: None,
             api_key_env: Some("HECTOR_DOCTOR_TEST_PRESENT_KEY".into()),
             base_url: None,
         };
@@ -750,7 +764,8 @@ mod tests {
     fn engines_warn_when_api_key_env_field_missing() {
         let cfg = hector_core::config::LlmConfig {
             provider: "anthropic".into(),
-            model: "claude".into(),
+            model: Some("claude".into()),
+            evaluator_model: None,
             api_key_env: None,
             base_url: None,
         };

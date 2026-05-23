@@ -16,7 +16,12 @@ use serde::{Deserialize, Serialize};
 
 /// Schema version for the deferred-evaluation envelope. Independent of
 /// [`crate::verdict::SCHEMA_VERSION`] — the two schemas evolve separately.
-pub const DEFERRED_SCHEMA_VERSION: u32 = 1;
+///
+/// **2 (R5, 2026-05-23):** new optional `payload.evaluator_model` field.
+/// `#[serde(skip_serializing_if = "Option::is_none")]` keeps envelopes
+/// without the field byte-compatible with the v1 shape, so existing
+/// consumers that don't read the field do not break.
+pub const DEFERRED_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeferredVerdict {
@@ -52,6 +57,17 @@ pub struct DeferredPayload {
     /// Field name uses an underscore prefix to match bully's wire format.
     #[serde(rename = "_evaluator_input")]
     pub evaluator_input: String,
+    /// R5 (2026-05-23): optional subagent model override. When the user
+    /// sets `llm.evaluator_model: <id>` in `.hector.yml` and
+    /// `provider == claude-code-subagent`, the runner threads the value
+    /// here so the Claude Code skill can surface it (today the skill
+    /// reports the requested model so the operator can edit the
+    /// `hector-evaluator` subagent's frontmatter — Claude Code's
+    /// subagent dispatch does not accept an inline model override).
+    /// `skip_serializing_if` keeps envelopes without the field
+    /// byte-compatible with the v1 shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evaluator_model: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
