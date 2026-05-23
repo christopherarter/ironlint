@@ -4,6 +4,11 @@ Notable changes to Hector, newest first. In-flight work lives in `plans/`.
 
 ## Unreleased
 
+### Adapters — skip self-check of policy files (R3)
+
+- Both adapters (`adapters/claude-code/hooks/hook.sh`, `adapters/opencode/src/index.ts`) now exit 0 without invoking `hector` when the changed file is `.hector.yml` or `.bully.yml`. Editing the policy file itself no longer fires the trust gate mid-edit and surfaces a misleading "internal error" to the user.
+- Match is by basename, so absolute paths work too.
+
 ### Script engine — `output:` default flipped to `passthrough` (R4)
 
 - **Breaking (config):** Per-rule `output:` field default changes from `parsed` → `passthrough`. Existing configs that depended on parsed-mode violation extraction must now set `output: parsed` explicitly. The set of supported parsed formats does not grow — we will not chase a parser per tool.

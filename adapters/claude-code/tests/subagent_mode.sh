@@ -155,5 +155,83 @@ fi
 echo "PASS test 4: direct-API mode unchanged"
 rm -f "${OUT}"
 
+# ----------------------------------------------------------------------
+# Test 5 (R3): editing the policy file itself (.hector.yml) must short-circuit.
+# The on-disk sha will not match the `trust:` field while the file is
+# mid-edit; running `hector check` against it would fail the trust gate
+# and surface a misleading "internal error" to the user. Hook should
+# exit 0 with empty stdout/stderr and never invoke `hector`.
+# ----------------------------------------------------------------------
+# Deliberately break the trust hash to mimic the mid-edit state: any
+# `hector` invocation against this config will fail with exit 1 and a
+# scary "internal error" message. The basename short-circuit must run
+# before we ever reach that codepath.
+echo "# user is iterating on policy" >> "${PROJECT}/.hector.yml"
+# Replace the trust block with a wrong sha so trust verify fails hard.
+sed -i.bak 's/sha256:.*/sha256:0000000000000000000000000000000000000000000000000000000000000000/' "${PROJECT}/.hector.yml"
+rm -f "${PROJECT}/.hector.yml.bak"
+EVENT='{"tool_input": {"file_path": "'"${PROJECT}"'/.hector.yml", "new_string": "anything"}}'
+OUT=$(mktemp); ERR=$(mktemp)
+EC=0
+echo "${EVENT}" | "${HOOK}" post-tool-use > "${OUT}" 2> "${ERR}" || EC=$?
+if [[ "${EC}" -ne 0 ]]; then
+  echo "FAIL test 5: expected exit 0 on .hector.yml self-edit, got ${EC}"
+  cat "${ERR}"
+  exit 1
+fi
+if [[ -s "${OUT}" ]]; then
+  echo "FAIL test 5: self-edit of .hector.yml must not emit on stdout"
+  cat "${OUT}"
+  exit 1
+fi
+if [[ -s "${ERR}" ]]; then
+  echo "FAIL test 5: self-edit of .hector.yml must not emit on stderr"
+  cat "${ERR}"
+  exit 1
+fi
+echo "PASS test 5: hook skips self-check of .hector.yml (absolute path)"
+rm -f "${OUT}" "${ERR}"
+
+# ----------------------------------------------------------------------
+# Test 6 (R3): relative path to .hector.yml — basename match also covers
+# events where Claude Code sends the bare filename.
+# ----------------------------------------------------------------------
+EVENT='{"tool_input": {"file_path": ".hector.yml", "new_string": "anything"}}'
+OUT=$(mktemp); ERR=$(mktemp)
+EC=0
+echo "${EVENT}" | "${HOOK}" post-tool-use > "${OUT}" 2> "${ERR}" || EC=$?
+if [[ "${EC}" -ne 0 ]]; then
+  echo "FAIL test 6: expected exit 0 on relative .hector.yml self-edit, got ${EC}"
+  cat "${ERR}"
+  exit 1
+fi
+if [[ -s "${OUT}" || -s "${ERR}" ]]; then
+  echo "FAIL test 6: relative .hector.yml self-edit must be silent"
+  cat "${OUT}" "${ERR}"
+  exit 1
+fi
+echo "PASS test 6: hook skips self-check of .hector.yml (relative path)"
+rm -f "${OUT}" "${ERR}"
+
+# ----------------------------------------------------------------------
+# Test 7 (R3): .bully.yml (migration source) also short-circuits.
+# ----------------------------------------------------------------------
+EVENT='{"tool_input": {"file_path": "'"${PROJECT}"'/.bully.yml", "new_string": "anything"}}'
+OUT=$(mktemp); ERR=$(mktemp)
+EC=0
+echo "${EVENT}" | "${HOOK}" post-tool-use > "${OUT}" 2> "${ERR}" || EC=$?
+if [[ "${EC}" -ne 0 ]]; then
+  echo "FAIL test 7: expected exit 0 on .bully.yml self-edit, got ${EC}"
+  cat "${ERR}"
+  exit 1
+fi
+if [[ -s "${OUT}" || -s "${ERR}" ]]; then
+  echo "FAIL test 7: .bully.yml self-edit must be silent"
+  cat "${OUT}" "${ERR}"
+  exit 1
+fi
+echo "PASS test 7: hook skips self-check of .bully.yml"
+rm -f "${OUT}" "${ERR}"
+
 echo ""
 echo "All subagent-mode hook tests passed."

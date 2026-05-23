@@ -285,6 +285,84 @@ test("event ignores unrelated event types", async () => {
   ).resolves.toBeUndefined()
 })
 
+test("before-hook skips self-check of .hector.yml (R3)", async () => {
+  // R3: editing the policy file itself used to invoke hector check on
+  // a mid-edit file whose on-disk sha no longer matched `trust:`, which
+  // failed the trust gate (exit 1) and surfaced a confusing "internal
+  // error" to the user. The plugin must short-circuit by basename
+  // before any hector invocation runs.
+  //
+  // To prove no hector invocation ran, we deliberately break the trust
+  // hash so any `hector check` would log an "internal error" line to
+  // console.error. A clean run means the basename short-circuit fired.
+  const root = mkdtempSync(join(tmpdir(), "hector-opencode-policy-"))
+  const errs: string[] = []
+  const origErr = console.error
+  console.error = (msg: unknown) => {
+    errs.push(String(msg))
+  }
+  try {
+    writeFileSync(join(root, ".hector.yml"), HECTOR_YML)
+    await $`hector trust --config ${join(root, ".hector.yml")}`.quiet()
+    const current = readFileSync(join(root, ".hector.yml"), "utf8")
+    writeFileSync(
+      join(root, ".hector.yml"),
+      current.replace(/sha256:[0-9a-f]+/, "sha256:0".repeat(64)),
+    )
+
+    const hooks = await HectorPlugin(fakeCtx(root))
+    const file = join(root, ".hector.yml")
+    const beforeBytes = readFileSync(file, "utf8")
+
+    await expect(
+      hooks["tool.execute.before"]!(
+        { tool: "write", sessionID: "s", callID: "c" },
+        { args: { filePath: file, content: "anything\n" } },
+      ),
+    ).resolves.toBeUndefined()
+
+    // No hector invocation: no "internal error" log, no trust-verify log.
+    expect(errs.join("\n")).not.toContain("internal error")
+    expect(errs.join("\n")).not.toContain("trust verify")
+    // File untouched (shadow-write never happened).
+    expect(readFileSync(file, "utf8")).toBe(beforeBytes)
+  } finally {
+    console.error = origErr
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("before-hook skips self-check of .bully.yml (R3)", async () => {
+  // Same R3 short-circuit, applied to the migration-source filename.
+  // The fixture project has no .bully.yml on disk; the plugin must
+  // recognize the basename and exit before attempting any shadow-write.
+  const file = join(project, ".bully.yml")
+  rmSync(file, { force: true })
+  const hooks = await HectorPlugin(fakeCtx(project))
+
+  await expect(
+    hooks["tool.execute.before"]!(
+      { tool: "write", sessionID: "s", callID: "c" },
+      { args: { filePath: file, content: "anything\n" } },
+    ),
+  ).resolves.toBeUndefined()
+
+  // The plugin returned before shadow-writing the proposed content.
+  expect(existsSync(file)).toBe(false)
+})
+
+test("before-hook skips self-check of bare relative .hector.yml (R3)", async () => {
+  // Basename match must work even when filePath is a bare filename
+  // (no directory component).
+  const hooks = await HectorPlugin(fakeCtx(project))
+  await expect(
+    hooks["tool.execute.before"]!(
+      { tool: "write", sessionID: "s", callID: "c" },
+      { args: { filePath: ".hector.yml", content: "anything\n" } },
+    ),
+  ).resolves.toBeUndefined()
+})
+
 test("tool.execute.after records edit to session.json", async () => {
   const file = join(project, "tracked.txt")
   writeFileSync(file, "ok\n")

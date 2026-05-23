@@ -77,6 +77,16 @@ case "${MODE}" in
       exit 0
     fi
 
+    # R3: short-circuit on edits to the policy file itself. The on-disk
+    # sha will not match `trust:` while the user is mid-edit; any `hector`
+    # invocation would fail the trust gate and surface a misleading
+    # "internal error" to the user. Match by basename so the skip works
+    # for both relative and absolute paths Claude Code may send.
+    BASENAME="${FILE##*/}"
+    if [[ "${BASENAME}" == ".hector.yml" || "${BASENAME}" == ".bully.yml" ]]; then
+      exit 0
+    fi
+
     # Build a synthetic unified diff for session recording. Claude Code's
     # Edit/Write events don't carry a real diff, so we fake one from the
     # (old_string, new_string) pair. The synthesizer (P1-8/P1-9 fix):

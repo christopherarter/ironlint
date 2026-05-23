@@ -1,6 +1,6 @@
 import type { Plugin } from "@opencode-ai/plugin"
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs"
-import { join } from "node:path"
+import { basename, join } from "node:path"
 
 // OpenCode tools we gate. `apply_patch` is intentionally not gated at 0.1d
 // (P2-14, deferred) — the opencode plugin SDK does not currently surface
@@ -10,6 +10,16 @@ import { join } from "node:path"
 // docs/adapters/opencode.md → "What it does NOT do" for the known-gap
 // note. Tracked until the apply_patch tool is wired through the adapter.
 const GATED_TOOLS = new Set(["edit", "write"])
+
+// R3: filenames hector recognizes as policy files. Edits to these files
+// must short-circuit both adapter hooks — running `hector check` against
+// a mid-edit policy file fails the trust gate (sha mismatch) and
+// surfaces a confusing "internal error" to the user.
+const POLICY_FILES = new Set([".hector.yml", ".bully.yml"])
+
+function isPolicyFile(filePath: string): boolean {
+  return POLICY_FILES.has(basename(filePath))
+}
 
 // Opencode's tool args use `find` / `replace` / `replaceAll` for the edit
 // tool and `content` for the write tool (confirmed against the opencode
@@ -66,6 +76,8 @@ export const HectorPlugin: Plugin = async ({ $, directory, worktree }) => {
       const args = (output.args ?? {}) as FileToolArgs
       const filePath = args.filePath
       if (!filePath) return
+      // R3: skip self-checks of the policy file itself.
+      if (isPolicyFile(filePath)) return
 
       const proposed = computeProposedContent(filePath, args)
       if (proposed === null) return // can't simulate — skip the gate
@@ -112,6 +124,8 @@ export const HectorPlugin: Plugin = async ({ $, directory, worktree }) => {
       const args = input.args as FileToolArgs | undefined
       const filePath = args?.filePath
       if (!filePath) return
+      // R3: don't record edits to the policy file in session state.
+      if (isPolicyFile(filePath)) return
 
       // Record the edit into session state for cross-edit rules. Best-effort:
       // a flaky session record must never affect the agent.
