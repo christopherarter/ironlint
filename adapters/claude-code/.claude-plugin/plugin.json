@@ -1,7 +1,7 @@
 {
   "name": "hector",
   "description": "Policy-enforcement pipeline for AI coding agents. Hybrid script+ast+semantic+session rule engines, trust gate, capability sandbox. Claude Code adapter.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": {
     "name": "dynamik-dev"
   },
