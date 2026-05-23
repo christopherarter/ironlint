@@ -8,7 +8,13 @@ use serde::{Deserialize, Serialize};
 /// - v2 (P1-1): split overloaded `Engine::Trust` into `Engine::Trust`
 ///   (true trust-gate failures) and `Engine::Internal` (engine runtime
 ///   errors). Wire format for the new variant is `"internal"`.
-pub const SCHEMA_VERSION: u32 = 2;
+/// - v3 (R6, 2026-05-23): added optional `deferred_rules: [{rule_id,
+///   severity, reason}]` field that surfaces semantic/session rules
+///   suppressed by a deterministic block under `--emit-semantic-payload`.
+///   Additive: serialized with `skip_serializing_if = "Vec::is_empty"`
+///   so verdicts without deferred rules are byte-compatible with v2.
+///   See `docs/audits/2026-05-23-first-run-dx-audit.md#r6`.
+pub const SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Verdict {
@@ -18,6 +24,35 @@ pub struct Verdict {
     pub violations: Vec<Violation>,
     pub passed_checks: Vec<String>,
     pub elapsed_ms: u64,
+    /// R6 (2026-05-23): semantic/session rules whose evaluation was
+    /// suppressed because a deterministic rule fired with `severity:
+    /// error` on the same edit. Empty in all non-deferred-mode flows
+    /// (and serialized as omitted via `skip_serializing_if`), so
+    /// existing v2 consumers see no wire-format change.
+    ///
+    /// Populated only when `CheckOptions::emit_semantic_payload` is true
+    /// AND the resulting `Verdict::status` is `Block`. The full deferred
+    /// envelope is suppressed in that case — these rule refs are the
+    /// surfacing mechanism so the user (and the Claude Code skill) know
+    /// their semantic rules are alive even when not evaluated this turn.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deferred_rules: Vec<DeferredRuleRef>,
+}
+
+/// R6 (2026-05-23): minimal reference to a deferred rule whose
+/// evaluation was suppressed by a deterministic block.
+///
+/// Lives on `Verdict` (not `DeferredVerdict`) because it surfaces in the
+/// deterministic-block path where the full deferred envelope is dropped.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeferredRuleRef {
+    pub rule_id: String,
+    pub severity: Severity,
+    /// Human-readable string explaining why the rule was not evaluated.
+    /// Stable enough for adapter skills to surface verbatim; not enum'd
+    /// because the only consumer today is the Claude Code interpreter
+    /// skill, which renders it as plain text.
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -89,6 +124,7 @@ impl Verdict {
             violations: vec![],
             passed_checks: vec![],
             elapsed_ms: 0,
+            deferred_rules: vec![],
         }
     }
 
@@ -111,6 +147,7 @@ impl Verdict {
             violations,
             passed_checks: passed,
             elapsed_ms,
+            deferred_rules: vec![],
         }
     }
 }

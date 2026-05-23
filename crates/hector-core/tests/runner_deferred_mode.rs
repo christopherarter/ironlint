@@ -121,6 +121,99 @@ fn deferred_mode_envelope_carries_diff_in_diff_input() {
 }
 
 #[test]
+fn deferred_mode_surfaces_deferred_rules_on_blocked_verdict() {
+    // R6 (2026-05-23): when a deterministic script rule blocks AND a
+    // semantic rule is in scope, the deferred rule used to vanish from
+    // the verdict — the user couldn't tell whether their semantic rule
+    // was even configured. Now the deterministic Verdict carries
+    // `deferred_rules: [...]` so the interpreter skill can surface them.
+    let tmp = tempdir().unwrap();
+    let cfg_yaml = r#"
+schema_version: 2
+trust:
+  fingerprint: PLACEHOLDER
+llm:
+  provider: claude-code-subagent
+rules:
+  no-debug-script:
+    description: no DEBUG via grep
+    engine: script
+    scope: ["**/*.rs"]
+    severity: error
+    script: "grep -n 'DEBUG' {file} && exit 1 || exit 0"
+    capabilities:
+      network: false
+      writes: none
+  no-todo-comment:
+    description: no TODO comments left in committed code
+    engine: semantic
+    scope: ["**/*.rs"]
+    severity: warning
+"#;
+    let cfg_path = tmp.path().join(".hector.yml");
+    fs::write(&cfg_path, cfg_yaml).unwrap();
+    let yaml = fs::read_to_string(&cfg_path).unwrap();
+    let new = hector_core::trust::write_trust_block(&yaml).unwrap();
+    fs::write(&cfg_path, new).unwrap();
+
+    let src = tmp.path().join("foo.rs");
+    fs::write(
+        &src,
+        "fn main() { println!(\"DEBUG\"); /* TODO: refactor */ }\n",
+    )
+    .unwrap();
+
+    let opts = CheckOptions {
+        rules: HashSet::new(),
+        explain: false,
+        emit_semantic_payload: true,
+    };
+    let engine = HectorEngine::builder()
+        .with_options(opts)
+        .load(&cfg_path)
+        .expect("config loads with subagent provider");
+    let content = fs::read_to_string(&src).unwrap();
+    let report = engine
+        .check_with_explain(CheckInput::File { path: src, content })
+        .expect("check succeeds");
+
+    // Deterministic rule blocks → verdict status is Block, exit 2 at CLI.
+    assert_eq!(
+        report.verdict.status,
+        hector_core::verdict::Status::Block,
+        "script rule must block; got status={:?}, violations={:?}",
+        report.verdict.status,
+        report.verdict.violations
+    );
+    // The deterministic violation is present.
+    assert!(
+        report
+            .verdict
+            .violations
+            .iter()
+            .any(|v| v.rule_id == "no-debug-script"),
+        "script violation must appear in verdict; got {:?}",
+        report.verdict.violations
+    );
+    // R6 payoff: deferred semantic rule is surfaced on the verdict itself.
+    let deferred = &report.verdict.deferred_rules;
+    assert_eq!(
+        deferred.len(),
+        1,
+        "expected one deferred rule, got {deferred:?}"
+    );
+    assert_eq!(deferred[0].rule_id, "no-todo-comment");
+    assert_eq!(
+        deferred[0].severity,
+        hector_core::verdict::Severity::Warning
+    );
+    assert!(
+        !deferred[0].reason.is_empty(),
+        "reason string must be non-empty"
+    );
+}
+
+#[test]
 fn deferred_mode_no_envelope_when_scope_misses() {
     // Regression: a deferred rule whose scope doesn't match the input
     // must NOT appear in the envelope. The whole envelope should be

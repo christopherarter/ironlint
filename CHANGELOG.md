@@ -4,6 +4,12 @@ Notable changes to Hector, newest first. In-flight work lives in `plans/`.
 
 ## Unreleased
 
+### Verdict — surface deferred semantic rules on blocked verdicts (R6)
+
+- `Verdict` now carries an optional `deferred_rules: Vec<DeferredRuleRef>` field listing rules that would have been evaluated by the subagent path but were suppressed because a deterministic rule blocked the edit first. Each entry is `{ rule_id, severity, reason }`. Closes the "silently dropped my semantic rule" gap surfaced by the first-run audit (transcript 2).
+- `Verdict::SCHEMA_VERSION` bumped `2 → 3` (additive field; envelopes without `deferred_rules` are byte-compatible via `skip_serializing_if = "Vec::is_empty"`).
+- Claude Code interpreter skill (`adapters/claude-code/skills/hector/SKILL.md`) now surfaces deferred rules in its block summary so users see that their configured semantic rules are alive even when not evaluated this turn.
+
 ### LLM config — surface cleanup for `claude-code-subagent` (R2 + R5)
 
 - `llm.model` is now optional when `provider == claude-code-subagent`. Previously it was required-but-ignored. If set, hector emits a one-time stderr warning per process noting that the subagent uses the Claude Code session's model.

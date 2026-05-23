@@ -56,12 +56,36 @@ This is the only addition between schema v1 and v2.
 
 | Outcome | Exit code | Stdout |
 |---|---|---|
-| Deterministic block | `2` | Standard `Verdict` |
+| Deterministic block | `2` | Standard `Verdict` (carries `deferred_rules` if any matched) |
 | Pass + deferred non-empty | `0` | `DeferredVerdict` envelope |
 | Pass + no deferred | `0` | Standard `Verdict` |
 
 Deferred eval is not a block — the verdict is decided later by the
 in-session subagent.
+
+### Deferred rules on a blocked verdict (R6, 2026-05-23)
+
+When a deterministic rule blocks (exit `2`) and an `--emit-semantic-payload`
+run also had semantic/session rules in scope, the full deferred envelope
+is suppressed — but the rules themselves surface on `Verdict.deferred_rules`
+(see [`Verdict::SCHEMA_VERSION`](#) bumped to `3`). The shape:
+
+```json
+{
+  "status": "block",
+  "violations": [...],
+  "deferred_rules": [
+    {"rule_id": "no-todo-comment", "severity": "warning", "reason": "suppressed by deterministic block"}
+  ]
+}
+```
+
+`deferred_rules` is omitted entirely (via `skip_serializing_if = "Vec::is_empty"`)
+when no semantic/session rule matched, so non-deferred-mode verdicts are
+byte-compatible with the v2 shape. The Claude Code interpreter skill
+surfaces these to the user so they can see their semantic rules are
+configured but were not evaluated this turn — fixing the block and
+re-triggering the hook will run them normally.
 
 ## Limitations (0.2.x)
 

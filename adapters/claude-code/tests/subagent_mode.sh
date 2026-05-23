@@ -35,6 +35,11 @@ rules:
     engine: semantic
     scope: ["*.txt"]
     severity: warning
+  no-todo-comment:
+    description: "no TODO comments left in committed content"
+    engine: semantic
+    scope: ["*.txt"]
+    severity: warning
 YAML
 hector trust --config "${PROJECT}/.hector.yml" >/dev/null
 
@@ -95,7 +100,22 @@ if ! jq -e '.status == "block"' < "${ERR}" >/dev/null; then
   cat "${ERR}"
   exit 1
 fi
-echo "PASS test 2: deterministic block under subagent mode exits 2 with verdict on stderr"
+# R6 (2026-05-23): the deferred semantic rules (`prose-quality`,
+# `no-todo-comment`) must surface on the verdict via `deferred_rules`
+# even though the deterministic block fired. Pre-R6, they vanished and
+# the user had no way to know their semantic rules were even alive.
+DEFERRED_IDS=$(jq -r '.deferred_rules // [] | sort_by(.rule_id) | map(.rule_id) | join(",")' < "${ERR}")
+if [[ "${DEFERRED_IDS}" != "no-todo-comment,prose-quality" ]]; then
+  echo "FAIL test 2: expected deferred_rules to include both semantic rule ids; got ${DEFERRED_IDS}"
+  cat "${ERR}"
+  exit 1
+fi
+if ! jq -e '.deferred_rules[0].reason | length > 0' < "${ERR}" >/dev/null; then
+  echo "FAIL test 2: deferred_rules entries must carry a non-empty reason"
+  cat "${ERR}"
+  exit 1
+fi
+echo "PASS test 2: deterministic block under subagent mode exits 2 with verdict on stderr (carries deferred_rules)"
 rm -f "${OUT}" "${ERR}"
 
 # ----------------------------------------------------------------------

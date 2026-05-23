@@ -833,6 +833,7 @@ impl HectorEngine {
                 violations: vec![],
                 passed_checks: vec![],
                 elapsed_ms: elapsed,
+                deferred_rules: vec![],
             };
             // P2-21: surface telemetry append failures (disk-full,
             // unwritable path, FS lock issues) instead of silently
@@ -986,8 +987,32 @@ impl HectorEngine {
         // tuple-only match — see `Baseline::contains_with_content`.
         violations.retain(|v| !baseline.contains_with_content(v, Some(&content)));
 
-        let verdict =
+        let mut verdict =
             Verdict::from_violations(violations, passed, start.elapsed().as_millis() as u64);
+        // R6 (2026-05-23): when a deterministic block fires alongside an
+        // `--emit-semantic-payload` run, the deferred semantic/session
+        // rules would otherwise vanish — the CLI suppresses the envelope
+        // and emits only the block verdict. Surface them on the verdict
+        // itself so the user (and the Claude Code interpreter skill) can
+        // see what their policy would have evaluated.
+        if matches!(verdict.status, Status::Block) && !deferred_rules.is_empty() {
+            verdict.deferred_rules = deferred_rules
+                .iter()
+                .filter_map(|d| {
+                    self.config_rule(&d.id)
+                        .map(|r| crate::verdict::DeferredRuleRef {
+                            rule_id: d.id.clone(),
+                            severity: match r.severity {
+                                crate::config::Severity::Error => crate::verdict::Severity::Error,
+                                crate::config::Severity::Warning => {
+                                    crate::verdict::Severity::Warning
+                                }
+                            },
+                            reason: "suppressed by deterministic block".to_string(),
+                        })
+                })
+                .collect();
+        }
         // P2-21: same rationale as the skip-path append above.
         if let Err(e) = crate::telemetry::append(
             &self.config_dir.join(".hector/log.jsonl"),

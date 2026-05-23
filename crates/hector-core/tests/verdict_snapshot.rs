@@ -1,4 +1,6 @@
-use hector_core::verdict::{Engine, Severity, Status, Verdict, Violation, SCHEMA_VERSION};
+use hector_core::verdict::{
+    DeferredRuleRef, Engine, Severity, Status, Verdict, Violation, SCHEMA_VERSION,
+};
 
 #[test]
 fn engine_enum_separates_trust_from_internal() {
@@ -9,9 +11,14 @@ fn engine_enum_separates_trust_from_internal() {
 }
 
 #[test]
-fn schema_version_is_two() {
-    // P1-1: bumped from 1 to 2 when Engine::Internal split out of Engine::Trust.
-    assert_eq!(SCHEMA_VERSION, 2);
+fn schema_version_is_three() {
+    // P1-1: bumped 1 → 2 when Engine::Internal split out of Engine::Trust.
+    // R6 (2026-05-23): bumped 2 → 3 for the additive `deferred_rules`
+    // field on `Verdict` (surfaces deferred semantic rules when a
+    // deterministic block fires). The field uses
+    // `skip_serializing_if = "Vec::is_empty"`, so verdicts without
+    // deferred rules stay byte-compatible with v2.
+    assert_eq!(SCHEMA_VERSION, 3);
 }
 
 #[test]
@@ -33,6 +40,7 @@ fn verdict_block_serializes_to_canonical_json() {
         }],
         passed_checks: vec!["no-as-any".into(), "test-coverage-on-auth".into()],
         elapsed_ms: 1340,
+        deferred_rules: vec![],
     };
     insta::assert_json_snapshot!(v, { ".hector_version" => "[VERSION]" });
 }
@@ -46,6 +54,7 @@ fn verdict_pass_with_no_violations() {
         violations: vec![],
         passed_checks: vec!["no-console-log".into()],
         elapsed_ms: 12,
+        deferred_rules: vec![],
     };
     insta::assert_json_snapshot!(v, { ".hector_version" => "[VERSION]" });
 }
@@ -120,6 +129,38 @@ fn verdict_pass_constructor_returns_canonical_empty_verdict() {
     assert!(v.passed_checks.is_empty());
     assert_eq!(v.elapsed_ms, 0);
     assert_eq!(v.hector_version, env!("CARGO_PKG_VERSION"));
+}
+
+#[test]
+fn verdict_block_with_deferred_rules_serializes() {
+    // R6 (2026-05-23): when a deterministic block fires and there are
+    // semantic/session rules whose evaluation was suppressed, they
+    // surface in `deferred_rules`. Lock the on-wire shape: an array of
+    // `{rule_id, severity, reason}` objects appended after `elapsed_ms`.
+    let v = Verdict {
+        schema_version: SCHEMA_VERSION,
+        hector_version: "0.1.0".to_string(),
+        status: Status::Block,
+        violations: vec![Violation {
+            rule_id: "no-console-log".to_string(),
+            severity: Severity::Error,
+            engine: Engine::Script,
+            file: "src/app.ts".into(),
+            line: Some(42),
+            column: None,
+            message: "console.log not permitted in src/".to_string(),
+            suggestion: None,
+            context: None,
+        }],
+        passed_checks: vec![],
+        elapsed_ms: 12,
+        deferred_rules: vec![DeferredRuleRef {
+            rule_id: "no-todo-comment".to_string(),
+            severity: Severity::Warning,
+            reason: "suppressed by deterministic block".to_string(),
+        }],
+    };
+    insta::assert_json_snapshot!(v, { ".hector_version" => "[VERSION]" });
 }
 
 #[test]

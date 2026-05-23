@@ -19,9 +19,13 @@ expression: v
       "context": null
     }
   ],
-  "passed_checks": [
-    "no-as-any",
-    "test-coverage-on-auth"
-  ],
-  "elapsed_ms": 1340
+  "passed_checks": [],
+  "elapsed_ms": 12,
+  "deferred_rules": [
+    {
+      "rule_id": "no-todo-comment",
+      "severity": "warning",
+      "reason": "suppressed by deterministic block"
+    }
+  ]
 }

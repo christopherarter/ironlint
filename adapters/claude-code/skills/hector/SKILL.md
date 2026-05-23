@@ -21,11 +21,28 @@ Tool result stderr begins with a `Verdict` JSON whose `status` is `block`. Forma
   "status": "block",
   "violations": [
     {"rule_id": "no-debug", "file": "src/foo.rs", "line": 42, "message": "DEBUG marker", "severity": "error"}
+  ],
+  "deferred_rules": [
+    {"rule_id": "no-todo-comment", "severity": "warning", "reason": "suppressed by deterministic block"}
   ]
 }
 ```
 
 Fix every listed violation in the affected file before any other tool call. The hook re-fires on the next Edit and re-checks. Repeat until clear.
+
+### `deferred_rules` (R6, verdict schema v3)
+
+If the verdict has a non-empty `deferred_rules` array, those are semantic/session rules that matched the file's scope but were NOT evaluated this turn because the deterministic block fired first. Add a one-liner per deferred rule to your summary back to the user so they see the rule is alive — they were configured, just not run this turn. Format:
+
+```
+Hector blocked the edit:
+- [no-debug] error: DEBUG marker on line 42
+
+Also configured but not evaluated this turn (deterministic block fired first):
+- [no-todo-comment] warning — semantic rule, will re-evaluate after you fix the block above
+```
+
+The next Edit after the block is fixed will re-trigger the hook and the semantic rule will run normally. Do not try to evaluate deferred rules inline here — surface them only.
 
 ## When semantic eval requested (additionalContext)
 

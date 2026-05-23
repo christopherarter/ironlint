@@ -187,4 +187,22 @@ rules:
         "block suppresses deferred envelope"
     );
     assert_eq!(v["status"].as_str(), Some("block"));
+
+    // R6 (2026-05-23): the deferred semantic rule must surface as a
+    // `deferred_rules` entry on the verdict so the interpreter skill
+    // can show the user the rule was configured (just not evaluated
+    // this turn). Pre-R6 the rule vanished silently — the worst failure
+    // mode for a policy tool.
+    let deferred = v["deferred_rules"]
+        .as_array()
+        .expect("deferred_rules must be present and an array on a blocked verdict");
+    assert_eq!(deferred.len(), 1);
+    assert_eq!(deferred[0]["rule_id"].as_str(), Some("no-debug-semantic"));
+    assert_eq!(deferred[0]["severity"].as_str(), Some("error"));
+    assert!(deferred[0]["reason"]
+        .as_str()
+        .is_some_and(|s| !s.is_empty()));
+
+    // Schema version was bumped 2 → 3 for the additive field.
+    assert_eq!(v["schema_version"], serde_json::Value::Number(3.into()));
 }
