@@ -209,3 +209,62 @@ fn p2_3_load_rejects_when_body_diverges_from_trust_fingerprint() {
         "error must reference trust; got: {err}"
     );
 }
+
+/// Investigation #29 regression: appending NEW YAML STRUCTURE after the `trust:`
+/// block must trip the gate.
+///
+/// During R3 remediation, an implementer reported that content appended after
+/// `trust:` slipped past the fingerprint check. The actual algorithm parses the
+/// YAML and re-serializes a canonicalized form before hashing — so any new
+/// mapping entry (e.g. a fresh top-level field, or a new rule under `rules:`)
+/// becomes part of the canonical form and changes the fingerprint. This test
+/// pins that behavior: an attacker-controlled `engine: script` rule appended
+/// after `trust:` MUST cause `verify` to fail.
+#[test]
+fn verify_rejects_new_rule_appended_after_trust_block() {
+    let body = "schema_version: 2\nrules:\n  r:\n    description: \"x\"\n    engine: script\n    scope: [\"*\"]\n    severity: error\n    script: \"true\"\n";
+    let trusted = write_trust_block(body).expect("sign");
+    verify(&trusted).expect("sanity: freshly-signed config verifies");
+
+    // Attacker appends a brand-new top-level key after `trust:`.
+    let attack_toplevel = format!("{trusted}attacker_field: \"pwned\"\n");
+    assert!(
+        verify(&attack_toplevel).is_err(),
+        "appending a new top-level key after trust: must trip the gate"
+    );
+
+    // Attacker appends a new rule by re-opening `rules:` after the trust block.
+    // YAML merges duplicate top-level keys differently across parsers; serde_yaml
+    // accepts the duplicate and the second value wins. Either way, the parsed
+    // map differs from the signed body, so the fingerprint must mismatch.
+    let attack_rule = format!(
+        "{trusted}rules:\n  evil:\n    description: \"pwned\"\n    engine: script\n    scope: [\"*\"]\n    severity: error\n    script: \"touch /tmp/PWNED\"\n"
+    );
+    // serde_yaml rejects duplicate top-level keys outright in some versions;
+    // either a parse error or a fingerprint mismatch is acceptable — both
+    // prevent the malicious rule from running.
+    let result = verify(&attack_rule);
+    assert!(
+        result.is_err(),
+        "appending a duplicate `rules:` block with an attacker rule must not pass the trust gate"
+    );
+}
+
+/// Investigation #29 documentation: pure YAML comments appended after `trust:`
+/// do NOT trip the gate. This is acceptable: comments are stripped at parse
+/// time by serde_yaml, carry no executable payload, and cannot smuggle a
+/// `script:` rule past the canonicalization step. Pinning this so future
+/// changes to the canonicalization path don't quietly alter the contract.
+#[test]
+fn verify_accepts_yaml_comment_appended_after_trust_block() {
+    let body = "schema_version: 2\nrules:\n  r:\n    description: \"x\"\n    engine: script\n    scope: [\"*\"]\n    severity: error\n    script: \"true\"\n";
+    let trusted = write_trust_block(body).expect("sign");
+    verify(&trusted).expect("sanity: freshly-signed config verifies");
+
+    let with_trailing_comment = format!("{trusted}# attacker-added comment, semantically inert\n");
+    assert!(
+        verify(&with_trailing_comment).is_ok(),
+        "pure comments are stripped at parse time and do not affect the fingerprint; \
+         they carry no script payload so this is acceptable"
+    );
+}
