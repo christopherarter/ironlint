@@ -1381,15 +1381,14 @@ impl HectorEngine {
             // aggregates `state.edits` into one LLM prompt; without
             // filtering, a rule scoped to `src/auth/**` would fire on
             // sessions whose every edit lives under `src/billing/`. We
-            // construct the rule's scope matcher (validated at load) and
-            // keep only edits whose file path matches. If nothing
-            // matches, the rule trivially passes without an LLM call.
-            let matcher = crate::config::scope::ScopeMatcher::new(&rule.scope)
-                .expect("scope validated at load");
+            // use `rule_matches_path` (same as `check_inner`) so that
+            // absolute adapter paths are relativized before matching —
+            // B2: pathed scopes like `src/auth/**` were silently never
+            // firing when edits carried absolute paths.
             let filtered_edits: Vec<crate::session_state::EditRecord> = state
                 .edits
                 .iter()
-                .filter(|e| matcher.matches(std::path::Path::new(&e.file)))
+                .filter(|e| self.rule_matches_path(rule, std::path::Path::new(&e.file)))
                 .cloned()
                 .collect();
             if filtered_edits.is_empty() {
