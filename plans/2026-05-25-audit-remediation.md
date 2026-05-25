@@ -1,6 +1,8 @@
 # Hector `check` Audit Remediation Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. CLAUDE.md rule: every bugfix starts with a failing test — the failing test becomes the regression coverage.
+>
+> **Subagent commit attribution:** the commit-message templates in this plan include a `Co-Authored-By: Claude Opus 4.7 ...` line that's accurate only when the orchestrator (Opus 4.7) personally authors the commit. Implementer subagents dispatched via subagent-driven-development MUST omit the `Co-Authored-By` line from their commits — they don't know their own model identity reliably enough to attribute correctly, and a misattributed footer is worse than an absent one.
 
 **Source spec:** [`docs/superpowers/specs/2026-05-25-audit-orchestration-design.md`](../docs/superpowers/specs/2026-05-25-audit-orchestration-design.md).
 **Source audit:** [`docs/audits/2026-05-24-check-end-to-end-audit.md`](../docs/audits/2026-05-24-check-end-to-end-audit.md) — 21 findings, each cross-referenced below by its audit ID.
