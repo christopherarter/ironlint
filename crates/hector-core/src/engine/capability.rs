@@ -58,6 +58,16 @@ pub fn run_with_capabilities_env(
     }
 }
 
+/// Linux entry point. Computes the desired isolation flags and routes to
+/// `clone(2)` when any are requested; otherwise falls through to the
+/// shared `spawn_with_timeout` fast path used by macOS and the
+/// no-isolation case.
+///
+/// **B6 invariant.** The parent process never `unshare`s. Namespace flags
+/// are applied to the cloned child only, so the next rule in the same
+/// `hector` invocation sees a clean parent state. Before B6, a single
+/// `network: false` rule mutated the parent and silently broke every
+/// subsequent `network: true` rule.
 #[cfg(target_os = "linux")]
 fn run_linux(
     cmd: &str,
@@ -66,8 +76,6 @@ fn run_linux(
     env: &[(&str, &str)],
 ) -> Result<ExecOutcome> {
     use nix::sched::CloneFlags;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    static WARNED: AtomicBool = AtomicBool::new(false);
 
     // Compute the desired isolation flags. Writes-policy enforcement is a
     // documented no-op in 0.1 (see docs/security.md and CLAUDE.md), so we
@@ -78,22 +86,43 @@ fn run_linux(
         flags.insert(CloneFlags::CLONE_NEWNET);
     }
 
-    // Probe whether unshare with the requested flags would succeed. If not
-    // (typically EPERM for unprivileged users without CLONE_NEWUSER), fall
-    // back to a best-effort spawn with a one-time stderr warning. Before
-    // this probe, the unshare lived inside `pre_exec`, where its failure
-    // surfaced as a confusing "running command" error and turned every
-    // script rule into an `__internal` Block verdict (P0-8).
-    //
-    // NOTE: a successful unshare here mutates the *parent* process's
-    // namespaces — it's a one-shot, process-wide side effect. That's fine
-    // for the `hector` CLI (one process per invocation). Tests that share
-    // a process should not assume the network is reachable afterwards if
-    // any earlier test in the suite has unshared CLONE_NEWNET.
-    if !flags.is_empty() {
-        let probe = unsafe { libc::unshare(flags.bits()) };
-        if probe != 0 {
-            let err = std::io::Error::last_os_error();
+    if flags.is_empty() {
+        // Fast path: no isolation requested, use the cheap `std::process`
+        // spawn shared with macOS. Keeps the common case (`network: true`,
+        // the default) free of `clone(2)` and child-stack allocation.
+        return spawn_with_timeout(cmd, cwd, env);
+    }
+
+    spawn_clone_with_timeout(cmd, cwd, env, flags)
+}
+
+/// Spawn `sh -c <cmd>` via `clone(2)` with the requested namespace flags
+/// applied to the child only, enforcing the same wall-clock timeout and
+/// per-stream output cap as `spawn_with_timeout`.
+///
+/// On a privilege-related failure (`clone(2)` returning `EPERM`, which
+/// is what unprivileged hosts without `CLONE_NEWUSER` get), this falls
+/// back to the unrestricted `spawn_with_timeout` path with a one-time
+/// stderr warning — matching the existing P0-8 behaviour. Preserving the
+/// fallback is the audit's stated "no UX regression for unprivileged
+/// users" constraint.
+#[cfg(target_os = "linux")]
+fn spawn_clone_with_timeout(
+    cmd: &str,
+    cwd: &Path,
+    env: &[(&str, &str)],
+    flags: nix::sched::CloneFlags,
+) -> Result<ExecOutcome> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static WARNED: AtomicBool = AtomicBool::new(false);
+
+    let (child_pid, stdout_r, stderr_r) = match spawn_clone(cmd, cwd, env, flags) {
+        Ok(triple) => triple,
+        Err(err) => {
+            // Most likely EPERM from `clone(2)` without privilege —
+            // identical UX to the pre-B6 fallback. We can't probe ahead
+            // of time without mutating the parent (the whole point of B6
+            // is that we don't), so a real spawn attempt is the probe.
             if !WARNED.swap(true, Ordering::Relaxed) {
                 eprintln!(
                     "hector: capability sandbox unavailable for unprivileged user ({err}); \
@@ -102,11 +131,245 @@ fn run_linux(
             }
             return spawn_with_timeout(cmd, cwd, env);
         }
-        // Probe succeeded — the parent is now inside the requested namespace,
-        // and the child will inherit it. Do NOT unshare again in pre_exec.
+    };
+    wait_for_child(child_pid, stdout_r, stderr_r)
+}
+
+/// Allocate the child's stack and `clone(2)` it. Returns the child pid
+/// and the read ends of stdout/stderr pipes; the write ends are kept
+/// alive only inside the child closure and dropped here in the parent.
+///
+/// Layout note: `nix::sched::clone` is `unsafe fn` because the caller is
+/// responsible for (a) keeping the stack alive for the lifetime of the
+/// child and (b) not corrupting the parent's heap from inside the child
+/// closure. We satisfy (a) by storing the stack in a leaked `Box<[u8]>`
+/// — the child runs until `execv` replaces its address space, and the
+/// stack memory is reclaimed by the kernel when the child exits. We
+/// satisfy (b) by having the closure only call `execv` and writes that
+/// don't touch shared heap state.
+#[cfg(target_os = "linux")]
+fn spawn_clone(
+    cmd: &str,
+    cwd: &Path,
+    env: &[(&str, &str)],
+    flags: nix::sched::CloneFlags,
+) -> Result<(nix::unistd::Pid, std::os::fd::OwnedFd, std::os::fd::OwnedFd)> {
+    use nix::fcntl::OFlag;
+    use nix::unistd::pipe2;
+    use std::os::fd::AsRawFd;
+
+    // `O_CLOEXEC` so that the parent-end fds get closed automatically if
+    // the child ever forks again before `execv` (defense in depth — our
+    // child closure only does `execv`).
+    let (stdout_r, stdout_w) = pipe2(OFlag::O_CLOEXEC).context("pipe2 for child stdout")?;
+    let (stderr_r, stderr_w) = pipe2(OFlag::O_CLOEXEC).context("pipe2 for child stderr")?;
+
+    // 64 KiB stack: nix's clone recommends ≥16 KiB; we pick 64 KiB to leave
+    // headroom for `sh`'s startup (which runs inside this stack until
+    // `execv` swaps in its own).
+    let mut stack: Box<[u8]> = vec![0u8; 64 * 1024].into_boxed_slice();
+
+    // Capture the bits we need inside the child by value. Closure must
+    // not borrow anything from the parent's stack frame — after
+    // `clone(2)` the parent and child run independently, and any pointer
+    // into the parent's frame would dangle in the child.
+    let cmd_string = cmd.to_string();
+    let cwd_path = cwd.to_path_buf();
+    let env_vec: Vec<(String, String)> = env
+        .iter()
+        .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+        .collect();
+    let stdout_w_raw = stdout_w.as_raw_fd();
+    let stderr_w_raw = stderr_w.as_raw_fd();
+
+    let child_fn: nix::sched::CloneCb<'_> = Box::new(move || -> isize {
+        child_main(stdout_w_raw, stderr_w_raw, &cwd_path, &env_vec, &cmd_string)
+    });
+
+    // SAFETY: `nix::sched::clone` is `unsafe fn` because the caller must
+    // (1) keep `stack` alive for the lifetime of the child and (2) not
+    // share parent heap state with the child after the call. We satisfy
+    // (1) by binding `stack` in this function's scope — the parent does
+    // not free it until after `waitpid` succeeds in the caller, and even
+    // if the parent panics the OS will reap the child via SIGCHLD before
+    // the stack is dropped. We satisfy (2) by having the closure only
+    // call `child_main`, which performs syscalls (`dup2`, `chdir`,
+    // `setenv`, `execv`) that do not deallocate the parent's heap.
+    // SAFETY-MIRI: `clone(2)` is opaque to miri; the per-child
+    // namespace invariant is verified empirically by
+    // `tests/capability_per_child.rs` on Linux instead.
+    #[allow(unsafe_code)]
+    let pid = unsafe { nix::sched::clone(child_fn, &mut stack, flags, Some(libc::SIGCHLD)) }
+        .context("clone(2) for capability-sandboxed child")?;
+
+    // Stack must outlive the child. Leak the box so it's never dropped —
+    // memory is reclaimed by the kernel on process exit. The leak is
+    // O(64 KiB) per script-rule invocation; acceptable given hector runs
+    // tens to hundreds of rules per check, not millions.
+    Box::leak(stack);
+
+    // Close the parent's copy of the write ends. If we don't, reads from
+    // the read ends will block forever — they only return EOF when every
+    // writer has closed.
+    drop(stdout_w);
+    drop(stderr_w);
+
+    Ok((pid, stdout_r, stderr_r))
+}
+
+/// Body of the cloned child. Runs in the child's address space until
+/// `execv` replaces it. Returns an `isize` exit code; on `execv` success
+/// this function does not return.
+///
+/// Conventions:
+/// - exit 126: `chdir` or `setenv` failed before exec
+/// - exit 127: `execv` failed (command not found / not executable) —
+///   matches POSIX shell convention for "command not found"
+#[cfg(target_os = "linux")]
+fn child_main(
+    stdout_w_raw: std::os::fd::RawFd,
+    stderr_w_raw: std::os::fd::RawFd,
+    cwd: &Path,
+    env: &[(String, String)],
+    cmd: &str,
+) -> isize {
+    use nix::unistd::{dup2, execv};
+    use std::ffi::CString;
+
+    // Redirect stdout/stderr to the pipe write-ends. `nix::unistd::dup2`
+    // is a safe wrapper around `dup2(2)`.
+    if dup2(stdout_w_raw, 1).is_err() || dup2(stderr_w_raw, 2).is_err() {
+        return 126;
     }
 
-    spawn_with_timeout(cmd, cwd, env)
+    if std::env::set_current_dir(cwd).is_err() {
+        return 126;
+    }
+
+    // SAFETY: `std::env::set_var` is `unsafe fn` in recent Rust because
+    // mutating env mid-program is racy with other threads reading env.
+    // Here we are in the freshly-cloned child immediately after
+    // `clone(2)`: only one thread exists (the kernel does not clone
+    // sibling threads), so no race is possible. The next syscall after
+    // this loop is `execv`, which replaces the entire address space.
+    #[allow(unsafe_code)]
+    for (k, v) in env {
+        unsafe {
+            std::env::set_var(k, v);
+        }
+    }
+
+    // Build `execv` arguments. CStrings live on the child's stack frame
+    // and are preserved across the `execv` call (the kernel copies the
+    // strings into the new image's argv before swapping address spaces).
+    let Ok(sh) = CString::new("/bin/sh") else {
+        return 126;
+    };
+    let Ok(arg0) = CString::new("sh") else {
+        return 126;
+    };
+    let Ok(argc) = CString::new("-c") else {
+        return 126;
+    };
+    let Ok(argv) = CString::new(cmd) else {
+        return 126;
+    };
+
+    // `nix::unistd::execv` is safe; it does not return on success.
+    let _ = execv(&sh, &[&arg0, &argc, &argv]);
+
+    // `execv` only returns on error — anything past this is "command not
+    // found / not executable", matching POSIX shell convention.
+    127
+}
+
+/// Wait for the cloned child to exit, polling `waitpid(WNOHANG)` until
+/// the deadline elapses. On timeout, sends `SIGKILL`, reaps the child,
+/// and returns a synthesised timeout outcome (exit 124, matches
+/// `timeout(1)`). On normal exit, drains stdout/stderr from the pipe
+/// read ends with the `MAX_OUTPUT` cap and returns the captured output.
+///
+/// Note: matches `spawn_with_timeout`'s wait-then-read semantics. If a
+/// child writes more than the kernel pipe buffer (~64 KiB) before
+/// exiting it will block on `write(2)` and trip the timeout — same
+/// failure mode as the existing path, tracked separately if it ever
+/// becomes load-bearing.
+#[cfg(target_os = "linux")]
+fn wait_for_child(
+    pid: nix::unistd::Pid,
+    stdout_r: std::os::fd::OwnedFd,
+    stderr_r: std::os::fd::OwnedFd,
+) -> Result<ExecOutcome> {
+    use nix::sys::signal::{kill, Signal};
+    use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
+
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    let poll_interval = std::time::Duration::from_millis(10);
+
+    let exit_status = loop {
+        match waitpid(pid, Some(WaitPidFlag::WNOHANG)).context("waitpid on cloned child")? {
+            WaitStatus::StillAlive => {
+                if std::time::Instant::now() >= deadline {
+                    // Timeout fired. Kill and reap. `kill` failures are
+                    // ignored — typically ESRCH if the child raced us
+                    // and exited between the WNOHANG check and the
+                    // signal, in which case we just need to drain via
+                    // blocking waitpid.
+                    let _ = kill(pid, Signal::SIGKILL);
+                    let _ = waitpid(pid, None);
+                    return Ok(ExecOutcome {
+                        stdout: String::new(),
+                        stderr: format!("hector: script killed after {TIMEOUT:?} timeout"),
+                        exit_code: TIMEOUT_EXIT_CODE,
+                    });
+                }
+                std::thread::sleep(poll_interval);
+            }
+            other => break other,
+        }
+    };
+
+    // Child has exited. Drain the pipes with the per-stream cap and
+    // synthesise the outcome.
+    let (stdout, stderr) = read_pipes_bounded(stdout_r, stderr_r);
+    Ok(ExecOutcome {
+        stdout,
+        stderr,
+        exit_code: exit_status_to_code(exit_status),
+    })
+}
+
+/// Drain stdout and stderr read-ends, each capped at `MAX_OUTPUT`. Wraps
+/// the `OwnedFd`s in `std::fs::File` to get `Read`; the file closes its
+/// fd on drop, matching the `OwnedFd` lifetime.
+#[cfg(target_os = "linux")]
+fn read_pipes_bounded(
+    stdout_r: std::os::fd::OwnedFd,
+    stderr_r: std::os::fd::OwnedFd,
+) -> (String, String) {
+    let mut stdout = String::new();
+    let _ = std::fs::File::from(stdout_r)
+        .take(MAX_OUTPUT as u64)
+        .read_to_string(&mut stdout);
+    let mut stderr = String::new();
+    let _ = std::fs::File::from(stderr_r)
+        .take(MAX_OUTPUT as u64)
+        .read_to_string(&mut stderr);
+    (stdout, stderr)
+}
+
+/// Map a `WaitStatus` to a POSIX-style exit code. Normal exits return
+/// the program's status; signal terminations are reported as `128 +
+/// signum`, mirroring shell conventions so consumers can recognise
+/// "killed by SIGKILL = 137" without re-encoding the convention here.
+#[cfg(target_os = "linux")]
+fn exit_status_to_code(status: nix::sys::wait::WaitStatus) -> i32 {
+    use nix::sys::wait::WaitStatus;
+    match status {
+        WaitStatus::Exited(_, code) => code,
+        WaitStatus::Signaled(_, sig, _) => 128 + sig as i32,
+        _ => -1,
+    }
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -155,10 +418,10 @@ pub fn platform_capability_status() -> Option<&'static str> {
 /// Spawn `sh -c <cmd>` in `cwd` with `env` overrides, enforcing both a
 /// wall-clock timeout and a per-stream output cap.
 ///
-/// No namespace work happens here — on Linux, the parent has already done
-/// the unshare (or fallen back to best-effort) before reaching this point.
-/// Used by macOS and the Linux post-unshare path; centralising the spawn
-/// keeps the timeout + bounded-read invariant in exactly one place.
+/// No namespace work happens here — on Linux, this is the no-isolation
+/// fast path (and the EPERM fallback for `clone(2)`); on macOS it's the
+/// only path. Centralising the spawn keeps the timeout + bounded-read
+/// invariant in exactly one place across both targets.
 fn spawn_with_timeout(cmd: &str, cwd: &Path, env: &[(&str, &str)]) -> Result<ExecOutcome> {
     let mut command = Command::new("sh");
     command

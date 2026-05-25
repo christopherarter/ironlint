@@ -9,7 +9,11 @@ license = "Apache-2.0"
 repository = "https://github.com/dynamik-dev/hector"
 
 [workspace.lints.rust]
-unsafe_code = "forbid"
+# `deny` (not `forbid`) so per-block `#[allow(unsafe_code)]` is permitted
+# alongside a `// SAFETY:` justification. The capability sandbox needs
+# `clone(2)` for per-child namespace isolation (see B6 / capability.rs);
+# everything else stays unsafe-free.
+unsafe_code = "deny"
 rust_2018_idioms = { level = "warn", priority = -1 }
 unused_lifetimes = "warn"
 # Anonymous lifetimes on `&T` arguments are idiomatic; opt in explicitly later.
@@ -66,7 +70,7 @@ thiserror = "2"
 clap = { version = "4", features = ["derive"] }
 sha2 = "0.10"
 globset = "0.4"
-nix = { version = "0.29", features = ["mount", "sched", "user"] }
+nix = { version = "0.29", features = ["fs", "mount", "sched", "signal", "user"] }
 tempfile = "3"
 assert_cmd = "2"
 predicates = "3"
