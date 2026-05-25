@@ -113,7 +113,7 @@ No code. Two design pins that downstream phases assume.
 
 - [ ] **Step 2: Record the decision** in this plan file. Edit the next line to say "**D1 decision:** A" or "**D1 decision:** B" so downstream tasks know which path to take.
 
-**D1 decision:** _TBD — fill in after Step 1_
+**D1 decision:** A — `hector check --diff` evaluates the whole post-edit file. The `added_lines` field is dead code and gets deleted. Consequence: Task 4.1 (D2) collapses to a delete-the-field commit; Task 4.3 (C3) drops the populated-line-numbers assertion.
 
 - [ ] **Step 3: Commit the decision** with message:
 
@@ -134,7 +134,7 @@ No code. Two design pins that downstream phases assume.
 
 - [ ] **Step 2: Record the decision.**
 
-**D6 decision:** _TBD — fill in after Step 1_
+**D6 decision:** Keep first-parent-wins. Consequence: Task 6.3 collapses to a test + docs commit; no change to `crates/hector-core/src/config/extends.rs`.
 
 - [ ] **Step 3: Commit the decision** in the same commit as Task 0.1 (single phase-closing commit):
 
