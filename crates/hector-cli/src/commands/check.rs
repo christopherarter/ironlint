@@ -274,6 +274,19 @@ fn emit(v: &Verdict, format: OutputFormat) -> Result<()> {
     Ok(())
 }
 
+/// Extract the path from a `+++ b/<path>[\t<timestamp>]` header line.
+///
+/// A2: POSIX `diff -u` appends `\t<timestamp>` after the path. Split at the
+/// first tab and discard the timestamp segment before comparing paths.
+fn header_path(line: &str) -> Option<&str> {
+    line.strip_prefix("+++ b/").map(|p| {
+        p.split('\t')
+            .next()
+            .unwrap_or(p)
+            .trim_end_matches(['\n', '\r'])
+    })
+}
+
 /// Slice a multi-file unified diff down to the hunks for a single file.
 ///
 /// A file's section starts at the `--- a/<path>` header that precedes its
@@ -282,16 +295,16 @@ fn emit(v: &Verdict, format: OutputFormat) -> Result<()> {
 /// include the preceding `--- a/...` line so the slice is a syntactically
 /// well-formed diff in its own right.
 fn build_single_file_diff(full: &str, file: &Path) -> String {
-    let needle = format!("+++ b/{}", file.display());
+    let target = file.display().to_string();
     // `split_inclusive` preserves line terminators so we can round-trip the
     // slice without re-emitting newlines.
     let lines: Vec<&str> = full.split_inclusive('\n').collect();
 
-    // Locate the `+++ b/<path>` for the target file.
-    let plus_idx = lines.iter().position(|line| {
-        let trimmed = line.trim_end_matches(['\n', '\r']);
-        trimmed == needle
-    });
+    // Locate the `+++ b/<path>` for the target file, stripping any
+    // POSIX-style tab+timestamp before the path comparison.
+    let plus_idx = lines
+        .iter()
+        .position(|line| header_path(line).is_some_and(|p| p == target));
     let Some(plus_idx) = plus_idx else {
         return String::new();
     };

@@ -15,6 +15,10 @@ pub fn parse_unified(input: &str) -> Result<Vec<ChangedFile>> {
 
     for raw in input.lines() {
         if let Some(path) = raw.strip_prefix("+++ b/") {
+            // A2: POSIX `diff -u` appends `\t<timestamp>` to header paths.
+            // Split at the first tab and discard the timestamp segment before
+            // any further processing.
+            let path = path.split('\t').next().unwrap_or(path);
             // P2-10: tolerate lone trailing `\r` (CRLF-terminated lines passed
             // through `str::lines()` are already stripped, but defense in depth
             // protects us if iteration semantics ever change).

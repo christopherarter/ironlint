@@ -111,3 +111,37 @@ fn parse_unified_trims_crlf_from_path() {
         "trailing \\r must be stripped"
     );
 }
+
+/// A2 regression: POSIX `diff -u` headers include `\t<timestamp>` after
+/// the path. The parser must strip that and yield a clean PathBuf.
+#[test]
+fn parse_unified_strips_tab_timestamp_from_path() {
+    let input = "--- a/myfile.py\t2026-05-24 14:30:00 +0000\n\
+                 +++ b/myfile.py\t2026-05-24 14:30:00 +0000\n\
+                 @@ -1,1 +1,2 @@\n\
+                  x\n\
+                 +y\n";
+    let files = hector_core::diff::parser::parse_unified(input).expect("parses");
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].path, std::path::PathBuf::from("myfile.py"));
+}
+
+/// A2: paths without timestamps (the git case) must still parse.
+#[test]
+fn parse_unified_handles_path_without_timestamp() {
+    let input = "--- a/x.rs\n+++ b/x.rs\n@@ -1,1 +1,2 @@\n a\n+b\n";
+    let files = hector_core::diff::parser::parse_unified(input).expect("parses");
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].path, std::path::PathBuf::from("x.rs"));
+}
+
+/// A2: CRLF-terminated lines still strip cleanly when combined with a timestamp.
+#[test]
+fn parse_unified_handles_crlf_with_timestamp() {
+    let input = "--- a/x.rs\t2026-05-24 14:30:00 +0000\r\n\
+                 +++ b/x.rs\t2026-05-24 14:30:00 +0000\r\n\
+                 @@ -1,1 +1,2 @@\r\n a\r\n+b\r\n";
+    let files = hector_core::diff::parser::parse_unified(input).expect("parses");
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].path, std::path::PathBuf::from("x.rs"));
+}
