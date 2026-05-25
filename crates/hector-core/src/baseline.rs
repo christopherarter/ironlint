@@ -14,21 +14,37 @@ use std::sync::OnceLock;
 /// the intended nudge to run `hector baseline refresh`.
 static LEGACY_WARNING_EMITTED: OnceLock<()> = OnceLock::new();
 
+/// Per-entry baseline metadata.
+///
+/// v3 (A1, 2026-05-25): tracks an optional `body_sha256` alongside the
+/// existing `line_sha256` so file-level (`line: None`) violations
+/// participate in content-aware matching. Without this, passthrough
+/// script output — the default since R4 — turned baseline into a
+/// permanent per-file disable.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EntryMeta {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body_sha256: Option<String>,
+}
+
 /// On-disk baseline.
 ///
-/// **v2 (E1):** `entries` maps the tuple-fingerprint key (see
-/// [`Baseline::fingerprint`]) to an optional SHA-256 of the line content
-/// at recording time. Replay matches when both the key and the checksum
-/// match (or the stored checksum is absent — the grace-period behavior
-/// for v1 baselines).
+/// **v3 (A1, 2026-05-25):** `entries` values become `EntryMeta` with
+/// optional `line_sha256` and `body_sha256`. File-level violations now
+/// store a normalized body hash; replay requires both fingerprint AND
+/// body match.
 ///
-/// **v1 (pre-E1):** `fingerprints` is a flat set of tuple-fingerprint
-/// strings. Loaded with a one-time deprecation warning; every entry is
-/// treated as "always match" so existing baselines keep working. Run
-/// `hector baseline refresh` to upgrade in place.
+/// **v2 (E1, pre-A1):** entries mapped to `Option<String>` (line
+/// checksum). Loaded with a one-time grace-period read: missing
+/// `body_sha256` means "match on key+line only" — preserves prior
+/// behavior until the user runs `hector baseline refresh`.
+///
+/// **v1 (pre-E1):** flat fingerprint set. One-time deprecation warning.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Baseline {
-    pub entries: BTreeMap<String, Option<String>>,
+    pub entries: BTreeMap<String, EntryMeta>,
 }
 
 /// Summary of a [`Baseline::refresh`] call.
@@ -41,11 +57,14 @@ pub struct RefreshReport {
     pub dropped: usize,
 }
 
-/// Wire shape we accept on read. `Serialize` only emits v2 — every save
-/// upgrades a v1 file on the next write.
+/// Wire shape we accept on read. `Serialize` only emits v3 — every save
+/// upgrades a v1/v2 file on the next write.
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum BaselineOnDisk {
+    V3 {
+        entries: BTreeMap<String, EntryMeta>,
+    },
     V2 {
         entries: BTreeMap<String, Option<String>>,
     },
@@ -62,10 +81,28 @@ impl Baseline {
         let content = std::fs::read_to_string(path)?;
         let parsed: BaselineOnDisk = serde_json::from_str(&content)?;
         match parsed {
-            BaselineOnDisk::V2 { entries } => Ok(Self { entries }),
+            BaselineOnDisk::V3 { entries } => Ok(Self { entries }),
+            BaselineOnDisk::V2 { entries } => {
+                let upgraded = entries
+                    .into_iter()
+                    .map(|(k, line_sha256)| {
+                        (
+                            k,
+                            EntryMeta {
+                                line_sha256,
+                                body_sha256: None,
+                            },
+                        )
+                    })
+                    .collect();
+                Ok(Self { entries: upgraded })
+            }
             BaselineOnDisk::V1 { fingerprints } => {
                 Self::emit_legacy_warning(path);
-                let entries = fingerprints.into_iter().map(|fp| (fp, None)).collect();
+                let entries = fingerprints
+                    .into_iter()
+                    .map(|fp| (fp, EntryMeta::default()))
+                    .collect();
                 Ok(Self { entries })
             }
         }
@@ -151,6 +188,101 @@ impl Baseline {
         format!("{:x}", h.finalize())
     }
 
+    /// SHA-256 of a normalized message body.
+    ///
+    /// Normalization strips ISO-8601-shaped timestamps, ANSI color escapes,
+    /// and per-line trailing whitespace. The normalized form is what gets
+    /// hashed, so transient byproducts (line numbers in linter preambles,
+    /// terminal color codes from interactive linters, scan timestamps) do
+    /// not defeat matching.
+    pub fn body_checksum(message: &str) -> String {
+        let normalized = Self::normalize_body(message);
+        let mut h = Sha256::new();
+        h.update(normalized.as_bytes());
+        format!("{:x}", h.finalize())
+    }
+
+    fn normalize_body(message: &str) -> String {
+        // ANSI escape sequences: ESC [ ... letter
+        // Implemented as a simple state machine rather than a regex to avoid
+        // a new dep.
+        let stripped_ansi = Self::strip_ansi(message);
+        let stripped_ts = Self::strip_timestamps(&stripped_ansi);
+        stripped_ts
+            .lines()
+            .map(str::trim_end)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn strip_ansi(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        let mut chars = s.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '\x1b' && chars.peek() == Some(&'[') {
+                chars.next();
+                for inner in chars.by_ref() {
+                    if inner.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    fn strip_timestamps(s: &str) -> String {
+        // Match `\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}` and variants with
+        // milliseconds + timezone. Implemented as a single pass.
+        let bytes = s.as_bytes();
+        let mut out = String::with_capacity(s.len());
+        let mut i = 0;
+        while i < bytes.len() {
+            if Self::looks_like_iso8601(&bytes[i..]) {
+                let mut j = i + 19; // YYYY-MM-DDTHH:MM:SS = 19 chars
+                                    // Optional .fractional and timezone offset
+                if j < bytes.len() && bytes[j] == b'.' {
+                    j += 1;
+                    while j < bytes.len() && bytes[j].is_ascii_digit() {
+                        j += 1;
+                    }
+                }
+                if j < bytes.len() && (bytes[j] == b'Z' || bytes[j] == b'+' || bytes[j] == b'-') {
+                    j += 1;
+                    // Skip up to 5 chars of offset (HH:MM or HHMM)
+                    let end = (j + 5).min(bytes.len());
+                    while j < end && (bytes[j].is_ascii_digit() || bytes[j] == b':') {
+                        j += 1;
+                    }
+                }
+                i = j;
+            } else {
+                out.push(bytes[i] as char);
+                i += 1;
+            }
+        }
+        out
+    }
+
+    fn looks_like_iso8601(b: &[u8]) -> bool {
+        if b.len() < 19 {
+            return false;
+        }
+        b[0..4].iter().all(|c| c.is_ascii_digit())
+            && b[4] == b'-'
+            && b[5..7].iter().all(|c| c.is_ascii_digit())
+            && b[7] == b'-'
+            && b[8..10].iter().all(|c| c.is_ascii_digit())
+            && b[10] == b'T'
+            && b[11..13].iter().all(|c| c.is_ascii_digit())
+            && b[13] == b':'
+            && b[14..16].iter().all(|c| c.is_ascii_digit())
+            && b[16] == b':'
+            && b[17..19].iter().all(|c| c.is_ascii_digit())
+    }
+
     /// 1-based line lookup. Returns `None` if `line == 0` or the line is
     /// past the end of `content`.
     fn line_at(file_content: &str, line: u32) -> Option<&str> {
@@ -166,13 +298,25 @@ impl Baseline {
 
     /// Insert a violation. When `file_content` is `Some` and the
     /// violation has a `line`, capture the line text's SHA-256.
+    /// When the violation has no `line`, capture a normalized body hash.
     pub fn add_with_content(&mut self, v: &Violation, file_content: Option<&str>) {
         let key = Self::fingerprint(v);
-        let checksum = v
+        let line_sha256 = v
             .line
             .and_then(|n| file_content.and_then(|c| Self::line_at(c, n)))
             .map(Self::line_checksum);
-        self.entries.insert(key, checksum);
+        let body_sha256 = if v.line.is_none() {
+            Some(Self::body_checksum(&v.message))
+        } else {
+            None
+        };
+        self.entries.insert(
+            key,
+            EntryMeta {
+                line_sha256,
+                body_sha256,
+            },
+        );
     }
 
     pub fn contains(&self, v: &Violation) -> bool {
@@ -182,27 +326,28 @@ impl Baseline {
     /// Replay match. See [`Baseline`] type docs for the truth table.
     pub fn contains_with_content(&self, v: &Violation, file_content: Option<&str>) -> bool {
         let key = Self::fingerprint(v);
-        let Some(stored) = self.entries.get(&key) else {
+        let Some(meta) = self.entries.get(&key) else {
             return false;
         };
-        Self::checksum_matches(stored.as_deref(), v.line, file_content)
+        if !Self::line_checksum_matches(meta.line_sha256.as_deref(), v.line, file_content) {
+            return false;
+        }
+        Self::body_checksum_matches(meta.body_sha256.as_deref(), v.line, &v.message)
     }
 
-    /// True when the stored checksum matches the current line content.
+    /// True when the stored line checksum matches the current line content.
     ///
-    /// Extracted from `contains_with_content` to keep that method below
-    /// the project's cognitive-complexity cap. Four cases:
-    ///
-    /// 1. No stored checksum (v1 grace period or file-level add). Match.
-    /// 2. Stored checksum but violation has no `line`. Match.
-    /// 3. Stored checksum, line, and current content available. Hash
-    ///    the current line and compare. If the line is gone from the
-    ///    file, treat as still suppressed — the violation cannot recur
-    ///    on a line that no longer exists.
-    /// 4. Stored checksum, line, but no current content (library caller
-    ///    opted out). Conservatively match — preserves the pre-E1
-    ///    behavior for that code path.
-    fn checksum_matches(stored: Option<&str>, line: Option<u32>, content: Option<&str>) -> bool {
+    /// Cases:
+    /// 1. No stored checksum (v1 grace period). Match.
+    /// 2. Stored checksum but violation has no `line`. Match (body path handles it).
+    /// 3. Stored checksum, line, and current content available. Hash and compare.
+    ///    If the line is gone from the file, treat as still suppressed.
+    /// 4. Stored checksum, line, but no current content. Conservatively match.
+    fn line_checksum_matches(
+        stored: Option<&str>,
+        line: Option<u32>,
+        content: Option<&str>,
+    ) -> bool {
         let Some(expected) = stored else {
             return true;
         };
@@ -218,6 +363,18 @@ impl Baseline {
         }
     }
 
+    fn body_checksum_matches(stored: Option<&str>, line: Option<u32>, message: &str) -> bool {
+        // Grace period: v2 entries have no body_sha256. Match anything.
+        let Some(expected) = stored else {
+            return true;
+        };
+        // Line-bearing violations don't use body_sha256.
+        if line.is_some() {
+            return true;
+        }
+        Self::body_checksum(message) == *expected
+    }
+
     /// Re-hash every entry against the current on-disk content of the
     /// file it points at. Drops entries whose line is no longer present
     /// in the file. File-level (`line: None`) entries pass through
@@ -227,19 +384,27 @@ impl Baseline {
             refreshed: 0,
             dropped: 0,
         };
-        let mut new_entries: BTreeMap<String, Option<String>> = BTreeMap::new();
+        let mut new_entries: BTreeMap<String, EntryMeta> = BTreeMap::new();
 
         for key in self.entries.keys() {
             match Self::refresh_one(key, root) {
                 RefreshOutcome::Updated(checksum) => {
-                    new_entries.insert(key.clone(), Some(checksum));
+                    let prior_body = self.entries.get(key).and_then(|m| m.body_sha256.clone());
+                    new_entries.insert(
+                        key.clone(),
+                        EntryMeta {
+                            line_sha256: Some(checksum),
+                            body_sha256: prior_body,
+                        },
+                    );
                     report.refreshed += 1;
                 }
                 RefreshOutcome::Dropped => {
                     report.dropped += 1;
                 }
                 RefreshOutcome::PassThrough => {
-                    new_entries.insert(key.clone(), None);
+                    let prior = self.entries.get(key).cloned().unwrap_or_default();
+                    new_entries.insert(key.clone(), prior);
                 }
             }
         }

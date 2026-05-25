@@ -254,15 +254,100 @@ fn trailing_whitespace_does_not_invalidate_checksum() {
     );
 }
 
+/// A1 regression: a file-level violation (line: None) MUST resurface when
+/// the underlying message content changes. Pre-fix behavior silenced any
+/// future violation with the same (rule_id, file) regardless of body.
 #[test]
-fn line_none_violation_baselines_without_checksum() {
-    // Script/semantic rules emit file-level violations with line: None.
+fn file_level_baseline_resurfaces_when_message_changes() {
+    use hector_core::baseline::Baseline;
+    use hector_core::verdict::{Engine, Severity, Violation};
+
     let mut b = Baseline::default();
-    let v = make_violation("file-level", "src/lib.rs", None);
-    b.add_with_content(&v, Some("anything\n"));
-    // Same violation re-fires later: must remain suppressed regardless of
-    // file content.
-    assert!(b.contains_with_content(&v, Some("totally different file\n")));
+    let v_old = Violation {
+        rule_id: "no-debug".to_string(),
+        severity: Severity::Error,
+        engine: Engine::Script,
+        file: "src/main.rs".to_string(),
+        line: None,
+        column: None,
+        message: "DEBUG_OLD: leftover trace".to_string(),
+        suggestion: None,
+        context: None,
+    };
+    b.add_with_content(&v_old, None);
+    assert!(
+        b.contains_with_content(&v_old, None),
+        "same body must match"
+    );
+
+    let v_new = Violation {
+        message: "DEBUG_NEW: completely different problem".to_string(),
+        ..v_old.clone()
+    };
+    assert!(
+        !b.contains_with_content(&v_new, None),
+        "different body on same (rule_id, file) must NOT match"
+    );
+}
+
+/// A1: timestamp-shaped substrings must not defeat body matching.
+#[test]
+fn file_level_baseline_ignores_timestamps_in_body() {
+    use hector_core::baseline::Baseline;
+    use hector_core::verdict::{Engine, Severity, Violation};
+
+    let mut b = Baseline::default();
+    let v_first = Violation {
+        rule_id: "linter".to_string(),
+        severity: Severity::Error,
+        engine: Engine::Script,
+        file: "x.py".to_string(),
+        line: None,
+        column: None,
+        message: "scanned at 2026-05-24T12:00:00; found 3 issues: A, B, C".to_string(),
+        suggestion: None,
+        context: None,
+    };
+    b.add_with_content(&v_first, None);
+
+    let v_later = Violation {
+        message: "scanned at 2026-05-25T09:30:11; found 3 issues: A, B, C".to_string(),
+        ..v_first.clone()
+    };
+    assert!(
+        b.contains_with_content(&v_later, None),
+        "same body modulo timestamp must still match"
+    );
+}
+
+/// A1: ANSI color escapes must not defeat body matching.
+#[test]
+fn file_level_baseline_ignores_ansi_in_body() {
+    use hector_core::baseline::Baseline;
+    use hector_core::verdict::{Engine, Severity, Violation};
+
+    let mut b = Baseline::default();
+    let v_with_color = Violation {
+        rule_id: "r".to_string(),
+        severity: Severity::Error,
+        engine: Engine::Script,
+        file: "f".to_string(),
+        line: None,
+        column: None,
+        message: "\x1b[31merror:\x1b[0m bad thing".to_string(),
+        suggestion: None,
+        context: None,
+    };
+    b.add_with_content(&v_with_color, None);
+
+    let v_plain = Violation {
+        message: "error: bad thing".to_string(),
+        ..v_with_color.clone()
+    };
+    assert!(
+        b.contains_with_content(&v_plain, None),
+        "stripping ANSI must yield equivalent body checksums"
+    );
 }
 
 #[test]
@@ -364,10 +449,11 @@ fn refresh_keeps_entries_for_missing_files() {
 // silent data loss.
 #[test]
 fn refresh_preserves_malformed_keys() {
+    use hector_core::baseline::EntryMeta;
     let dir = tempdir().unwrap();
     let mut b = Baseline::default();
     b.entries
-        .insert("not a valid fingerprint".to_string(), None);
+        .insert("not a valid fingerprint".to_string(), EntryMeta::default());
 
     let report = b.refresh(dir.path()).unwrap();
     assert_eq!(report.refreshed, 0);
@@ -406,18 +492,24 @@ fn contains_without_content_falls_back_to_match() {
     assert!(b.contains_with_content(&v, None));
 }
 
-// `contains_with_content`: stored checksum + violation has no line.
-// The checksum can't apply, so match by key alone. Hit by mixed
-// file-level + line-level recordings on the same rule.
+// `contains_with_content`: stored line_sha256 + violation has no line.
+// The line checksum can't apply; body path handles it. This exercises
+// the grace-period path where a v2 entry (no body_sha256) loads and
+// matches anything for the file-level slot.
 #[test]
 fn contains_line_none_with_stored_checksum_still_matches() {
+    use hector_core::baseline::EntryMeta;
     let mut b = Baseline::default();
-    // Add an entry whose key has line: None but which somehow ended up
-    // with a stored checksum (shouldn't normally happen via add_with_content,
-    // but the public API allows direct mutation of `entries`).
+    // Simulate a v2-era entry: line_sha256 set, body_sha256 absent.
     let v_none = make_violation("r1", "a.txt", None);
-    b.entries
-        .insert(Baseline::fingerprint(&v_none), Some("deadbeef".to_string()));
+    b.entries.insert(
+        Baseline::fingerprint(&v_none),
+        EntryMeta {
+            line_sha256: Some("deadbeef".to_string()),
+            body_sha256: None,
+        },
+    );
+    // Grace period: no body_sha256 → match anything.
     assert!(b.contains_with_content(&v_none, Some("any\n")));
 }
 
@@ -444,10 +536,15 @@ fn add_with_content_line_zero_records_no_checksum() {
     let mut b = Baseline::default();
     let v = make_violation("r1", "a.txt", Some(0));
     b.add_with_content(&v, Some("first\nsecond\n"));
-    // No checksum captured because `line_at(_, 0) == None`.
+    // No line_sha256 captured because `line_at(_, 0) == None`.
+    // body_sha256 is also None because the violation has a line (Some(0)).
     let stored = b.entries.get(&Baseline::fingerprint(&v)).unwrap();
     assert!(
-        stored.is_none(),
-        "line == 0 must produce no checksum: {stored:?}"
+        stored.line_sha256.is_none(),
+        "line == 0 must produce no line_sha256: {stored:?}"
+    );
+    assert!(
+        stored.body_sha256.is_none(),
+        "line == Some(0) must produce no body_sha256: {stored:?}"
     );
 }

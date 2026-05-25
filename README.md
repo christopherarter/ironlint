@@ -33,6 +33,17 @@ Read-only commands that never run engines, call LLMs, or write telemetry. Exit `
 
 All three honor `--config <path>` (default `.hector.yml`).
 
+## Baseline
+
+`hector baseline record` snapshots current violations so future `hector check` runs suppress them (noise reduction for pre-existing issues). `hector baseline refresh` re-hashes each entry against current file content and drops entries whose line is gone.
+
+**File-level violations now require content match.** Since A1 (0.2),
+baselined `line: None` violations are matched on both their fingerprint
+and a normalized hash of the violation message. Old (v2) baselines
+continue to match on fingerprint alone during a grace period — run
+`hector baseline refresh` to upgrade. Normalization strips ISO-8601
+timestamps and ANSI color escapes.
+
 ## Specs
 
 - [`specs/overview.md`](specs/overview.md) — Hector at 1.0
