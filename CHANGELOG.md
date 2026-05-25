@@ -12,6 +12,15 @@ Notable changes to Hector, newest first. In-flight work lives in `plans/`.
   alone during a grace period; run `hector baseline record` to
   re-record entries under the new schema. Storage schema bumped v2 → v3.
 
+### Fixed
+- **A2 (diff parser)**: POSIX `diff -u` patches with `\t<timestamp>`
+  headers now parse correctly. The previous parser only stripped `\r`,
+  so the tab and timestamp landed in the `PathBuf` — every scope match
+  silently missed and `hector check --diff` returned a clean pass on
+  any non-git patch. `build_single_file_diff` had the symmetric bug;
+  both call sites are fixed and regression-tested at parser and CLI
+  levels.
+
 ### Hook output + capability warning quieted (R7)
 
 - Claude Code adapter hook emits exactly one block message per block — verdict JSON on stderr — confirmed by piping a synthesized `PostToolUse` event through `adapters/claude-code/hooks/hook.sh`. The doubled `PostToolUse:Edit hook returned blocking error` headers seen in the audit transcript came from a second plugin (`bully`) installed alongside `hector` in the same Claude Code session, not from Hector emitting twice. No Hector-side change required for this half.
