@@ -450,6 +450,33 @@ impl HectorEngine {
         ScopeOutcomes { skip, rules }
     }
 
+    /// Resolve an input path argument against the engine's config dir.
+    ///
+    /// Absolute paths pass through unchanged. Relative paths are joined
+    /// onto `self.config_dir` so a diff produced by an editor (which
+    /// carries `+++ b/<rel>` paths) resolves to the same on-disk file
+    /// regardless of the agent's CWD.
+    ///
+    /// Introduced for B1; extended by C4 to gate external paths.
+    pub fn resolve_input_path(&self, p: &std::path::Path) -> std::path::PathBuf {
+        if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            self.config_dir.join(p)
+        }
+    }
+
+    /// Match a path against a rule's scope, using the unified `relativize`
+    /// step shared with `check_inner`.
+    ///
+    /// Introduced for B2 and reused by D4's memoization.
+    pub fn rule_matches_path(&self, rule: &crate::config::Rule, file: &std::path::Path) -> bool {
+        let match_path = relativize(file, &self.config_dir);
+        let matcher = crate::config::scope::ScopeMatcher::new(&rule.scope)
+            .expect("scope validated at load");
+        matcher.matches(&match_path)
+    }
+
     fn load_with(
         config_path: &Path,
         llm_override: Option<Box<dyn crate::llm::LlmClient>>,
