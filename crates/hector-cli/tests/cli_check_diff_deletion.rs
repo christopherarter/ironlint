@@ -14,7 +14,11 @@ fn cli_check_diff_pure_deletion_passes_clean() {
     fs::write(&cfg, signed).unwrap();
 
     let patch = tmp.path().join("d.patch");
-    fs::write(&patch, "--- a/gone.rs\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-fn a() {}\n-fn b() {}\n").unwrap();
+    fs::write(
+        &patch,
+        "--- a/gone.rs\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-fn a() {}\n-fn b() {}\n",
+    )
+    .unwrap();
     let out = Command::cargo_bin("hector")
         .unwrap()
         .args(["check", "--diff"])

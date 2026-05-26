@@ -169,7 +169,37 @@ fn parse_unified_recognizes_deletion() {
     use hector_core::diff::parser::ChangeOp;
     let input = "--- a/gone.rs\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-fn a() {}\n-fn b() {}\n";
     let files = hector_core::diff::parser::parse_unified(input).expect("parses");
-    assert_eq!(files.len(), 1, "deletion must produce exactly one ChangedFile");
+    assert_eq!(
+        files.len(),
+        1,
+        "deletion must produce exactly one ChangedFile"
+    );
     assert_eq!(files[0].path, std::path::PathBuf::from("gone.rs"));
     assert_eq!(files[0].op, ChangeOp::Deleted);
+}
+
+/// C3 follow-up: deletion paths must also be validated. Pre-fix, the
+/// `--- a/<path>` segment for a deletion diff bypassed P0-4 validation
+/// because validate_path was only called on the `+++ b/` arm. The
+/// runner's skip-Deleted-before-I/O guard masked the gap, but the
+/// unvalidated path would still surface in the public ChangedFile struct
+/// and into any future telemetry path.
+#[test]
+fn parse_unified_rejects_traversal_in_deletion_minus_path() {
+    use hector_core::diff::parser::parse_unified;
+    let result = parse_unified("--- a/../../etc/passwd\n+++ /dev/null\n@@ -1,1 +0,0 @@\n-x\n");
+    assert!(
+        result.is_err(),
+        "deletion with traversal path must be rejected at parse time"
+    );
+}
+
+#[test]
+fn parse_unified_rejects_absolute_in_deletion_minus_path() {
+    use hector_core::diff::parser::parse_unified;
+    let result = parse_unified("--- a//etc/passwd\n+++ /dev/null\n@@ -1,1 +0,0 @@\n-x\n");
+    assert!(
+        result.is_err(),
+        "deletion with absolute path must be rejected at parse time"
+    );
 }

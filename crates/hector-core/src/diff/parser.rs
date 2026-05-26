@@ -66,7 +66,15 @@ pub fn parse_unified(input: &str) -> Result<Vec<ChangedFile>> {
             let minus = minus.trim_end_matches('\r');
             // `--- /dev/null` means the new side is an addition; any other
             // non-`a/` form is unrecognised and treated as if we saw nothing.
-            pending_minus = minus.strip_prefix("a/").map(PathBuf::from);
+            // P0-4: validate the `--- a/<path>` segment too — deletion diffs
+            // store the unvalidated path in pending_minus, which surfaces in
+            // `ChangedFile { op: Deleted }` and future telemetry.
+            pending_minus = if let Some(path_str) = minus.strip_prefix("a/") {
+                validate_path(path_str)?;
+                Some(PathBuf::from(path_str))
+            } else {
+                None
+            };
         } else if let Some(plus) = raw.strip_prefix("+++ ") {
             // A2: strip optional tab+timestamp suffix.
             let plus = plus.split('\t').next().unwrap_or(plus);
