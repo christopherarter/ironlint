@@ -68,7 +68,7 @@ in-session subagent.
 When a deterministic rule blocks (exit `2`) and an `--emit-semantic-payload`
 run also had semantic/session rules in scope, the full deferred envelope
 is suppressed — but the rules themselves surface on `Verdict.deferred_rules`
-(see [`Verdict::SCHEMA_VERSION`](#) bumped to `3`). The shape:
+(`Verdict::SCHEMA_VERSION` remains `2` per the additive-no-bump policy — the field is optional and gated by `skip_serializing_if`). The shape:
 
 ```json
 {
