@@ -25,13 +25,28 @@ fn parses_two_files() {
     assert_eq!(files[1].path.to_str().unwrap(), "src/bar.rs");
 }
 
+// D2 / D1=A: ChangedFile carries only path; no line-number tracking.
+// Construct one directly to confirm the struct shape and that the parser
+// yields equivalent values.
 #[test]
-fn captures_added_line_numbers() {
-    let files = parse_unified(DIFF).unwrap();
-    let foo = &files[0];
-    assert_eq!(foo.added_lines, vec![2, 3]);
-    let bar = &files[1];
-    assert_eq!(bar.added_lines, vec![11]);
+fn parse_unified_returns_only_path() {
+    use hector_core::diff::parser::ChangedFile;
+    use std::path::PathBuf;
+
+    let files = parse_unified(DIFF).expect("parse");
+    assert_eq!(files.len(), 2);
+    assert_eq!(
+        files[0],
+        ChangedFile {
+            path: PathBuf::from("src/foo.ts")
+        }
+    );
+    assert_eq!(
+        files[1],
+        ChangedFile {
+            path: PathBuf::from("src/bar.rs")
+        }
+    );
 }
 
 // Regression: P0-4 — diff parser must reject path traversal in `+++ b/` headers.
@@ -69,32 +84,6 @@ fn parse_unified_rejects_empty_path() {
     assert!(
         msg.contains("empty"),
         "error should mention empty; got: {msg}"
-    );
-}
-
-// A `+++ ...` line inside a hunk (not the file header `+++ b/`) is skipped
-// without counting toward added lines. Without this case, the branch
-// `!raw.starts_with("+++")` going false stays uncovered.
-#[test]
-fn parse_unified_ignores_literal_triple_plus_inside_hunk() {
-    let diff = "\
---- a/notes.md
-+++ b/notes.md
-@@ -1,2 +1,3 @@
- head
-+added
-+++ literal triple plus in content
-";
-    let files = parse_unified(diff).unwrap();
-    assert_eq!(
-        files.len(),
-        1,
-        "the `+++` content line must not start a new file"
-    );
-    assert_eq!(
-        files[0].added_lines,
-        vec![2],
-        "only the real `+added` line counts; the `+++` content line is skipped"
     );
 }
 
