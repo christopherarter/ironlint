@@ -25,12 +25,13 @@ fn parses_two_files() {
     assert_eq!(files[1].path.to_str().unwrap(), "src/bar.rs");
 }
 
-// D2 / D1=A: ChangedFile carries only path; no line-number tracking.
+// D2 / D1=A: ChangedFile carries path + op; no line-number tracking.
 // Construct one directly to confirm the struct shape and that the parser
-// yields equivalent values.
+// yields equivalent values. Both files in DIFF have `--- a/` + `+++ b/`
+// headers, so they are classified as Modified.
 #[test]
 fn parse_unified_returns_only_path() {
-    use hector_core::diff::parser::ChangedFile;
+    use hector_core::diff::parser::{ChangeOp, ChangedFile};
     use std::path::PathBuf;
 
     let files = parse_unified(DIFF).expect("parse");
@@ -38,13 +39,15 @@ fn parse_unified_returns_only_path() {
     assert_eq!(
         files[0],
         ChangedFile {
-            path: PathBuf::from("src/foo.ts")
+            path: PathBuf::from("src/foo.ts"),
+            op: ChangeOp::Modified,
         }
     );
     assert_eq!(
         files[1],
         ChangedFile {
-            path: PathBuf::from("src/bar.rs")
+            path: PathBuf::from("src/bar.rs"),
+            op: ChangeOp::Modified,
         }
     );
 }
@@ -133,4 +136,40 @@ fn parse_unified_handles_crlf_with_timestamp() {
     let files = hector_core::diff::parser::parse_unified(input).expect("parses");
     assert_eq!(files.len(), 1);
     assert_eq!(files[0].path, std::path::PathBuf::from("x.rs"));
+}
+
+// C3: ChangeOp classification ------------------------------------------------
+
+/// C3: `--- /dev/null` + `+++ b/<path>` is an addition.
+#[test]
+fn parse_unified_recognizes_addition() {
+    use hector_core::diff::parser::ChangeOp;
+    let input = "--- /dev/null\n+++ b/new.rs\n@@ -0,0 +1 @@\n+fn a() {}\n";
+    let files = hector_core::diff::parser::parse_unified(input).expect("parses");
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].path, std::path::PathBuf::from("new.rs"));
+    assert_eq!(files[0].op, ChangeOp::Added);
+}
+
+/// C3: `--- a/<path>` + `+++ b/<path>` is a modification.
+#[test]
+fn parse_unified_recognizes_modification() {
+    use hector_core::diff::parser::ChangeOp;
+    let input = "--- a/existing.rs\n+++ b/existing.rs\n@@ -1 +1 @@\n-old\n+new\n";
+    let files = hector_core::diff::parser::parse_unified(input).expect("parses");
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].path, std::path::PathBuf::from("existing.rs"));
+    assert_eq!(files[0].op, ChangeOp::Modified);
+}
+
+/// C3: `--- a/<path>` + `+++ /dev/null` is a deletion. The parser must
+/// recognise it and not silently drop the entry as it did before this fix.
+#[test]
+fn parse_unified_recognizes_deletion() {
+    use hector_core::diff::parser::ChangeOp;
+    let input = "--- a/gone.rs\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-fn a() {}\n-fn b() {}\n";
+    let files = hector_core::diff::parser::parse_unified(input).expect("parses");
+    assert_eq!(files.len(), 1, "deletion must produce exactly one ChangedFile");
+    assert_eq!(files[0].path, std::path::PathBuf::from("gone.rs"));
+    assert_eq!(files[0].op, ChangeOp::Deleted);
 }

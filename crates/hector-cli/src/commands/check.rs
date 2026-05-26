@@ -100,15 +100,35 @@ pub fn run(
         (None, Some(d)) => {
             let unified_diff = std::fs::read_to_string(&d)?;
             let changed = hector_core::diff::parser::parse_unified(&unified_diff)?;
+            // C3: a diff containing only deletions has no files to evaluate —
+            // deleted files cannot be read from disk, and no rule can fire on
+            // a file that no longer exists. An empty diff (no entries at all)
+            // is still an error; a diff with only deletions is a clean Pass.
+            let has_non_deleted = changed
+                .iter()
+                .any(|f| f.op != hector_core::diff::ChangeOp::Deleted);
             if changed.is_empty() {
                 eprintln!("ERROR: no changed files in diff");
                 return Ok(1);
+            }
+            if !has_non_deleted {
+                // Pure-deletion diff: no rules to run, verdict is Pass, exit 0.
+                let verdict = Verdict::from_violations(vec![], vec![], 0);
+                emit(&verdict, format)?;
+                return Ok(0);
             }
             let mut aggregated_violations = Vec::new();
             let mut aggregated_passed = Vec::new();
             let mut aggregated_explain: Vec<RuleExplain> = Vec::new();
             let mut elapsed_ms: u64 = 0;
             for f in changed {
+                // C3: skip deleted files — they no longer exist on disk, so
+                // reading them would fail, and no policy applies to removed
+                // content. Skipping here also prevents the B1 read-failure
+                // warning from firing on every deletion in a diff.
+                if f.op == hector_core::diff::ChangeOp::Deleted {
+                    continue;
+                }
                 let per_file_diff = build_single_file_diff(&unified_diff, &f.path);
                 let r = engine.check_with_explain(CheckInput::Diff {
                     file: f.path,

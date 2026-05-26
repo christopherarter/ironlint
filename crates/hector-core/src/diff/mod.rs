@@ -1,4 +1,4 @@
 pub mod analysis;
 pub mod parser;
 
-pub use parser::{parse_unified, ChangedFile};
+pub use parser::{parse_unified, ChangeOp, ChangedFile};
