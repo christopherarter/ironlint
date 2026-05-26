@@ -65,9 +65,7 @@ fn push_expansion_failures_into_violations(
             file: path.display().to_string(),
             line: None,
             column: None,
-            message: format!(
-                "deferred context expansion failed for rule `{rule_id}`: {err:#}"
-            ),
+            message: format!("deferred context expansion failed for rule `{rule_id}`: {err:#}"),
             suggestion: None,
             context: None,
         });
@@ -1310,6 +1308,16 @@ impl HectorEngine {
         evaluator_input: Option<String>,
     ) -> Option<crate::verdict_deferred::DeferredVerdict> {
         if deferred_rules.is_empty() {
+            return None;
+        }
+        // Suppress the envelope on terminal verdict states. The CLI does
+        // this too (check.rs gates on Block | InternalError), but pinning
+        // it at the runner level means library callers see the same
+        // contract: no envelope when the verdict already says "stop."
+        // Block: R6 surfaces deferred rules on `Verdict.deferred_rules`.
+        // InternalError: an engine-level failure short-circuits the LLM
+        // dispatch the envelope was built to enable.
+        if matches!(verdict.status, Status::Block | Status::InternalError) {
             return None;
         }
         let evaluator_input = evaluator_input.unwrap_or_default();

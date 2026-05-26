@@ -84,10 +84,7 @@ pub fn run(
                 // internal engine error. (Verdict::status was built from the
                 // deterministic violations only; semantic/session were
                 // collected, not dispatched.)
-                if matches!(
-                    report.verdict.status,
-                    Status::Block | Status::InternalError
-                ) {
+                if matches!(report.verdict.status, Status::Block | Status::InternalError) {
                     emit(&report.verdict, format)?;
                     return Ok(exit_code(&report.verdict));
                 }

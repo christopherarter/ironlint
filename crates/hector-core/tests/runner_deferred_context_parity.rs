@@ -154,6 +154,15 @@ fn deferred_expansion_failure_surfaces_as_internal_error() {
         has_internal,
         "must include an __internal violation naming the failed rule"
     );
+    // The deferred envelope must be suppressed on InternalError — the
+    // engine-level failure short-circuits the LLM dispatch the envelope
+    // was built to enable. Mirrors the CLI's exit-3 / no-stdout-envelope
+    // behavior at the library-API level.
+    assert!(
+        report.deferred.is_none(),
+        "deferred envelope must be suppressed on InternalError; got {:?}",
+        report.deferred
+    );
 }
 
 // This is the test that pins the Critical: the Repo stub must match

@@ -65,6 +65,7 @@ rules:
     engine: semantic
     scope: ["**/*.rs"]
     severity: error
+    context: file
 "#;
     let cfg_path = tmp.path().join(".hector.yml");
     fs::write(&cfg_path, yaml).unwrap();
@@ -118,6 +119,7 @@ rules:
     engine: semantic
     scope: ["**/*.rs"]
     severity: error
+    context: file
 "#;
     let cfg_path = tmp.path().join(".hector.yml");
     fs::write(&cfg_path, yaml).unwrap();
