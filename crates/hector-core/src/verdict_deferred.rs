@@ -29,10 +29,16 @@ use serde::{Deserialize, Serialize};
 ///   `#[serde(skip_serializing_if = "Option::is_none")]` keeps envelopes
 ///   without the field byte-compatible with the v1 shape, so existing
 ///   consumers that don't read the field do not break.
-///
-/// **Note:** Task 5.3 will bump this to 3 when B4+B5 ship non-additive
-/// changes to the `_evaluator_input` shape.
-pub const DEFERRED_SCHEMA_VERSION: u32 = 2;
+/// - v3 (B5, 2026-05-25): non-additive change to `_evaluator_input`. The
+///   field now interpolates a per-call random sentinel
+///   (`<TP-{32hex}>` / `<UE-{32hex}>`) instead of the literal
+///   `<TRUSTED_POLICY>` / `<UNTRUSTED_EVIDENCE>` tags, and the rendered
+///   prompt is built per-rule (each rule sees its declared `context:`
+///   expansion) instead of sharing a single primary blob. Consumers
+///   doing string-based extraction against the old tag names must update.
+///   Additive: B4's `payload.warnings` (`skip_serializing_if =
+///   "Vec::is_empty"`) — would not have bumped on its own.
+pub const DEFERRED_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeferredVerdict {
@@ -79,6 +85,34 @@ pub struct DeferredPayload {
     /// byte-compatible with the v1 shape.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evaluator_model: Option<String>,
+    /// B4 (2026-05-25): warn-severity deterministic violations
+    /// (script / AST rules with `severity: warning`) that would otherwise
+    /// vanish from the CLI's deferred branch. The CLI suppresses the
+    /// standard `Verdict` JSON when emitting a `DeferredVerdict`, so
+    /// before B4 these violations were dropped entirely from stdout
+    /// (still written to `.hector/log.jsonl`, but invisible to the
+    /// operator and to the in-session subagent).
+    ///
+    /// Block-severity violations stay on `Verdict::violations` and
+    /// suppress the deferred envelope entirely — see the CLI branch in
+    /// `commands/check.rs`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<DeferredWarning>,
+}
+
+/// A single warn-severity deterministic violation on a deferred envelope.
+///
+/// B4 (2026-05-25). Mirrors the shape of [`crate::verdict::Violation`]
+/// but without `suggestion` / `context` (the subagent renders these
+/// inline; the deferred channel is for recall, not display).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeferredWarning {
+    pub rule_id: String,
+    pub engine: crate::verdict::Engine,
+    pub file: String,
+    pub line: Option<u32>,
+    pub column: Option<u32>,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

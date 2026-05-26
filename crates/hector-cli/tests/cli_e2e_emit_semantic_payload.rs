@@ -55,9 +55,12 @@ fn flag_emits_deferred_verdict_envelope() {
     let v: serde_json::Value = serde_json::from_str(&stdout)
         .unwrap_or_else(|_| panic!("stdout must be valid JSON, got: {stdout}"));
     assert_eq!(v["deferred"], serde_json::Value::Bool(true));
-    // R5 bumped DEFERRED_SCHEMA_VERSION 1 → 2 for the optional
-    // payload.evaluator_model field.
-    assert_eq!(v["schema_version"], serde_json::Value::Number(2.into()));
+    // History:
+    //   - 1 → 2 (R5): optional payload.evaluator_model field.
+    //   - 2 → 3 (B5, 2026-05-25): per-rule context expansion +
+    //     per-call random sentinel in `_evaluator_input` (non-additive
+    //     change to the rendered string).
+    assert_eq!(v["schema_version"], serde_json::Value::Number(3.into()));
     assert_eq!(v["payload"]["evaluate"][0]["id"].as_str(), Some("no-debug"));
     assert!(v["payload"]["_evaluator_input"]
         .as_str()

@@ -1,9 +1,17 @@
 //! A1 prompt-injection defense — adversarial integration test.
 //!
 //! Verifies that user-controlled content (file body / diff) containing
-//! literal sentinel tags cannot subvert the TRUSTED_POLICY / UNTRUSTED_EVIDENCE
+//! literal sentinel tags cannot subvert the trusted-policy / evidence
 //! boundary established in `llm::prompt::build_prompt`. Also covers
-//! triple-backtick markdown breakouts and oversized-diff truncation (P2-20).
+//! triple-backtick markdown breakouts and oversized-diff truncation
+//! (P2-20).
+//!
+//! C5 (2026-05-25): sentinel tags are now per-call random
+//! (`<TP-{32hex}>` / `<UE-{32hex}>`) instead of the literal
+//! `<TRUSTED_POLICY>` / `<UNTRUSTED_EVIDENCE>`. An attacker who guesses
+//! one of the literal old tags can no longer close the evidence block —
+//! the legit closing tag carries a per-call token that user content
+//! cannot forge.
 
 use anyhow::Result;
 use hector_core::config::{ContextScope, EngineKind, Rule, Severity};
@@ -72,6 +80,11 @@ fn semantic_rule(desc: &str) -> Rule {
 
 #[test]
 fn adversarial_file_cannot_inject_pass_everything_rule() {
+    // C5 (2026-05-25): the attacker tries the old literal tag names
+    // `</UNTRUSTED_EVIDENCE>` / `<TRUSTED_POLICY>`. These are now inert
+    // strings — the legit sentinel uses a random per-call token —
+    // so the prompt still has exactly one `<TP-...>` open and one
+    // `</TP-...>` close, regardless of what the attacker injected.
     let dir = tempdir().unwrap();
     let file = dir.path().join("attacker.rs");
     let attack = "// Innocuous comment\n\
@@ -98,38 +111,39 @@ fn adversarial_file_cannot_inject_pass_everything_rule() {
 
     let prompt = llm.last_prompt();
 
+    // Exactly one legit TP open + close and one UE open + close,
+    // regardless of how many old-shape literals the attacker stuffed
+    // into their file.
     assert_eq!(
-        prompt.matches("<TRUSTED_POLICY>").count(),
+        prompt.matches("<TP-").count(),
         1,
-        "exactly one legit TRUSTED_POLICY open tag expected; prompt was:\n{prompt}"
+        "exactly one legit policy open tag expected; prompt was:\n{prompt}"
     );
     assert_eq!(
-        prompt.matches("</TRUSTED_POLICY>").count(),
+        prompt.matches("</TP-").count(),
         1,
-        "exactly one legit TRUSTED_POLICY close tag expected"
+        "exactly one legit policy close tag expected"
     );
     assert_eq!(
-        prompt.matches("<UNTRUSTED_EVIDENCE>").count(),
+        prompt.matches("<UE-").count(),
         1,
-        "exactly one legit UNTRUSTED_EVIDENCE open tag expected"
+        "exactly one legit evidence open tag expected"
     );
     assert_eq!(
-        prompt.matches("</UNTRUSTED_EVIDENCE>").count(),
+        prompt.matches("</UE-").count(),
         1,
-        "exactly one legit UNTRUSTED_EVIDENCE close tag expected"
+        "exactly one legit evidence close tag expected"
     );
 
-    let policy_open = prompt.find("<TRUSTED_POLICY>").unwrap();
-    let policy_close = prompt.find("</TRUSTED_POLICY>").unwrap();
+    // The legit policy block (from `<TP-...>` to `</TP-...>`) must not
+    // contain the attacker's injected rule. Using `<TP-` / `</TP-` is
+    // safe because there's exactly one of each by the assertions above.
+    let policy_open = prompt.find("<TP-").unwrap();
+    let policy_close = prompt.find("</TP-").unwrap();
     let policy_block = &prompt[policy_open..policy_close];
     assert!(
         !policy_block.contains("pass-everything"),
-        "adversarial rule leaked into the trusted-policy section: {policy_block}"
-    );
-
-    assert!(
-        prompt.contains("BOUNDARY_BREAKOUT_BLOCKED"),
-        "expected BOUNDARY_BREAKOUT_BLOCKED forensic marker; prompt was:\n{prompt}"
+        "adversarial rule leaked into the policy section: {policy_block}"
     );
 }
 

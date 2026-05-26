@@ -148,7 +148,12 @@ fn print_prompt_renders_and_exits_zero() {
         stdout.contains("avoid unwrap"),
         "missing rule description in prompt: {stdout}"
     );
-    assert!(stdout.contains("UNTRUSTED_EVIDENCE"));
+    // C5 (2026-05-25): sentinel tags are now per-call random; assert
+    // the prefix `<UE-` is present rather than the old literal tag.
+    assert!(
+        stdout.contains("<UE-"),
+        "missing UE sentinel open tag in prompt: {stdout}"
+    );
     assert!(stdout.contains("no-unwrap"));
 }
 

@@ -8,11 +8,14 @@ use hector_core::verdict_deferred::{
 };
 
 #[test]
-fn deferred_schema_version_is_two() {
-    // R5 (2026-05-23) bumped this from 1 → 2 to reflect the new
-    // optional `payload.evaluator_model` field. Old envelopes without
-    // the field remain byte-compatible thanks to skip_serializing_if.
-    assert_eq!(DEFERRED_SCHEMA_VERSION, 2);
+fn deferred_schema_version_is_three() {
+    // History:
+    // - v1: initial shape.
+    // - v2 (R5): added optional `payload.evaluator_model`.
+    // - v3 (B5, 2026-05-25): non-additive change to `_evaluator_input`
+    //   shape (per-call random sentinel, per-rule context expansion).
+    //   B4's `payload.warnings` shipped alongside as additive.
+    assert_eq!(DEFERRED_SCHEMA_VERSION, 3);
 }
 
 #[test]
@@ -29,12 +32,13 @@ fn empty_deferred_verdict_serializes_to_canonical_shape() {
             evaluate: vec![],
             evaluator_input: String::new(),
             evaluator_model: None,
+            warnings: vec![],
         },
         elapsed_ms: 0,
     };
     insta::assert_json_snapshot!(&v, @r###"
     {
-      "schema_version": 2,
+      "schema_version": 3,
       "deferred": true,
       "hector_version": "0.2.x",
       "passed_checks": [],
@@ -75,8 +79,11 @@ fn deferred_verdict_with_two_rules_serializes() {
                     engine: "session".into(),
                 },
             ],
-            evaluator_input: "<TRUSTED_POLICY>...</UNTRUSTED_EVIDENCE>".into(),
+            evaluator_input:
+                "<TP-deadbeefdeadbeefdeadbeefdeadbeef>...</UE-deadbeefdeadbeefdeadbeefdeadbeef>"
+                    .into(),
             evaluator_model: None,
+            warnings: vec![],
         },
         elapsed_ms: 42,
     };
@@ -102,14 +109,15 @@ fn deferred_verdict_carries_evaluator_model_when_set() {
                 severity: "error".into(),
                 engine: "semantic".into(),
             }],
-            evaluator_input: "<TRUSTED_POLICY>...</UNTRUSTED_EVIDENCE>".into(),
+            evaluator_input: "<TP-...>...</UE-...>".into(),
             evaluator_model: Some("haiku".into()),
+            warnings: vec![],
         },
         elapsed_ms: 0,
     };
     insta::assert_json_snapshot!(&v, @r###"
     {
-      "schema_version": 2,
+      "schema_version": 3,
       "deferred": true,
       "hector_version": "0.2.x",
       "passed_checks": [],
@@ -125,10 +133,67 @@ fn deferred_verdict_carries_evaluator_model_when_set() {
             "engine": "semantic"
           }
         ],
-        "_evaluator_input": "<TRUSTED_POLICY>...</UNTRUSTED_EVIDENCE>",
+        "_evaluator_input": "<TP-...>...</UE-...>",
         "evaluator_model": "haiku"
       },
       "elapsed_ms": 0
+    }
+    "###);
+}
+
+/// B4 (2026-05-25): snapshot the payload shape with deterministic
+/// warnings carried alongside the deferred rules.
+#[test]
+fn deferred_verdict_carries_deterministic_warnings() {
+    use hector_core::verdict::Engine;
+    use hector_core::verdict_deferred::DeferredWarning;
+    let v = DeferredVerdict {
+        schema_version: DEFERRED_SCHEMA_VERSION,
+        deferred: true,
+        hector_version: "0.2.x".to_string(),
+        passed_checks: vec![],
+        payload: DeferredPayload {
+            file: "src/foo.rs".into(),
+            diff: String::new(),
+            passed_checks: vec![],
+            evaluate: vec![],
+            evaluator_input: "<TP-...>".into(),
+            evaluator_model: None,
+            warnings: vec![DeferredWarning {
+                rule_id: "no-todo".into(),
+                engine: Engine::Script,
+                file: "src/foo.rs".into(),
+                line: Some(7),
+                column: None,
+                message: "TODO comment present".into(),
+            }],
+        },
+        elapsed_ms: 1,
+    };
+    insta::assert_json_snapshot!(&v, @r###"
+    {
+      "schema_version": 3,
+      "deferred": true,
+      "hector_version": "0.2.x",
+      "passed_checks": [],
+      "payload": {
+        "file": "src/foo.rs",
+        "diff": "",
+        "passed_checks": [],
+        "evaluate": [],
+        "_evaluator_input": "<TP-...>",
+        "warnings": [
+          {
+            "rule_id": "no-todo",
+            "engine": "script",
+            "file": "src/foo.rs",
+            "line": 7,
+            "column": null,
+            "message": "TODO comment present"
+          }
+        ]
+      },
+      "elapsed_ms": 1
     }
     "###);
 }

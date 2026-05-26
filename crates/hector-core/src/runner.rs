@@ -38,6 +38,67 @@ fn severity_string(s: crate::config::Severity) -> String {
     }
 }
 
+/// B4 (2026-05-25): sweep warn-severity deterministic violations off the
+/// verdict so the deferred envelope can carry them on
+/// [`crate::verdict_deferred::DeferredPayload::warnings`]. The CLI's
+/// deferred branch suppresses the standard `Verdict` JSON, so before B4
+/// these violations vanished from stdout entirely.
+///
+/// Block-severity violations are left in place; the CLI also suppresses
+/// the deferred envelope in that case (the verdict's block is the
+/// terminal signal).
+fn build_deferred_warnings(verdict: &Verdict) -> Vec<crate::verdict_deferred::DeferredWarning> {
+    verdict
+        .violations
+        .iter()
+        .filter(|v| v.severity == crate::verdict::Severity::Warning)
+        .map(|v| crate::verdict_deferred::DeferredWarning {
+            rule_id: v.rule_id.clone(),
+            engine: v.engine,
+            file: v.file.clone(),
+            line: v.line,
+            column: v.column,
+            message: v.message.clone(),
+        })
+        .collect()
+}
+
+/// B5 (2026-05-25): expand a single deferred rule's context the same
+/// way `engine::semantic::run` does for the direct-API path, so the
+/// envelope's `_evaluator_input` and the LLM prompt converge to the
+/// same string for the same `(rule, input)`. Reading the file from
+/// disk mirrors `engine::context::expand_context` — we re-use it
+/// directly when possible and fall back to in-memory content otherwise.
+fn expand_for_deferred(
+    rule: &Rule,
+    path: &Path,
+    content: &str,
+    diff: &str,
+) -> (String, Option<String>) {
+    let scope = rule.context.unwrap_or(crate::config::ContextScope::Diff);
+    match scope {
+        crate::config::ContextScope::Diff => {
+            // For diff scope: if we have a diff use it; otherwise fall
+            // back to the file content (file-mode check on a `context:
+            // diff` rule used to thread the file body too).
+            let primary = if diff.is_empty() {
+                content.to_string()
+            } else {
+                diff.to_string()
+            };
+            (primary, None)
+        }
+        crate::config::ContextScope::File => (content.to_string(), None),
+        crate::config::ContextScope::Repo => (
+            content.to_string(),
+            Some(format!(
+                "(repo-context expansion deferred; using file `{}` content only)",
+                path.display()
+            )),
+        ),
+    }
+}
+
 /// C4: optional per-run knobs for `HectorEngine::check`. Plumbed via
 /// `HectorEngine::builder().with_options(...)` so the public `check`
 /// signature stays stable across additions.
@@ -1192,11 +1253,20 @@ impl HectorEngine {
         })
     }
 
-    /// H1: assemble the `DeferredVerdict` envelope from the rules that
-    /// were short-circuited by `should_defer`. Returns `None` when the
-    /// list is empty so the CLI can branch on a single `Option`. Lives
-    /// outside `check_inner` to keep that function's cognitive
-    /// complexity below the workspace cap.
+    /// H1 / B4 / B5 / C5: assemble the `DeferredVerdict` envelope from
+    /// the rules that were short-circuited by `should_defer`. Returns
+    /// `None` when the list is empty so the CLI can branch on a single
+    /// `Option`. Lives outside `check_inner` to keep that function's
+    /// cognitive complexity below the workspace cap.
+    ///
+    /// - B4 (2026-05-25): sweeps warn-severity deterministic violations
+    ///   off the verdict and onto `payload.warnings`. The CLI suppresses
+    ///   verdict output when it emits a deferred envelope, so before B4
+    ///   these violations vanished from stdout.
+    /// - B5: threads `expand_context` per rule so a rule authoring
+    ///   `context: file` sees the full file in `evaluator_input` (the
+    ///   subagent and direct-API routes now read the same prompt).
+    /// - C5: rolls a fresh random sentinel for each envelope.
     fn build_deferred_envelope(
         &self,
         deferred_rules: Vec<crate::verdict_deferred::DeferredRule>,
@@ -1208,19 +1278,9 @@ impl HectorEngine {
         if deferred_rules.is_empty() {
             return None;
         }
-        // Resolve each deferred id back to its full `Rule` so the
-        // evaluator-input string sees the same `(id, &Rule)` slice the
-        // direct-API path would have seen.
-        let rule_refs: Vec<(&str, &crate::config::Rule)> = deferred_rules
-            .iter()
-            .filter_map(|d| self.config_rule(&d.id).map(|r| (d.id.as_str(), r)))
-            .collect();
-        let primary = if diff.is_empty() {
-            content.to_string()
-        } else {
-            diff.to_string()
-        };
-        let evaluator_input = crate::llm::prompt::build_evaluator_input(&rule_refs, &primary, None);
+        let tuples = self.collect_deferred_rule_tuples(&deferred_rules, path, content, diff);
+        let sentinel = crate::llm::prompt::Sentinel::new_random();
+        let evaluator_input = crate::llm::prompt::build_evaluator_input(&tuples, &sentinel);
 
         // R5: thread the optional evaluator_model override from the
         // loaded `llm:` block into the payload. Only the subagent
@@ -1231,6 +1291,12 @@ impl HectorEngine {
             .llm
             .as_ref()
             .and_then(|l| l.evaluator_model.clone());
+
+        // B4: sweep warn-severity deterministic violations onto the
+        // envelope so the operator (and the in-session subagent) sees
+        // them. Block-severity violations stay on `verdict.violations`;
+        // the CLI suppresses the deferred envelope in that case anyway.
+        let warnings = build_deferred_warnings(verdict);
 
         Some(crate::verdict_deferred::DeferredVerdict {
             schema_version: crate::verdict_deferred::DEFERRED_SCHEMA_VERSION,
@@ -1244,9 +1310,42 @@ impl HectorEngine {
                 evaluate: deferred_rules,
                 evaluator_input,
                 evaluator_model,
+                warnings,
             },
             elapsed_ms: verdict.elapsed_ms,
         })
+    }
+
+    /// B5: for each deferred rule, run `expand_context` so the
+    /// envelope's `_evaluator_input` reflects the rule's declared
+    /// context scope (Diff / File / Repo). Returns owned strings so the
+    /// caller can build the `RuleRef` tuples without borrowing through
+    /// `self`.
+    ///
+    /// The lifetime constraint is "borrows from `deferred_rules` and
+    /// `self` for the same duration `'a`" — `RuleRef::id` points into
+    /// the `DeferredRule` slice, and `RuleRef::rule` points into the
+    /// config map. Both must outlive the returned tuples.
+    fn collect_deferred_rule_tuples<'a>(
+        &'a self,
+        deferred_rules: &'a [crate::verdict_deferred::DeferredRule],
+        path: &Path,
+        content: &str,
+        diff: &str,
+    ) -> Vec<(crate::llm::prompt::RuleRef<'a>, String, Option<String>)> {
+        let mut tuples = Vec::with_capacity(deferred_rules.len());
+        for d in deferred_rules {
+            let Some(rule) = self.config_rule(&d.id) else {
+                continue;
+            };
+            let (primary, context_text) = expand_for_deferred(rule, path, content, diff);
+            tuples.push((
+                crate::llm::prompt::RuleRef { id: &d.id, rule },
+                primary,
+                context_text,
+            ));
+        }
+        tuples
     }
 
     /// C4: render the LLM prompts that *would* be sent for every in-scope
