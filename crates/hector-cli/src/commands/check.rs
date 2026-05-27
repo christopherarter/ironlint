@@ -1,8 +1,9 @@
 use crate::cli::OutputFormat;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use hector_core::runner::{CheckInput, CheckOptions, ExplainOutcome, HectorEngine, RuleExplain};
 use hector_core::verdict::{Status, Verdict};
 use std::collections::HashSet;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 // `run` is the single entry point dispatched from `main` — its argument
@@ -13,6 +14,7 @@ use std::path::{Path, PathBuf};
 pub fn run(
     file: Option<PathBuf>,
     diff: Option<PathBuf>,
+    content: Option<String>,
     session: bool,
     format: OutputFormat,
     config: &Path,
@@ -47,7 +49,7 @@ pub fn run(
     engine.set_rule_filter(rule_set);
 
     if print_prompt {
-        return run_print_prompt(&engine, file, diff);
+        return run_print_prompt(&engine, file, diff, content);
     }
 
     if session {
@@ -80,7 +82,16 @@ pub fn run(
 
     match (file, diff) {
         (Some(f), None) => {
-            let content = std::fs::read_to_string(&f)?;
+            // `--content` short-circuits the disk read for PreToolUse-style
+            // adapters that need to gate on proposed (pre-write) content.
+            // Clap enforces `requires = "file"` and the conflicts_with on
+            // diff/session, so reaching this branch with `content.is_some()`
+            // is always well-formed.
+            let content = match content {
+                Some(c) => resolve_content_value(c)?,
+                None => std::fs::read_to_string(&f)
+                    .with_context(|| format!("failed to read {}", f.display()))?,
+            };
             let report = engine.check_with_explain(CheckInput::File { path: f, content })?;
             if explain {
                 print_explain(&report.explain);
@@ -210,10 +221,19 @@ fn run_print_prompt(
     engine: &HectorEngine,
     file: Option<PathBuf>,
     diff: Option<PathBuf>,
+    content: Option<String>,
 ) -> Result<i32> {
     let input = match (file, diff) {
         (Some(f), None) => {
-            let content = std::fs::read_to_string(&f)?;
+            // Symmetric with `run`: `--content` overrides the disk read so
+            // operators can preview semantic prompts against proposed
+            // content before it lands. Clap already enforced the
+            // `requires = "file"` constraint.
+            let content = match content {
+                Some(c) => resolve_content_value(c)?,
+                None => std::fs::read_to_string(&f)
+                    .with_context(|| format!("failed to read {}", f.display()))?,
+            };
             CheckInput::File { path: f, content }
         }
         (None, Some(d)) => {
@@ -384,6 +404,26 @@ fn build_single_file_diff(full: &str, file: &Path) -> String {
         .unwrap_or(lines.len());
 
     lines[header_idx..end_idx].concat()
+}
+
+/// Resolve a `--content` value: a literal `-` reads bytes from stdin
+/// (the documented adapter path for large content); any other string is
+/// the content itself.
+///
+/// `Read::read_to_string` already rejects non-UTF-8 bytes — surface that
+/// as an `anyhow` error with context rather than panicking. Stdin is
+/// allowed to be empty (an empty pre-write file is legitimate, e.g.
+/// `write_file` creating a new empty source).
+fn resolve_content_value(value: String) -> Result<String> {
+    if value == "-" {
+        let mut buf = String::new();
+        std::io::stdin()
+            .read_to_string(&mut buf)
+            .context("failed to read --content from stdin (expected UTF-8)")?;
+        Ok(buf)
+    } else {
+        Ok(value)
+    }
 }
 
 trait SeverityHuman {

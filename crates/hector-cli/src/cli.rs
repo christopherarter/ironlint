@@ -20,6 +20,31 @@ pub enum Command {
         file: Option<PathBuf>,
         #[arg(long)]
         diff: Option<PathBuf>,
+        /// Evaluate this proposed post-edit content instead of reading
+        /// `--file` from disk. Pass `-` to read the bytes from stdin
+        /// (recommended for any content larger than a few KB; argv has
+        /// OS-level size limits).
+        ///
+        /// Designed for PreToolUse adapters — Reasonix, OpenCode
+        /// `tool.execute.before`, deepseek-reasonix and similar — that
+        /// need to gate on the proposed edit *before* it lands on disk.
+        /// Requires `--file` so scope matching, baseline matching, and
+        /// AST language detection all key off the real project path.
+        ///
+        /// Limitation: `engine: script` rules invoke an external command
+        /// against the on-disk file via `{file}`/`HECTOR_FILE`, so they
+        /// see the *current* disk content, not the proposed content.
+        /// AST, semantic, and `hector-disable:` directives all read from
+        /// `--content` correctly. See spec
+        /// `specs/2026-05-25-reasonix-adapter.md` §5.
+        #[arg(
+            long,
+            value_name = "STRING_OR_DASH",
+            requires = "file",
+            conflicts_with = "diff",
+            conflicts_with = "session"
+        )]
+        content: Option<String>,
         #[arg(long)]
         session: bool,
         #[arg(long, default_value = "human")]

@@ -13,6 +13,7 @@ fn main() -> Result<()> {
         Command::Check {
             file,
             diff,
+            content,
             session,
             format,
             config,
@@ -24,6 +25,7 @@ fn main() -> Result<()> {
         } => commands::check::run(
             file,
             diff,
+            content,
             session,
             format,
             &config,

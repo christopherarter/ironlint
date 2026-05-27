@@ -11,3 +11,7 @@ Cargo.lock
 .claude/
 # cargo-mutants local report directories (current run + previous run rename).
 mutants.out*/
+# `cargo mutants --in-diff pr.diff` scratch — diff file generated on demand.
+pr.diff
+# LLVM coverage instrumentation that occasionally leaks outside target/.
+*.profraw

@@ -1,0 +1,12 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "command": "/Users/chrisarter/Documents/projects/hector/adapters/reasonix/hooks/hook.sh pre-tool-use",
+        "match": "^(write_file|edit_file)$",
+        "description": "Block edits that violate hector policy before they land on disk",
+        "timeout": 30000
+      }
+    ]
+  }
+}

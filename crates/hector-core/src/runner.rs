@@ -261,7 +261,15 @@ struct SessionAcc<'a> {
 struct CheckInputs<'a> {
     match_path: &'a Path,
     path: &'a Path,
-    content: &'a str,
+    /// `Some(s)` (even when `s` is empty) means the caller authoritatively
+    /// supplied content for evaluation — a CLI `--content` PreToolUse
+    /// payload, or a successful disk read in diff mode. `None` means
+    /// content is genuinely unavailable (read failure in diff mode),
+    /// which the AST engine surfaces as an `__internal` violation.
+    /// Treating an empty `Some("")` as None would conflate "empty file
+    /// is fine" with "we couldn't read the file at all," which the
+    /// PreToolUse `write_file` case requires us to distinguish.
+    content: Option<&'a str>,
     diff: &'a str,
     disable_map: &'a crate::disable::DisableMap,
     /// C4: build a `RuleExplain` row for every rule whose evaluation
@@ -296,20 +304,56 @@ fn home_dir() -> Option<PathBuf> {
         .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
 }
 
+/// Canonicalize `path` if it exists; otherwise walk up to the deepest
+/// existing ancestor, canonicalize that, and re-append the missing tail.
+/// `None` only if no ancestor exists (effectively impossible for any
+/// absolute path on a mounted filesystem).
+///
+/// Needed for PreToolUse `--content`: the agent's `write_file` proposed
+/// edit targets a path that does not exist on disk yet. Plain
+/// `canonicalize` fails, but the parent (or its parent…) typically does,
+/// and macOS's `/var → /private/var` symlink means the parent's
+/// canonical form differs from its literal form. Resolving through the
+/// parent produces a path that `strip_prefix(config_dir_canon)` can
+/// actually match, which scope rules then see correctly.
+fn canonicalize_through_parent(path: &std::path::Path) -> Option<PathBuf> {
+    if let Ok(c) = path.canonicalize() {
+        return Some(c);
+    }
+    let mut suffix: Vec<std::ffi::OsString> = Vec::new();
+    let mut cursor = path.to_path_buf();
+    while let Some(name) = cursor.file_name() {
+        suffix.push(name.to_os_string());
+        if !cursor.pop() {
+            break;
+        }
+        if let Ok(c) = cursor.canonicalize() {
+            let mut out = c;
+            for seg in suffix.into_iter().rev() {
+                out.push(seg);
+            }
+            return Some(out);
+        }
+    }
+    None
+}
+
 /// Resolve `path` to a form that can be matched against a relative scope glob
 /// authored in `config_dir`-relative terms.
 ///
 /// Two fallback layers:
 /// 1. `canonicalize` failure (file missing — e.g. diff mode references a path
-///    not yet on disk) returns the original `PathBuf` so the scope match can
-///    still proceed against the literal input.
+///    not yet on disk) falls back to `canonicalize_through_parent` so that
+///    `--content`-mode PreToolUse paths on macOS (`/var/...` vs.
+///    `/private/var/...`) still match the canonical `config_dir`. If even
+///    the ancestor walk fails, returns the original `PathBuf`.
 /// 2. `strip_prefix` failure (the input resolves outside `config_dir` — e.g.
 ///    `hector check /etc/passwd` against a `~/proj/.hector.yml`) returns the
 ///    canonicalized absolute path. Bare-pattern globs in `config/scope.rs`
 ///    register a `**/<pattern>` form, so absolute paths can still match
 ///    rules like `*.py` via that fallback.
 fn relativize(path: &std::path::Path, root: &std::path::Path) -> std::path::PathBuf {
-    let canon_path = path.canonicalize().unwrap_or_else(|_| PathBuf::from(path));
+    let canon_path = canonicalize_through_parent(path).unwrap_or_else(|| PathBuf::from(path));
     let canon_root = root.canonicalize().unwrap_or_else(|_| PathBuf::from(root));
     canon_path
         .strip_prefix(&canon_root)
@@ -759,11 +803,11 @@ impl HectorEngine {
             rule_id,
             rule,
             file: inputs.path,
-            content: if inputs.content.is_empty() {
-                None
-            } else {
-                Some(inputs.content)
-            },
+            // `inputs.content` already encodes authoritative-vs-missing —
+            // pass it through. Pre-fix this site silently collapsed an
+            // explicitly-empty PreToolUse payload onto `None`, which the
+            // AST engine then refused with an `__internal` violation.
+            content: inputs.content,
             diff: if inputs.diff.is_empty() {
                 None
             } else {
@@ -984,7 +1028,13 @@ impl HectorEngine {
     fn check_inner(&self, input: CheckInput, collect_explain: bool) -> Result<CheckReport> {
         use crate::disable::DisableMap;
         let start = Instant::now();
-        let (path, content, diff) = match input {
+        // `content_authoritative`: the caller (CLI or library) supplied content
+        // directly — so even an empty string is a legitimate input that
+        // engines must evaluate. Diff mode reads from disk, so a read
+        // failure surfaces as `false` to preserve the existing behavior
+        // (AST engine reports an `__internal` violation rather than
+        // silently passing).
+        let (path, content, diff, content_authoritative) = match input {
             // B1: resolve the caller-supplied path through config_dir so
             // that relative paths (e.g. from an editor calling `hector
             // check --file src/foo.rs` from a different CWD) land on the
@@ -1016,7 +1066,7 @@ impl HectorEngine {
                         });
                     }
                 };
-                (resolved, content, String::new())
+                (resolved, content, String::new(), true)
             }
             CheckInput::Diff { file, unified_diff } => {
                 // B1: the `+++ b/<rel>` path in a unified diff is relative
@@ -1043,19 +1093,21 @@ impl HectorEngine {
                 };
                 // Surface read failures as a warning rather than silently
                 // returning empty content — the silent fallback is what
-                // made this bug invisible in CI.
-                let content = match std::fs::read_to_string(&resolved) {
-                    Ok(s) => s,
+                // made this bug invisible in CI. `content_authoritative`
+                // tracks the read outcome so AST/semantic rules still
+                // surface the failure as `__internal` downstream.
+                let (content, authoritative) = match std::fs::read_to_string(&resolved) {
+                    Ok(s) => (s, true),
                     Err(e) => {
                         eprintln!(
                             "hector: failed to read {} for diff check ({e}); \
                              rules requiring file content will be skipped",
                             resolved.display()
                         );
-                        String::new()
+                        (String::new(), false)
                     }
                 };
-                (resolved, content, unified_diff)
+                (resolved, content, unified_diff, authoritative)
             }
         };
 
@@ -1104,7 +1156,18 @@ impl HectorEngine {
         let inputs = CheckInputs {
             match_path: &match_path,
             path: &path,
-            content: &content,
+            // Authoritative content is passed through verbatim (empty
+            // proposed content is still a valid evaluation target).
+            // Non-authoritative empty content collapses to `None` so
+            // AST/semantic engines emit `__internal` rather than
+            // silently passing on a missed disk read.
+            content: if content_authoritative {
+                Some(content.as_str())
+            } else if content.is_empty() {
+                None
+            } else {
+                Some(content.as_str())
+            },
             diff: &diff,
             disable_map: &disable_map,
             collect_explain,

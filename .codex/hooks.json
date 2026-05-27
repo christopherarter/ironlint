@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -d target/llvm-cov-target ] || [ -d target/llvm-cov ]; then echo 'coverage scratch present in target/ — run: rm -rf target/llvm-cov-target target/llvm-cov' >&2; exit 2; fi"
+          }
+        ]
+      }
+    ]
+  }
+}
