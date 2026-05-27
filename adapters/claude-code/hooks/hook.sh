@@ -49,34 +49,80 @@ case "${MODE}" in
     if [[ ! -f "${PROJECT_ROOT}/.hector/session.json" ]]; then
       exit 0
     fi
+    # Detect provider to decide whether to pass --emit-semantic-payload.
+    STOP_PROVIDER=$(hector show-resolved-config --config "${CONFIG}" --format json 2>/dev/null \
+      | jq -r '.llm.provider // empty' 2>/dev/null || true)
     TMP_VERDICT=$(mktemp -t hector-session-verdict.XXXXXX)
     EC=0
-    hector check --session --config "${CONFIG}" --format json > "${TMP_VERDICT}" || EC=$?
-    case "${EC}" in
-      0)
-        # session.json was cleared by hector check --session as a side effect.
-        exit 0
-        ;;
-      2)
-        cat "${TMP_VERDICT}" >&2
-        exit 2
-        ;;
-      3)
-        # B7: engine internal error during session check.
-        if [[ "${HECTOR_FAIL_CLOSED_ON_INTERNAL:-0}" == "1" ]]; then
-          echo "hector: internal error — failing closed (HECTOR_FAIL_CLOSED_ON_INTERNAL=1)" >&2
-          [[ -s "${TMP_VERDICT}" ]] && cat "${TMP_VERDICT}" >&2
+    if [[ "${STOP_PROVIDER}" == "claude-code-subagent" ]]; then
+      # B3: subagent mode — emit a deferred envelope instead of requiring
+      # an LlmClient. The evaluator subagent will receive the session
+      # aggregate in additionalContext.
+      hector check --session --config "${CONFIG}" --format json \
+        --emit-semantic-payload > "${TMP_VERDICT}" 2>/dev/null || EC=$?
+      case "${EC}" in
+        0)
+          # Either a DeferredVerdict (deferred session envelope on stdout)
+          # or a clean direct-LLM pass.
+          if jq -e '.deferred == true' < "${TMP_VERDICT}" >/dev/null 2>&1; then
+            jq -n --slurpfile p "${TMP_VERDICT}" '{
+              hookSpecificOutput: {
+                hookEventName: "Stop",
+                additionalContext: ("AGENTIC LINT SESSION EVALUATION REQUIRED:\n\n" + ($p[0].payload | tojson))
+              }
+            }'
+          fi
+          exit 0
+          ;;
+        2)
+          cat "${TMP_VERDICT}" >&2
           exit 2
-        fi
-        echo "hector: internal error during session check — allowing; see .hector/log.jsonl" >&2
-        exit 0
-        ;;
-      *)
-        echo "hector: internal error during session check (exit ${EC})" >&2
-        [[ -s "${TMP_VERDICT}" ]] && cat "${TMP_VERDICT}" >&2
-        exit 1
-        ;;
-    esac
+          ;;
+        3)
+          # B7: engine internal error during session check.
+          if [[ "${HECTOR_FAIL_CLOSED_ON_INTERNAL:-0}" == "1" ]]; then
+            echo "hector: internal error — failing closed (HECTOR_FAIL_CLOSED_ON_INTERNAL=1)" >&2
+            [[ -s "${TMP_VERDICT}" ]] && cat "${TMP_VERDICT}" >&2
+            exit 2
+          fi
+          echo "hector: internal error during session check — allowing; see .hector/log.jsonl" >&2
+          exit 0
+          ;;
+        *)
+          echo "hector: internal error during session check (exit ${EC})" >&2
+          [[ -s "${TMP_VERDICT}" ]] && cat "${TMP_VERDICT}" >&2
+          exit 1
+          ;;
+      esac
+    else
+      # Direct-API mode: dispatch to LLM directly.
+      hector check --session --config "${CONFIG}" --format json > "${TMP_VERDICT}" 2>/dev/null || EC=$?
+      case "${EC}" in
+        0)
+          # session.json was cleared by hector check --session as a side effect.
+          exit 0
+          ;;
+        2)
+          cat "${TMP_VERDICT}" >&2
+          exit 2
+          ;;
+        3)
+          # B7: engine internal error during session check.
+          if [[ "${HECTOR_FAIL_CLOSED_ON_INTERNAL:-0}" == "1" ]]; then
+            echo "hector: internal error — failing closed (HECTOR_FAIL_CLOSED_ON_INTERNAL=1)" >&2
+            [[ -s "${TMP_VERDICT}" ]] && cat "${TMP_VERDICT}" >&2
+            exit 2
+          fi
+          echo "hector: internal error during session check — allowing; see .hector/log.jsonl" >&2
+          exit 0
+          ;;
+        *)
+          echo "hector: internal error during session check (exit ${EC})" >&2
+          [[ -s "${TMP_VERDICT}" ]] && cat "${TMP_VERDICT}" >&2
+          exit 1
+          ;;
+      esac
+    fi
     ;;
 
   post-tool-use|*)

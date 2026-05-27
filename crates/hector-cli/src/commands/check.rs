@@ -63,12 +63,25 @@ pub fn run(
             .unwrap_or(std::path::Path::new("."));
         let state_path = dir.join(".hector/session.json");
         let state = hector_core::session_state::SessionState::load(&state_path)?;
-        let verdict = engine.check_session(&state)?;
-        emit(&verdict, format)?;
-        if should_clear_session(verdict.status) {
+        // B3: route through check_session_with_options so the subagent
+        // provider path emits a deferred envelope instead of requiring an
+        // LlmClient. When `emit_semantic_payload` is false (direct-API
+        // mode) this delegates to check_session unchanged.
+        let report = engine.check_session_with_options(&state)?;
+        if let Some(d) = &report.deferred {
+            // Session-level deferred envelope — emit as JSON on stdout so
+            // the Claude Code stop hook can wrap it in additionalContext,
+            // then exit 0 (the subagent decides the final verdict).
+            emit_deferred(d, format)?;
+            // Do not clear session.json on a deferred response; the
+            // subagent may need to re-evaluate if the operator re-runs.
+            return Ok(0);
+        }
+        emit(&report.verdict, format)?;
+        if should_clear_session(report.verdict.status) {
             hector_core::session_state::SessionState::clear(&state_path)?;
         }
-        return Ok(exit_code(&verdict));
+        return Ok(exit_code(&report.verdict));
     }
 
     match (file, diff) {

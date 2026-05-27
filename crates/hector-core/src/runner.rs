@@ -1645,4 +1645,140 @@ impl HectorEngine {
         }
         Ok(verdict)
     }
+
+    /// B3: session-stop path for the Claude Code subagent provider.
+    ///
+    /// When `options.emit_semantic_payload` is true AND at least one
+    /// `engine: session` rule is in scope for at least one edit, this
+    /// method emits a [`CheckReport`] whose `deferred` field carries a
+    /// [`crate::verdict_deferred::DeferredVerdict`] with:
+    /// - `file: ""` (session-level, not per-file)
+    /// - `diff: <framed aggregate>` (every in-scope edit framed via
+    ///   `engine::session::framed_aggregate`)
+    ///
+    /// When no session rule is in scope, or `emit_semantic_payload` is
+    /// false, falls through to `check_session` and wraps the result in
+    /// a `CheckReport` with `deferred: None`.
+    pub fn check_session_with_options(
+        &self,
+        state: &crate::session_state::SessionState,
+    ) -> Result<CheckReport> {
+        use crate::engine::session::framed_aggregate;
+
+        // B3: if emit_semantic_payload is set, collect in-scope session
+        // rules into a deferred envelope instead of requiring an LlmClient.
+        if self.options.emit_semantic_payload {
+            let start = Instant::now();
+            let mut deferred_rules: Vec<crate::verdict_deferred::DeferredRule> = Vec::new();
+            let mut passed: Vec<String> = Vec::new();
+            let filter: &HashSet<String> = &self.options.rules;
+
+            for (rule_id, rule) in &self.config.rules {
+                if rule.engine != crate::config::EngineKind::Session {
+                    continue;
+                }
+                if !filter.is_empty() && !filter.contains(rule_id.as_str()) {
+                    continue;
+                }
+                // Per-edit scope filter: the rule must match at least one
+                // edit's file path to be considered in scope.
+                let any_in_scope = state
+                    .edits
+                    .iter()
+                    .any(|e| self.rule_matches_path(rule_id, std::path::Path::new(&e.file)));
+                if !any_in_scope {
+                    passed.push(rule_id.clone());
+                    continue;
+                }
+                deferred_rules.push(crate::verdict_deferred::DeferredRule {
+                    id: rule_id.clone(),
+                    description: rule.description.clone(),
+                    severity: severity_string(rule.severity),
+                    engine: "session".into(),
+                });
+            }
+
+            if !deferred_rules.is_empty() {
+                // Build the aggregate diff from edits that are in scope for
+                // at least one deferred session rule.
+                let aggregate_diff = framed_aggregate(state);
+
+                // Build a simple evaluator input. Session rules use the
+                // aggregate diff as primary evidence; no per-rule context
+                // expansion is needed (session rules have no `context:`
+                // field; they operate on the aggregate).
+                let sentinel = crate::llm::prompt::Sentinel::new_random();
+                let rule_tuples: Vec<crate::llm::prompt::RuleRef<'_>> = deferred_rules
+                    .iter()
+                    .filter_map(|d| {
+                        self.config_rule(&d.id)
+                            .map(|rule| crate::llm::prompt::RuleRef { id: &d.id, rule })
+                    })
+                    .collect();
+                let evaluator_tuples: Vec<(
+                    crate::llm::prompt::RuleRef<'_>,
+                    String,
+                    Option<String>,
+                )> = rule_tuples
+                    .iter()
+                    .map(|rr| {
+                        (
+                            crate::llm::prompt::RuleRef {
+                                id: rr.id,
+                                rule: rr.rule,
+                            },
+                            aggregate_diff.clone(),
+                            None,
+                        )
+                    })
+                    .collect();
+                let evaluator_input =
+                    crate::llm::prompt::build_evaluator_input(&evaluator_tuples, &sentinel);
+
+                let evaluator_model = self
+                    .config
+                    .llm
+                    .as_ref()
+                    .and_then(|l| l.evaluator_model.clone());
+
+                let verdict = crate::verdict::Verdict::from_violations(
+                    vec![],
+                    passed,
+                    start.elapsed().as_millis() as u64,
+                );
+
+                let deferred = Some(crate::verdict_deferred::DeferredVerdict {
+                    schema_version: crate::verdict_deferred::DEFERRED_SCHEMA_VERSION,
+                    deferred: true,
+                    hector_version: env!("CARGO_PKG_VERSION").to_string(),
+                    passed_checks: verdict.passed_checks.clone(),
+                    payload: crate::verdict_deferred::DeferredPayload {
+                        file: "".to_string(),
+                        diff: aggregate_diff,
+                        passed_checks: verdict.passed_checks.clone(),
+                        evaluate: deferred_rules,
+                        evaluator_input,
+                        evaluator_model,
+                        warnings: vec![],
+                    },
+                    elapsed_ms: verdict.elapsed_ms,
+                });
+
+                return Ok(CheckReport {
+                    verdict,
+                    explain: vec![],
+                    deferred,
+                });
+            }
+        }
+
+        // Fallback: no deferred session rules in scope (or not in deferred
+        // mode). Delegate to the existing LLM-dispatch path.
+        let verdict = self.check_session(state)?;
+        Ok(CheckReport {
+            verdict,
+            explain: vec![],
+            deferred: None,
+        })
+    }
 }

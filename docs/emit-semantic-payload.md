@@ -87,11 +87,60 @@ surfaces these to the user so they can see their semantic rules are
 configured but were not evaluated this turn — fixing the block and
 re-triggering the hook will run them normally.
 
+## Session-level envelopes (B3, 2026-05-26)
+
+When `hector check --session --emit-semantic-payload` is invoked (or the
+config has `llm.provider: claude-code-subagent`) and at least one
+`engine: session` rule is in scope for at least one edit, the runner
+emits a **session-level** `DeferredVerdict` instead of requiring an
+`LlmClient`.
+
+Session envelopes differ from per-file envelopes in two fields:
+
+| Field | Per-file | Session |
+|---|---|---|
+| `payload.file` | `"src/foo.rs"` | `""` (empty — aggregates all in-scope edits) |
+| `payload.diff` | unified diff of the changed file | framed aggregate of every in-scope edit |
+
+### Aggregate framing
+
+Each edit in `SessionState.edits` that matches at least one session rule's
+scope is framed as:
+
+```
+<<<EDIT {session_id}/{file}>>>
+{timestamp}
+{diff}
+<<<END EDIT>>>
+```
+
+Frames are joined with a blank line. The `session_id` in the delimiter
+prevents attacker-controlled diff content from forging a frame boundary
+for a different file (P1-9 principle carried forward from the LLM path).
+
+### Claude Code stop hook
+
+The stop hook detects `llm.provider: claude-code-subagent` via
+`hector show-resolved-config` and passes `--emit-semantic-payload` to
+`hector check --session`. When the result contains `deferred: true`, it
+wraps `payload` in `hookSpecificOutput.additionalContext`:
+
+```json
+{
+  "hookSpecificOutput": {
+    "hookEventName": "Stop",
+    "additionalContext": "AGENTIC LINT SESSION EVALUATION REQUIRED:\n\n{payload JSON}"
+  }
+}
+```
+
+This mirrors the `PostToolUse` per-file branch exactly, so the
+`hector-evaluator` subagent skill receives session rules through the
+same channel.
+
 ## Limitations (0.2.x)
 
 - `--diff` combined with `--emit-semantic-payload` is rejected; multi-file
   envelope aggregation is a follow-up.
-- The envelope assumes a single primary file. `engine: session` rules
-  that span multiple changed files still produce one envelope; the
-  subagent receives every session-rule definition but only the primary
-  file/diff.
+- Per-file envelopes assume a single primary file. Session envelopes
+  aggregate all in-scope edits via `framed_aggregate`.

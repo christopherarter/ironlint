@@ -214,9 +214,11 @@ fn session_aggregation_frame_resists_spoof_in_diff() {
     let body = llm.body();
 
     // There must be exactly one real frame for our one edit. The exact
-    // separator string is "--- file:<session_id>:" so spoofs missing the
-    // session id cannot match.
-    let frame_marker = format!("--- file:{session_id}:");
+    // delimiter is "<<<EDIT {session_id}/" so spoofs missing the session id
+    // cannot match. (B3 changed the framing from `--- file:{id}:` to
+    // `<<<EDIT {id}/` so the same security property is preserved under
+    // the new format.)
+    let frame_marker = format!("<<<EDIT {session_id}/");
     let frame_count = body.matches(&frame_marker).count();
     assert_eq!(
         frame_count, 1,
