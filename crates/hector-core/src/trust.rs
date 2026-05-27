@@ -37,9 +37,12 @@ pub fn canonicalize_for_fingerprint(input: &str) -> Result<String> {
 ///
 /// This is a heuristic scan, not a full YAML parser. It detects the common
 /// cases: `&anchor` after a mapping key on the same line, and `*alias` as
-/// a standalone value. False positives (e.g., a literal `&` in a double-quoted
-/// string that happens to look like `&word`) cause a false rejection, which is
-/// the safe failure direction for a trust gate.
+/// a standalone value. False positives are limited to **unquoted** YAML
+/// scalars containing `&word` or `*word` patterns (e.g. `description: Foo&Bar`,
+/// or a script value with a shell-glob like `grep *main`). Quoted strings are
+/// handled correctly by the quote-tracking logic. These false positives are
+/// uncommon in practice and fail-safe (rejected, not silently misaccepted),
+/// which is the safe failure direction for a trust gate.
 fn contains_yaml_anchor_or_alias(input: &str) -> bool {
     for line in input.lines() {
         // Strip the leading whitespace then check if this is a quoted value
