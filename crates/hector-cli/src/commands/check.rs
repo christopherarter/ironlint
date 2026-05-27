@@ -22,35 +22,29 @@ pub fn run(
     emit_semantic_payload: bool,
     allow_external_paths: bool,
 ) -> Result<i32> {
-    // First load without options so we can validate `--rule` against the
-    // resolved rule list at the CLI boundary. The trust-and-parse work is
-    // repeated on the second load below, which is cheap relative to the
-    // wall-clock cost of running rules — and it keeps the
-    // unknown-rule-id error path independent of options plumbing.
-    let probe = match HectorEngine::load(config) {
-        Ok(e) => e,
-        Err(e) => {
-            eprintln!("ERROR: {:#}", e);
-            return Ok(1);
-        }
-    };
-    if let Some(code) = validate_rule_filter(&probe, &rules) {
-        return Ok(code);
-    }
-    let rule_set: HashSet<String> = rules.into_iter().collect();
+    // D5: load the engine exactly once. Build with the non-rule options so
+    // the engine is fully configured, then validate --rule against the loaded
+    // config's known ids and store the validated set in-place. This avoids
+    // the previous double-load (probe + real) which paid trust-verify +
+    // extends DFS + YAML parse twice on every invocation.
     let options = CheckOptions {
-        rules: rule_set,
+        rules: HashSet::new(), // populated below after --rule validation
         explain,
         emit_semantic_payload,
         allow_external_paths,
     };
-    let engine = match HectorEngine::builder().with_options(options).load(config) {
+    let mut engine = match HectorEngine::builder().with_options(options).load(config) {
         Ok(e) => e,
         Err(e) => {
             eprintln!("ERROR: {:#}", e);
             return Ok(1);
         }
     };
+    if let Some(code) = validate_rule_filter(&engine, &rules) {
+        return Ok(code);
+    }
+    let rule_set: HashSet<String> = rules.into_iter().collect();
+    engine.set_rule_filter(rule_set);
 
     if print_prompt {
         return run_print_prompt(&engine, file, diff);
