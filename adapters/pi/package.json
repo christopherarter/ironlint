@@ -1,0 +1,52 @@
+{
+  "name": "@dynamik-dev/hector-pi",
+  "version": "0.1.0",
+  "description": "pi extension for Hector — policy enforcement for AI coding agents. tool_call gate + session record + session check.",
+  "type": "module",
+  "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "pi": {
+    "extensions": ["./src/index.ts"]
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22.6"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test test/*.test.ts"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "*",
+    "typescript": "^5"
+  },
+  "keywords": [
+    "pi",
+    "pi-extension",
+    "hector",
+    "lint",
+    "policy",
+    "ai-agents"
+  ],
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dynamik-dev/hector.git",
+    "directory": "adapters/pi"
+  },
+  "homepage": "https://github.com/dynamik-dev/hector#readme",
+  "bugs": "https://github.com/dynamik-dev/hector/issues"
+}

@@ -29,3 +29,5 @@ tests/e2e/.env.e2e
 # the machine-local MCP config that drives it — not part of hector.
 /.repowise/
 .mcp.json
+# Node.js dependencies (adapters)
+node_modules/
