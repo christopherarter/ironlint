@@ -362,69 +362,6 @@ fn relativize(path: &std::path::Path, root: &std::path::Path) -> std::path::Path
         .unwrap_or(canon_path)
 }
 
-/// Identify which raw skip glob matched a path. Mirrors the construction
-/// order in `SkipMatcher::with_built_ins` (built-ins first, user extras
-/// second) so the reported pattern matches what the author would type to
-/// reproduce the skip. `None` means no pattern matched (file is in scope for
-/// the usual walk); glob construction errors also yield `None`, since the
-/// same globs already round-tripped at engine load time.
-fn first_matching_skip_glob(file: &std::path::Path, extras: &[String]) -> Option<String> {
-    use globset::{Glob, GlobSetBuilder};
-    let candidates: Vec<String> = crate::config::skip::built_in_skip_globs()
-        .iter()
-        .map(|s| (*s).to_string())
-        .chain(extras.iter().cloned())
-        .collect();
-    for raw in candidates {
-        let mut b = GlobSetBuilder::new();
-        let Ok(g) = Glob::new(&raw) else {
-            continue;
-        };
-        b.add(g);
-        if !raw.contains('/') {
-            let Ok(g2) = Glob::new(&format!("**/{raw}")) else {
-                continue;
-            };
-            b.add(g2);
-        } else if let Some(prefix) = raw.strip_suffix("/**") {
-            if !prefix.is_empty() && !prefix.contains('*') {
-                let Ok(g3) = Glob::new(&format!("**/{prefix}/**")) else {
-                    continue;
-                };
-                b.add(g3);
-            }
-        }
-        let Ok(set) = b.build() else { continue };
-        if set.is_match(file) {
-            return Some(raw);
-        }
-    }
-    None
-}
-
-/// Walk a rule's scope list in author order and return the first glob that
-/// matches `path`, or `None`. Mirrors the bare-pattern semantics of
-/// `ScopeMatcher` (a bare `*.py` also matches at any depth via `**/<pattern>`).
-fn first_matching_scope_glob(scopes: &[String], path: &std::path::Path) -> Option<String> {
-    use globset::{Glob, GlobSetBuilder};
-    for raw in scopes {
-        let mut b = GlobSetBuilder::new();
-        let Ok(g) = Glob::new(raw) else { continue };
-        b.add(g);
-        if !raw.contains('/') {
-            let Ok(g2) = Glob::new(&format!("**/{raw}")) else {
-                continue;
-            };
-            b.add(g2);
-        }
-        let Ok(set) = b.build() else { continue };
-        if set.is_match(path) {
-            return Some(raw.clone());
-        }
-    }
-    None
-}
-
 pub struct HectorEngineBuilder {
     llm: Option<Box<dyn crate::llm::LlmClient>>,
     options: CheckOptions,
@@ -536,21 +473,21 @@ impl HectorEngine {
     pub fn scope_outcomes(&self, file: &std::path::Path) -> ScopeOutcomes {
         let match_path = relativize(file, &self.config_dir);
 
-        // Skip resolution. Mirror `load_with`'s extras assembly so the
-        // helper sees the same union of project + user-global globs.
-        let mut extras = self.config.skip.clone();
-        if let Some(home) = home_dir() {
-            let ignore_path = home.join(USER_GLOBAL_IGNORE_FILENAME);
-            if let Ok(raw) = std::fs::read_to_string(&ignore_path) {
-                extras.extend(parse_user_global_ignore(&raw));
-            }
-        }
-        let skip =
-            first_matching_skip_glob(&match_path, &extras).map(|pattern| SkipHit { pattern });
+        // The load-time skip matcher already unions built-ins + project skip +
+        // user-global ignore, so it is the single source of truth here too.
+        let skip = self
+            .skip
+            .matched_pattern(&match_path)
+            .map(|pattern| SkipHit {
+                pattern: pattern.to_string(),
+            });
 
         let mut rules: Vec<RuleScopeEntry> = Vec::with_capacity(self.config.rules.len());
         for (rule_id, rule) in &self.config.rules {
-            let matched = first_matching_scope_glob(&rule.scope, &match_path);
+            let matched = self
+                .scope_matchers
+                .get(rule_id)
+                .and_then(|m| m.matched_pattern(&match_path).map(str::to_string));
             let scope_match = match matched {
                 Some(glob) => ScopeMatch::Match { glob },
                 None => ScopeMatch::NoMatch {

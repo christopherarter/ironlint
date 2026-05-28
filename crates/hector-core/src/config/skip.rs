@@ -45,6 +45,8 @@ pub fn built_in_skip_globs() -> &'static [&'static str] {
 /// depth — same convention as [`crate::config::scope::ScopeMatcher`].
 pub struct SkipMatcher {
     set: GlobSet,
+    /// Raw pattern for each glob added, in insertion order (see ScopeMatcher).
+    patterns: Vec<String>,
 }
 
 impl SkipMatcher {
@@ -52,28 +54,45 @@ impl SkipMatcher {
     /// provides (project `skip:` list, `~/.hector-ignore` entries, etc.).
     pub fn with_built_ins(extras: &[String]) -> Result<Self> {
         let mut b = GlobSetBuilder::new();
+        let mut patterns = Vec::new();
         for g in built_in_skip_globs() {
-            add_glob(&mut b, g)?;
+            add_glob(&mut b, g, &mut patterns)?;
         }
         for g in extras {
-            add_glob(&mut b, g)?;
+            add_glob(&mut b, g, &mut patterns)?;
         }
-        Ok(Self { set: b.build()? })
+        Ok(Self {
+            set: b.build()?,
+            patterns,
+        })
     }
 
     pub fn matches<P: AsRef<Path>>(&self, path: P) -> bool {
         self.set.is_match(path.as_ref())
     }
+
+    /// The first skip pattern (in construction order: built-ins then extras)
+    /// that matches `path`, or `None`. Single source of truth for "which skip
+    /// glob matched".
+    pub fn matched_pattern<P: AsRef<Path>>(&self, path: P) -> Option<&str> {
+        self.set
+            .matches(path.as_ref())
+            .into_iter()
+            .min()
+            .map(|i| self.patterns[i].as_str())
+    }
 }
 
-fn add_glob(b: &mut GlobSetBuilder, raw: &str) -> Result<()> {
+fn add_glob(b: &mut GlobSetBuilder, raw: &str, patterns: &mut Vec<String>) -> Result<()> {
     let glob = Glob::new(raw).with_context(|| format!("invalid skip glob: {raw}"))?;
     b.add(glob);
+    patterns.push(raw.to_string());
     if !raw.contains('/') {
         let prefixed = format!("**/{raw}");
         let glob =
             Glob::new(&prefixed).with_context(|| format!("invalid skip glob: {prefixed}"))?;
         b.add(glob);
+        patterns.push(raw.to_string());
     } else if let Some(prefix) = raw.strip_suffix("/**") {
         // `node_modules/**` should also match `packages/web/node_modules/bar.js`.
         // Mirrors bully's path-component check for `/**`-suffixed patterns.
@@ -82,6 +101,7 @@ fn add_glob(b: &mut GlobSetBuilder, raw: &str) -> Result<()> {
             let glob =
                 Glob::new(&any_depth).with_context(|| format!("invalid skip glob: {any_depth}"))?;
             b.add(glob);
+            patterns.push(raw.to_string());
         }
     }
     Ok(())
@@ -175,6 +195,24 @@ mod tests {
         assert!(m.matches(Path::new("tests/foo.snap")));
         assert!(m.matches(Path::new("crates/x/tests/bar.snap")));
         assert!(m.matches(Path::new("fixtures/large.json")));
+    }
+
+    #[test]
+    fn matched_pattern_reports_author_glob() {
+        let m = SkipMatcher::with_built_ins(&["fixtures/**".into()]).unwrap();
+        assert_eq!(
+            m.matched_pattern(Path::new("Cargo.lock")),
+            Some("Cargo.lock")
+        );
+        assert_eq!(
+            m.matched_pattern(Path::new("crates/x/Cargo.lock")),
+            Some("Cargo.lock")
+        );
+        assert_eq!(
+            m.matched_pattern(Path::new("fixtures/large.json")),
+            Some("fixtures/**")
+        );
+        assert_eq!(m.matched_pattern(Path::new("src/main.rs")), None);
     }
 
     #[test]
