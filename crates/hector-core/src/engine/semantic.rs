@@ -10,7 +10,8 @@ impl RuleEngine for SemanticEngine {
     fn run(&self, ctx: &RuleContext) -> Result<Vec<Violation>> {
         let llm = ctx.llm.ok_or_else(|| anyhow!("semantic engine requires LlmClient; provide via HectorEngine::builder().with_llm(...)"))?;
         let scope = ctx.rule.context.unwrap_or(ContextScope::Diff);
-        let (primary, context_text) = expand_context(scope, ctx.diff, Some(ctx.file), ctx.cwd)?;
+        let (primary, context_text) =
+            expand_context(scope, ctx.diff, Some(ctx.file), ctx.content, ctx.cwd)?;
         let verdicts = llm.evaluate(
             &[(ctx.rule_id, ctx.rule)],
             &primary,

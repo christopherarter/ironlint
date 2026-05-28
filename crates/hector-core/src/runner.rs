@@ -1223,9 +1223,10 @@ impl HectorEngine {
         deferred_rules: &[crate::verdict_deferred::DeferredRule],
         path: &Path,
         diff: &str,
+        content: Option<&str>,
         violations: &mut Vec<Violation>,
     ) -> Option<String> {
-        let expansion = self.expand_deferred_contexts(deferred_rules, path, diff);
+        let expansion = self.expand_deferred_contexts(deferred_rules, path, diff, content);
         push_expansion_failures_into_violations(&expansion.failures, path, violations);
         if expansion.successes.is_empty() {
             return None;
@@ -1338,8 +1339,13 @@ impl HectorEngine {
 
         // Computed before `deferred` is consumed by `build_deferred_envelope`
         // — the expansion tuples borrow each `DeferredRule`.
-        let evaluator_input =
-            self.build_deferred_evaluator_input(&deferred, &path, &diff, &mut dispatch.violations);
+        let evaluator_input = self.build_deferred_evaluator_input(
+            &deferred,
+            &path,
+            &diff,
+            inputs.content,
+            &mut dispatch.violations,
+        );
 
         let mut verdict = Verdict::from_violations(
             dispatch.violations,
@@ -1437,6 +1443,7 @@ impl HectorEngine {
         deferred_rules: &'a [crate::verdict_deferred::DeferredRule],
         path: &Path,
         diff: &str,
+        content: Option<&str>,
     ) -> DeferredExpansion<'a> {
         let mut successes = Vec::with_capacity(deferred_rules.len());
         let mut failures: Vec<(String, anyhow::Error)> = Vec::new();
@@ -1449,6 +1456,7 @@ impl HectorEngine {
                 scope,
                 if diff.is_empty() { None } else { Some(diff) },
                 Some(path),
+                content,
                 &self.config_dir,
             );
             match expansion {
@@ -1497,6 +1505,7 @@ impl HectorEngine {
                 scope,
                 if diff.is_empty() { None } else { Some(&diff) },
                 Some(&path),
+                None,
                 &self.config_dir,
             )?;
             let (system, user) = crate::llm::prompt::build_prompt_split(
