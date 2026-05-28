@@ -16,11 +16,7 @@ impl RunResult {
     /// Load forensics from a host-side run dir. Missing files degrade
     /// gracefully — a lifecycle-broken run still produces a usable struct
     /// (its `drive_log` carries the failure context).
-    pub fn from_run_dir(
-        run_dir: &Path,
-        exit_code: i32,
-        target_file: &str,
-    ) -> anyhow::Result<Self> {
+    pub fn from_run_dir(run_dir: &Path, exit_code: i32, target_file: &str) -> anyhow::Result<Self> {
         let drive_log = read_or_empty(&run_dir.join("drive.log"));
         let harness_log = read_or_empty(&run_dir.join("harness.log"));
         let verdict = read_optional(&run_dir.join("verdict.json"))
@@ -96,10 +92,7 @@ mod tests {
         assert_eq!(r.harness_log, "agent: writing src/runner.ts\n");
         assert!(r.verdict.is_some());
         assert_eq!(r.log_entries.len(), 2);
-        assert_eq!(
-            r.target_after.as_deref(),
-            Some("function runScript(){}\n"),
-        );
+        assert_eq!(r.target_after.as_deref(), Some("function runScript(){}\n"),);
     }
 
     #[test]

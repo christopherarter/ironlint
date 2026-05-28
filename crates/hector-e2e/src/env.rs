@@ -62,4 +62,23 @@ mod tests {
         // tests/e2e/ may not exist on first run — root resolution still valid
         let _ = root.join("tests").join("e2e").is_dir();
     }
+
+    #[test]
+    fn docker_present_returns_bool_without_panic() {
+        // We don't assert the value — docker may or may not be on PATH in CI —
+        // but the function must not panic or hang.
+        let _ = docker_present();
+    }
+
+    #[test]
+    fn require_e2e_env_returns_false_when_env_file_absent() {
+        // In the test environment, tests/e2e/.env.e2e does not exist, so
+        // require_e2e_env must return false. This exercises all three guard
+        // branches: docker_ok (whatever it is), env_ok (false), bin_ok (may
+        // be false in a dev-only build), and the final `&&` short-circuit.
+        // The function writes to stderr — that's fine for a test.
+        let result = require_e2e_env();
+        // .env.e2e is absent; the overall result must be false.
+        assert!(!result, "require_e2e_env must be false without .env.e2e");
+    }
 }

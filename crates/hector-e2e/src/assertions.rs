@@ -6,13 +6,7 @@
 
 use crate::result::RunResult;
 
-const EDIT_TOOL_NAMES: &[&str] = &[
-    "write_file",
-    "edit_file",
-    "Write",
-    "Edit",
-    "apply_patch",
-];
+const EDIT_TOOL_NAMES: &[&str] = &["write_file", "edit_file", "Write", "Edit", "apply_patch"];
 
 /// Pass iff some entry in `r.log_entries` has `rule_id == rule_id`
 /// AND `status == "block"`.
@@ -56,7 +50,9 @@ pub fn pattern_absent(r: &RunResult, pattern: &str) {
 /// hook bug).
 pub fn hook_fired(r: &RunResult, target_path: &str) {
     let entry_for_target = r.log_entries.iter().any(|e| {
-        e.get("file").and_then(|v| v.as_str()).is_some_and(|f| f.contains(target_path))
+        e.get("file")
+            .and_then(|v| v.as_str())
+            .is_some_and(|f| f.contains(target_path))
     });
     if entry_for_target {
         return;
