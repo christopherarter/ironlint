@@ -1,10 +1,12 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { synthesizeDiff, normalizeEdits } from "../src/index.ts"
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs"
+import { mkdtempSync, writeFileSync, rmSync, existsSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { computeProposedContent } from "../src/index.ts"
+import { execFileSync } from "node:child_process"
+import hectorExtension from "../src/index.ts"
 
 // --- normalizeEdits -------------------------------------------------------
 
@@ -188,4 +190,73 @@ test("computeProposedContent: edit returns null when oldText is non-unique", () 
 
 test("computeProposedContent: unknown tool returns null", () => {
   assert.equal(computeProposedContent("read", "/whatever", {}), null)
+})
+
+// Drive the exported factory with a fake `pi` that records handlers, then
+// invoke them with synthetic pi-shaped events against the real `hector`
+// binary (PATH includes target/release).
+
+type Handler = (event: unknown, ctx?: unknown) => unknown
+function loadExtension(root: string): Record<string, Handler> {
+  const handlers: Record<string, Handler> = {}
+  const pi = {
+    on: (ev: string, h: Handler) => {
+      handlers[ev] = h
+    },
+    cwd: root,
+  }
+  // Cast through unknown — the fake only implements the surface the factory uses.
+  hectorExtension(pi as unknown as Parameters<typeof hectorExtension>[0])
+  return handlers
+}
+
+const HECTOR_YML = `schema_version: 2
+rules:
+  no-debug:
+    description: "no DEBUG markers in source"
+    engine: script
+    scope: ["*.txt"]
+    severity: error
+    script: "grep -nE 'DEBUG' {file} && exit 1 || exit 0"
+`
+
+function makeProject(): string {
+  const dir = mkdtempSync(join(tmpdir(), "hector-pi-proj-"))
+  writeFileSync(join(dir, ".hector.yml"), HECTOR_YML)
+  execFileSync("hector", ["trust", "--config", join(dir, ".hector.yml")])
+  return dir
+}
+
+test("tool_call: clean write passes (returns nothing), file never written", () => {
+  const dir = makeProject()
+  try {
+    const file = join(dir, "clean.txt")
+    const handlers = loadExtension(dir)
+    const result = handlers.tool_call!(
+      { toolName: "write", input: { path: file, content: "ok\n" } },
+      {},
+    )
+    assert.equal(result, undefined)
+    // --content - never writes to disk.
+    assert.equal(existsSync(file), false)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("tool_call: write introducing DEBUG blocks", () => {
+  const dir = makeProject()
+  try {
+    const file = join(dir, "dirty.txt")
+    const handlers = loadExtension(dir)
+    const result = handlers.tool_call!(
+      { toolName: "write", input: { path: file, content: "this has DEBUG\n" } },
+      {},
+    ) as { block?: boolean; reason?: string } | undefined
+    assert.equal(result?.block, true)
+    assert.ok(typeof result?.reason === "string" && result.reason.length > 0)
+    assert.equal(existsSync(file), false)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
