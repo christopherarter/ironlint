@@ -1,6 +1,10 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { synthesizeDiff, normalizeEdits } from "../src/index.ts"
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { computeProposedContent } from "../src/index.ts"
 
 // --- normalizeEdits -------------------------------------------------------
 
@@ -93,4 +97,95 @@ test("synthesizeDiff: escapes embedded headers in oldText (P1-9)", () => {
   // "-- a/SECRET" prefixed with "-" would become "--- a/SECRET" without scrubbing.
   const d = synthesizeDiff("edit", "foo.ts", { oldText: "-- a/SECRET", newText: "x" })
   assert.doesNotMatch(d, /^--- a\/SECRET$/m)
+})
+
+// --- computeProposedContent -----------------------------------------------
+
+test("computeProposedContent: write returns the full body (new file ok)", () => {
+  assert.equal(
+    computeProposedContent("write", "/nonexistent/new.ts", { content: "hello\n" }),
+    "hello\n",
+  )
+})
+
+test("computeProposedContent: write with non-string content returns null", () => {
+  assert.equal(
+    computeProposedContent("write", "/nonexistent/new.ts", {} as never),
+    null,
+  )
+})
+
+test("computeProposedContent: edit applies a single replacement", () => {
+  const dir = mkdtempSync(join(tmpdir(), "hector-pi-cpc-"))
+  try {
+    const file = join(dir, "a.txt")
+    writeFileSync(file, "hello world\n")
+    assert.equal(
+      computeProposedContent("edit", file, { oldText: "world", newText: "DEBUG" }),
+      "hello DEBUG\n",
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("computeProposedContent: edit applies a batch in order", () => {
+  const dir = mkdtempSync(join(tmpdir(), "hector-pi-cpc-"))
+  try {
+    const file = join(dir, "a.txt")
+    writeFileSync(file, "alpha beta\n")
+    assert.equal(
+      computeProposedContent("edit", file, {
+        edits: [
+          { oldText: "alpha", newText: "x" },
+          { oldText: "beta", newText: "y" },
+        ],
+      }),
+      "x y\n",
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("computeProposedContent: edit returns null when file does not exist", () => {
+  assert.equal(
+    computeProposedContent("edit", "/nonexistent/missing.txt", {
+      oldText: "a",
+      newText: "b",
+    }),
+    null,
+  )
+})
+
+test("computeProposedContent: edit returns null when oldText is missing from file", () => {
+  const dir = mkdtempSync(join(tmpdir(), "hector-pi-cpc-"))
+  try {
+    const file = join(dir, "a.txt")
+    writeFileSync(file, "hello world\n")
+    assert.equal(
+      computeProposedContent("edit", file, { oldText: "nope", newText: "x" }),
+      null,
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("computeProposedContent: edit returns null when oldText is non-unique", () => {
+  const dir = mkdtempSync(join(tmpdir(), "hector-pi-cpc-"))
+  try {
+    const file = join(dir, "a.txt")
+    writeFileSync(file, "a a\n")
+    assert.equal(
+      computeProposedContent("edit", file, { oldText: "a", newText: "x" }),
+      null,
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("computeProposedContent: unknown tool returns null", () => {
+  assert.equal(computeProposedContent("read", "/whatever", {}), null)
 })

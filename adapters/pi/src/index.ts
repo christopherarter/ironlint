@@ -2,6 +2,8 @@
 // lifecycle and the `hector` CLI — it contains no rule logic. See
 // docs/superpowers/specs/2026-05-28-pi-adapter-design.md.
 
+import { existsSync, readFileSync } from "node:fs"
+
 /** The shape of the input payload pi passes for `write` / `edit` tool calls. */
 export type PiToolInput = {
   path?: string
@@ -116,4 +118,45 @@ export function synthesizeDiff(
     return header + buildHunk("", "")
   }
   return header + edits.map((e) => buildHunk(e.oldText, e.newText)).join("")
+}
+
+/**
+ * Compute the file body pi is about to write, so the gate can pipe it to
+ * `hector check --content -`. See spec §5.1.
+ *
+ *   - `write` -> `input.content` (the full body), even for a new file.
+ *     Non-string content (malformed call) -> null; pi would reject it too.
+ *   - `edit`  -> read the current file, apply each `{oldText,newText}` in
+ *     order. Each `oldText` must occur EXACTLY ONCE in the working buffer
+ *     (mirrors pi's contract); on any miss or non-unique match -> null.
+ *     A non-existent file -> null.
+ *
+ * We deliberately do NOT reproduce pi's fuzzy-match fallback — diverging
+ * there would feed hector content pi won't actually write, risking false
+ * blocks. Returning null skips the gate (fail-open on simulate-failure).
+ */
+export function computeProposedContent(
+  toolName: string,
+  filePath: string,
+  input: PiToolInput,
+): string | null {
+  if (toolName === "write") {
+    return typeof input.content === "string" ? input.content : null
+  }
+  if (toolName === "edit") {
+    const edits = normalizeEdits(input)
+    if (edits === null) return null
+    if (!existsSync(filePath)) return null
+    let buf = readFileSync(filePath, "utf8")
+    for (const { oldText, newText } of edits) {
+      const first = buf.indexOf(oldText)
+      if (first === -1) return null
+      // Reject non-unique matches (and empty oldText, where first=0 and
+      // last=buf.length) so we never guess which occurrence pi means.
+      if (first !== buf.lastIndexOf(oldText)) return null
+      buf = buf.slice(0, first) + newText + buf.slice(first + oldText.length)
+    }
+    return buf
+  }
+  return null
 }
