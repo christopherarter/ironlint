@@ -284,14 +284,10 @@ fn child_main(
 /// Wait for the cloned child to exit, polling `waitpid(WNOHANG)` until
 /// the deadline elapses. On timeout, sends `SIGKILL`, reaps the child,
 /// and returns a synthesised timeout outcome (exit 124, matches
-/// `timeout(1)`). On normal exit, drains stdout/stderr from the pipe
-/// read ends with the `MAX_OUTPUT` cap and returns the captured output.
+/// `timeout(1)`). On normal exit, returns the captured stdout/stderr.
 ///
-/// Note: matches `spawn_with_timeout`'s wait-then-read semantics. If a
-/// child writes more than the kernel pipe buffer (~64 KiB) before
-/// exiting it will block on `write(2)` and trip the timeout — same
-/// failure mode as the existing path, tracked separately if it ever
-/// becomes load-bearing.
+/// Note: stdout/stderr are drained on reader threads, so large output no
+/// longer trips the timeout.
 #[cfg(target_os = "linux")]
 fn wait_for_child(
     pid: nix::unistd::Pid,
@@ -301,6 +297,11 @@ fn wait_for_child(
     use nix::sys::signal::{kill, Signal};
     use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
 
+    // Drain the pipes on dedicated threads up front so the child never blocks
+    // on write(2) after filling the kernel pipe buffer.
+    let stdout_reader = spawn_reader(std::fs::File::from(stdout_r));
+    let stderr_reader = spawn_reader(std::fs::File::from(stderr_r));
+
     let deadline = std::time::Instant::now() + TIMEOUT;
     let poll_interval = std::time::Duration::from_millis(10);
 
@@ -308,13 +309,10 @@ fn wait_for_child(
         match waitpid(pid, Some(WaitPidFlag::WNOHANG)).context("waitpid on cloned child")? {
             WaitStatus::StillAlive => {
                 if std::time::Instant::now() >= deadline {
-                    // Timeout fired. Kill and reap. `kill` failures are
-                    // ignored — typically ESRCH if the child raced us
-                    // and exited between the WNOHANG check and the
-                    // signal, in which case we just need to drain via
-                    // blocking waitpid.
                     let _ = kill(pid, Signal::SIGKILL);
                     let _ = waitpid(pid, None);
+                    let _ = join_reader(stdout_reader);
+                    let _ = join_reader(stderr_reader);
                     return Ok(ExecOutcome {
                         stdout: String::new(),
                         stderr: format!("hector: script killed after {TIMEOUT:?} timeout"),
@@ -327,33 +325,13 @@ fn wait_for_child(
         }
     };
 
-    // Child has exited. Drain the pipes with the per-stream cap and
-    // synthesise the outcome.
-    let (stdout, stderr) = read_pipes_bounded(stdout_r, stderr_r);
+    let stdout = join_reader(stdout_reader);
+    let stderr = join_reader(stderr_reader);
     Ok(ExecOutcome {
         stdout,
         stderr,
         exit_code: exit_status_to_code(exit_status),
     })
-}
-
-/// Drain stdout and stderr read-ends, each capped at `MAX_OUTPUT`. Wraps
-/// the `OwnedFd`s in `std::fs::File` to get `Read`; the file closes its
-/// fd on drop, matching the `OwnedFd` lifetime.
-#[cfg(target_os = "linux")]
-fn read_pipes_bounded(
-    stdout_r: std::os::fd::OwnedFd,
-    stderr_r: std::os::fd::OwnedFd,
-) -> (String, String) {
-    let mut stdout = String::new();
-    let _ = std::fs::File::from(stdout_r)
-        .take(MAX_OUTPUT as u64)
-        .read_to_string(&mut stdout);
-    let mut stderr = String::new();
-    let _ = std::fs::File::from(stderr_r)
-        .take(MAX_OUTPUT as u64)
-        .read_to_string(&mut stderr);
-    (stdout, stderr)
 }
 
 /// Map a `WaitStatus` to a POSIX-style exit code. Normal exits return
@@ -412,6 +390,23 @@ pub fn platform_capability_status() -> Option<&'static str> {
     }
 }
 
+/// Drain a child stream on its own thread, capped at `MAX_OUTPUT`, returning
+/// the captured text. Reading concurrently with the wait prevents the child
+/// from blocking on `write(2)` once it fills the OS pipe buffer.
+fn spawn_reader<R: Read + Send + 'static>(reader: R) -> std::thread::JoinHandle<String> {
+    std::thread::spawn(move || {
+        let mut buf = String::new();
+        let _ = reader.take(MAX_OUTPUT as u64).read_to_string(&mut buf);
+        buf
+    })
+}
+
+/// Join a reader thread, treating a panicked reader as empty output (the
+/// stream is best-effort diagnostic data, never load-bearing).
+fn join_reader(handle: std::thread::JoinHandle<String>) -> String {
+    handle.join().unwrap_or_default()
+}
+
 /// Spawn `sh -c <cmd>` in `cwd` with `env` overrides, enforcing both a
 /// wall-clock timeout and a per-stream output cap.
 ///
@@ -432,15 +427,26 @@ fn spawn_with_timeout(cmd: &str, cwd: &Path, env: &[(&str, &str)]) -> Result<Exe
     }
     let mut child = command.spawn().context("spawning script subprocess")?;
 
-    let Some(status) = child
+    // Drain both streams on dedicated threads BEFORE waiting, so a child that
+    // writes past the pipe buffer never blocks on write(2). Each reader is
+    // capped at MAX_OUTPUT and ends when the child's write-end closes.
+    let stdout_reader = child.stdout.take().map(spawn_reader);
+    let stderr_reader = child.stderr.take().map(spawn_reader);
+
+    let status = child
         .wait_timeout(TIMEOUT)
-        .context("waiting for subprocess")?
-    else {
-        // Timeout fired. Kill, reap, and synthesise a hector-prefixed
-        // stderr so consumers can distinguish a timeout from a genuine
-        // non-zero exit. Exit code 124 matches GNU `timeout(1)`.
+        .context("waiting for subprocess")?;
+
+    let Some(status) = status else {
+        // Timeout fired. Kill and reap; the readers then hit EOF and finish.
         let _ = child.kill();
         let _ = child.wait();
+        if let Some(h) = stdout_reader {
+            let _ = h.join();
+        }
+        if let Some(h) = stderr_reader {
+            let _ = h.join();
+        }
         return Ok(ExecOutcome {
             stdout: String::new(),
             stderr: format!("hector: script killed after {TIMEOUT:?} timeout"),
@@ -448,19 +454,8 @@ fn spawn_with_timeout(cmd: &str, cwd: &Path, env: &[(&str, &str)]) -> Result<Exe
         });
     };
 
-    // Bounded reads: drop anything beyond MAX_OUTPUT per stream. Lossy-utf8
-    // decoding here would require buffering the raw bytes first; using
-    // `read_to_string` on a `Read::take(N)` gives us the cap for free, and
-    // any invalid UTF-8 is reported as an I/O error which we swallow (the
-    // stream is best-effort diagnostic output, not load-bearing).
-    let mut stdout = String::new();
-    if let Some(out) = child.stdout.take() {
-        let _ = out.take(MAX_OUTPUT as u64).read_to_string(&mut stdout);
-    }
-    let mut stderr = String::new();
-    if let Some(err) = child.stderr.take() {
-        let _ = err.take(MAX_OUTPUT as u64).read_to_string(&mut stderr);
-    }
+    let stdout = stdout_reader.map(join_reader).unwrap_or_default();
+    let stderr = stderr_reader.map(join_reader).unwrap_or_default();
 
     Ok(ExecOutcome {
         stdout,

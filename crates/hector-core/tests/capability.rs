@@ -98,3 +98,41 @@ fn linux_network_disabled_blocks_network_attempts() {
         outcome.stdout
     );
 }
+
+#[test]
+fn captures_large_output_without_deadlocking() {
+    // A script that writes more than the OS pipe buffer (~64 KiB on Linux)
+    // before exiting must not deadlock. Before the concurrent-drain fix the
+    // child blocks on write(2), never exits, and trips the 5s timeout with
+    // empty stdout and exit code 124. `network: true` keeps Linux on the
+    // shared spawn_with_timeout fast path (no clone), exercising the path
+    // every platform shares.
+    let caps = Capabilities {
+        network: true,
+        writes: WritesPolicy::Unrestricted,
+    };
+    let start = std::time::Instant::now();
+    // `yes x` emits "x\n" forever; `head -n 200000` caps the pipeline at
+    // ~400 KiB and exits 0 (sh's status is the last pipeline stage).
+    let out = run_with_capabilities(
+        "yes x | head -n 200000",
+        std::path::Path::new("/tmp"),
+        &caps,
+    )
+    .expect("runner returns Ok");
+    assert_eq!(
+        out.exit_code, 0,
+        "must exit cleanly, not time out (124); stderr was: {:?}",
+        out.stderr
+    );
+    assert!(
+        out.stdout.len() > 64 * 1024,
+        "must capture more than one pipe buffer of stdout; got {} bytes",
+        out.stdout.len()
+    );
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(5),
+        "must not hit the 5s timeout; took {:?}",
+        start.elapsed()
+    );
+}
