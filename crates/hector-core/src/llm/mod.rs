@@ -537,4 +537,13 @@ mod retry_tests {
             assert!(!is_retryable_status(code), "{code} should not retry");
         }
     }
+
+    #[test]
+    fn backoff_delay_grows_exponentially_from_250ms() {
+        use super::backoff_delay;
+        use std::time::Duration;
+        assert_eq!(backoff_delay(1), Duration::from_millis(250));
+        assert_eq!(backoff_delay(2), Duration::from_millis(500));
+        assert_eq!(backoff_delay(3), Duration::from_millis(1000));
+    }
 }

@@ -47,6 +47,41 @@ async fn openai_compat_evaluate_returns_pass() {
 }
 
 #[tokio::test]
+async fn openai_compat_retries_once_on_429_then_succeeds() {
+    // First call rate-limited, second succeeds. The client must retry and
+    // return the verdict rather than surfacing the 429 as an error.
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(429).set_body_string("rate limited"))
+        .up_to_n_times(1)
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [{
+                "message": { "role": "assistant", "content": "[{\"rule_id\":\"r1\",\"status\":\"pass\"}]" }
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let base_url = server.uri();
+    let rule = make_semantic_rule();
+    let result = tokio::task::spawn_blocking(move || {
+        let client = OpenAICompatClient::new("test-key", "gpt-4o-mini", base_url);
+        client.evaluate(&[("r1", &rule)], "diff text", None)
+    })
+    .await
+    .unwrap();
+    let verdicts = result.expect("retry should recover from the 429");
+    assert_eq!(verdicts.len(), 1);
+    // Both mocks' `.expect(...)` are verified when `server` drops at scope end.
+}
+
+#[tokio::test]
 async fn openai_compat_evaluate_returns_violation_with_line() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
