@@ -41,6 +41,16 @@ Every adapter needs:
 
 If hooks aren't firing, run [`hector doctor`](../operating/diagnostics.md) — its `adapter` check confirms the wiring.
 
+## Managing policy from inside the agent
+
+Adapters that support skills ship three for managing policy without leaving the session:
+
+- **`/hector-init`** scaffolds a `.hector.yml` from your project's stack, migrating rules from existing linters where it can.
+- **`/hector-author`** adds, tightens, or removes a rule, and tests it against fixtures before you commit. Reach for it with requests like "ban `unwrap()` in `src/`" or "make `no-debug` a warning."
+- **`/hector-review`** reads your telemetry log and reports which rules are noisy, which never fire, and which look dead, so you can prune them.
+
+Claude Code ships all three today; other adapters wire them up as their skill-discovery paths settle.
+
 ## See also
 
 - [Claude Code adapter](claude-code.md)
