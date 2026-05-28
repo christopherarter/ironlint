@@ -1,9 +1,9 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { synthesizeDiff, normalizeEdits } from "../src/index.ts"
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from "node:fs"
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, chmodSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { join, delimiter } from "node:path"
 import { computeProposedContent } from "../src/index.ts"
 import { execFileSync } from "node:child_process"
 import hectorExtension from "../src/index.ts"
@@ -533,5 +533,121 @@ test("tool_result: policy-file edit records nothing (R3)", () => {
     assert.equal(existsSync(join(dir, ".hector", "session.json")), false)
   } finally {
     rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("session_start: clears stale session.json", () => {
+  const dir = makeProject()
+  try {
+    mkdirSync(join(dir, ".hector"), { recursive: true })
+    writeFileSync(
+      join(dir, ".hector", "session.json"),
+      JSON.stringify({ session_id: "stale", started_at: "t", edits: [] }),
+    )
+    const handlers = loadExtension(dir)
+    handlers.session_start!({}, {})
+    assert.equal(existsSync(join(dir, ".hector", "session.json")), false)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("session_start: no-op when no session.json exists", () => {
+  const dir = makeProject()
+  try {
+    const handlers = loadExtension(dir)
+    handlers.session_start!({}, {}) // must not throw
+    assert.equal(existsSync(join(dir, ".hector", "session.json")), false)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("agent_end: no-op without session.json", () => {
+  const dir = makeProject()
+  try {
+    const handlers = loadExtension(dir)
+    const notified: string[] = []
+    const result = handlers.agent_end!({}, { ui: { notify: (m: string) => notified.push(m) } })
+    assert.equal(result, undefined)
+    assert.equal(notified.length, 0)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("agent_end: advisory surface on a session block (never blocks the turn)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "hector-pi-agentend-"))
+  const bin = mkdtempSync(join(tmpdir(), "hector-pi-fakebin-"))
+  const origPath = process.env["PATH"] ?? ""
+  const origErr = console.error
+  const errs: string[] = []
+  try {
+    mkdirSync(join(dir, ".hector"), { recursive: true })
+    writeFileSync(
+      join(dir, ".hector", "session.json"),
+      JSON.stringify({ session_id: "s", started_at: "t", edits: [] }),
+    )
+    // Fake `hector` that always exits 2 with a JSON verdict on stdout.
+    const fake = join(bin, "hector")
+    writeFileSync(
+      fake,
+      "#!/bin/sh\necho '{\"status\":\"block\",\"violations\":[{\"rule_id\":\"audit-tests\"}]}'\nexit 2\n",
+    )
+    chmodSync(fake, 0o755)
+    process.env["PATH"] = bin + delimiter + origPath
+    console.error = (...args: unknown[]) => {
+      errs.push(args.map(String).join(" "))
+    }
+
+    const handlers = loadExtension(dir)
+    const notified: string[] = []
+    const result = handlers.agent_end!({}, { ui: { notify: (m: string) => notified.push(m) } })
+
+    // Advisory: agent_end never returns a block, even on a session violation.
+    assert.equal(result, undefined)
+    assert.ok(errs.join("\n").includes("session check blocked"))
+    assert.equal(notified.length, 1)
+    assert.ok(notified[0]!.includes("session check blocked"))
+  } finally {
+    console.error = origErr
+    process.env["PATH"] = origPath
+    rmSync(dir, { recursive: true, force: true })
+    rmSync(bin, { recursive: true, force: true })
+  }
+})
+
+test("agent_end: non-blocking on session check internal error", () => {
+  const dir = mkdtempSync(join(tmpdir(), "hector-pi-agentend2-"))
+  const bin = mkdtempSync(join(tmpdir(), "hector-pi-fakebin2-"))
+  const origPath = process.env["PATH"] ?? ""
+  const origErr = console.error
+  const errs: string[] = []
+  try {
+    mkdirSync(join(dir, ".hector"), { recursive: true })
+    writeFileSync(
+      join(dir, ".hector", "session.json"),
+      JSON.stringify({ session_id: "s", started_at: "t", edits: [] }),
+    )
+    const fake = join(bin, "hector")
+    writeFileSync(fake, "#!/bin/sh\necho 'boom' 1>&2\nexit 1\n")
+    chmodSync(fake, 0o755)
+    process.env["PATH"] = bin + delimiter + origPath
+    console.error = (...args: unknown[]) => {
+      errs.push(args.map(String).join(" "))
+    }
+
+    const handlers = loadExtension(dir)
+    const notified: string[] = []
+    const result = handlers.agent_end!({}, { ui: { notify: (m: string) => notified.push(m) } })
+
+    assert.equal(result, undefined) // never blocks
+    assert.equal(notified.length, 0) // no advisory notify on non-2 exit
+    assert.ok(errs.join("\n").includes("internal error during session check"))
+  } finally {
+    console.error = origErr
+    process.env["PATH"] = origPath
+    rmSync(dir, { recursive: true, force: true })
+    rmSync(bin, { recursive: true, force: true })
   }
 })

@@ -240,6 +240,10 @@ interface ToolResultEvent {
   isError?: boolean
 }
 
+interface PiContext {
+  ui?: { notify?: (message: string) => void }
+}
+
 /** Resolve the project root. process.cwd() is the terminal-agent fallback. */
 function resolveRoot(pi: PiExtensionAPI): string {
   return pi.cwd ?? pi.directory ?? process.cwd()
@@ -308,8 +312,42 @@ export default function hectorExtension(pi: PiExtensionAPI): void {
       // intentional: session recording is best-effort.
     }
   })
-}
 
-// sessionStatePath and rmSync are load-bearing for later tasks (tool_result /
-// session_start / agent_end handlers). Keep them here to avoid churn when
-// those handlers land.
+  pi.on("session_start", () => {
+    // Clear stale state from a prior aborted run. Best-effort.
+    if (!existsSync(sessionStatePath)) return
+    try {
+      rmSync(sessionStatePath, { force: true })
+    } catch {
+      // intentional: stale-state cleanup is best-effort.
+    }
+  })
+
+  pi.on("agent_end", (_event: unknown, ctx?: PiContext) => {
+    if (!existsSync(sessionStatePath)) return
+    const res = runHector([
+      "check", "--session",
+      "--config", configPath,
+      "--format", "json",
+    ])
+    if (res.exitCode === 2) {
+      const verdict = res.stdout.trim() || "session rule violation"
+      // agent_end fires after the turn — we cannot retroactively block.
+      // Surface the verdict so the user sees what to fix next iteration.
+      const msg = `hector: session check blocked:\n${verdict}`
+      console.error(msg)
+      ctx?.ui?.notify?.(msg)
+      return
+    }
+    if (res.exitCode === 3) {
+      // Advisory context: failOpenOrClosed logs (and would "block"), but a
+      // finished turn can't be blocked, so we ignore its return value.
+      failOpenOrClosed("session check", res.stderr.trim())
+      return
+    }
+    if (res.exitCode !== 0) {
+      const suffix = res.stderr.trim() ? `: ${res.stderr.trim()}` : ""
+      console.error(`hector: internal error during session check (exit ${res.exitCode})${suffix}`)
+    }
+  })
+}
