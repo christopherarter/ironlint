@@ -81,14 +81,22 @@ impl LlmClient for AnthropicClient {
             "system": system,
             "messages": [{ "role": "user", "content": user }],
         });
-        let response = self
-            .client
-            .post(&url)
-            .header("x-api-key", &self.api_key)
-            .header("anthropic-version", "2023-06-01")
-            .json(&body)
-            .send()
-            .context("anthropic request")?;
+        let response = super::retry_with_backoff(
+            super::MAX_LLM_RETRIES,
+            |r: &reqwest::Result<reqwest::blocking::Response>| {
+                matches!(r, Ok(resp) if super::is_retryable_status(resp.status().as_u16()))
+            },
+            || {
+                self.client
+                    .post(&url)
+                    .header("x-api-key", &self.api_key)
+                    .header("anthropic-version", "2023-06-01")
+                    .json(&body)
+                    .send()
+            },
+            |attempt| std::thread::sleep(super::backoff_delay(attempt)),
+        )
+        .context("anthropic request")?;
         if !response.status().is_success() {
             let status = response.status();
             let text = response.text().unwrap_or_default();

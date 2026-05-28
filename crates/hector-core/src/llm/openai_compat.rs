@@ -81,11 +81,21 @@ impl LlmClient for OpenAICompatClient {
             "model": self.model,
             "messages": [{ "role": "user", "content": prompt }],
         });
-        let mut req = self.client.post(&url).json(&body);
-        if !self.api_key.is_empty() {
-            req = req.header("Authorization", format!("Bearer {}", self.api_key));
-        }
-        let response = req.send().context("openai-compat request")?;
+        let response = super::retry_with_backoff(
+            super::MAX_LLM_RETRIES,
+            |r: &reqwest::Result<reqwest::blocking::Response>| {
+                matches!(r, Ok(resp) if super::is_retryable_status(resp.status().as_u16()))
+            },
+            || {
+                let mut req = self.client.post(&url).json(&body);
+                if !self.api_key.is_empty() {
+                    req = req.header("Authorization", format!("Bearer {}", self.api_key));
+                }
+                req.send()
+            },
+            |attempt| std::thread::sleep(super::backoff_delay(attempt)),
+        )
+        .context("openai-compat request")?;
         if !response.status().is_success() {
             let status = response.status();
             let text = response.text().unwrap_or_default();

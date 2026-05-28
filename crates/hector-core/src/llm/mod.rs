@@ -35,6 +35,42 @@ pub trait LlmClient: Send + Sync {
     ) -> Result<Vec<RuleVerdict>>;
 }
 
+/// Maximum retries after the initial attempt (total attempts = 1 + this).
+pub(crate) const MAX_LLM_RETRIES: u32 = 2;
+
+/// HTTP status codes worth retrying: rate limits and transient upstream errors.
+pub(crate) fn is_retryable_status(code: u16) -> bool {
+    matches!(code, 429 | 500 | 502 | 503 | 504)
+}
+
+/// Exponential backoff: 250ms, 500ms, … for `attempt` 1, 2, … (no jitter —
+/// single process, low concurrency).
+pub(crate) fn backoff_delay(attempt: u32) -> std::time::Duration {
+    let factor = 2u64.saturating_pow(attempt.saturating_sub(1));
+    std::time::Duration::from_millis(250u64.saturating_mul(factor))
+}
+
+/// Run `send`, retrying up to `max_retries` times while `is_retryable` holds,
+/// invoking `on_retry(attempt)` (e.g. to sleep) between attempts. Generic over
+/// the result type so the loop is unit-testable without a real network call.
+pub(crate) fn retry_with_backoff<T, E>(
+    max_retries: u32,
+    is_retryable: impl Fn(&std::result::Result<T, E>) -> bool,
+    mut send: impl FnMut() -> std::result::Result<T, E>,
+    mut on_retry: impl FnMut(u32),
+) -> std::result::Result<T, E> {
+    let mut attempt = 0u32;
+    loop {
+        let result = send();
+        if attempt < max_retries && is_retryable(&result) {
+            attempt += 1;
+            on_retry(attempt);
+            continue;
+        }
+        return result;
+    }
+}
+
 /// Construct an `LlmClient` from a parsed config's `llm:` block.
 ///
 /// Returns `Ok(None)` (with a stderr warning) when a non-Ollama provider
@@ -432,5 +468,73 @@ mod parse_verdict_tests {
         let text = "verdict: [{\"rule_id\":\"r1\",\"status\":\"pass\"";
         let err = parse_verdicts(text).expect_err("unclosed array must error");
         assert!(format!("{err:#}").to_lowercase().contains("json"));
+    }
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::{is_retryable_status, retry_with_backoff};
+    use std::cell::Cell;
+
+    #[test]
+    fn retries_until_non_retryable_then_returns_success() {
+        let calls = Cell::new(0);
+        let out: Result<u16, ()> = retry_with_backoff(
+            2,
+            |r| matches!(r, Ok(429)),
+            || {
+                calls.set(calls.get() + 1);
+                if calls.get() < 3 {
+                    Ok(429)
+                } else {
+                    Ok(200)
+                }
+            },
+            |_attempt| {},
+        );
+        assert_eq!(out, Ok(200));
+        assert_eq!(calls.get(), 3, "1 initial + 2 retries");
+    }
+
+    #[test]
+    fn gives_up_after_max_retries_returning_last_result() {
+        let calls = Cell::new(0);
+        let out: Result<u16, ()> = retry_with_backoff(
+            2,
+            |r| matches!(r, Ok(429)),
+            || {
+                calls.set(calls.get() + 1);
+                Ok(429)
+            },
+            |_| {},
+        );
+        assert_eq!(out, Ok(429));
+        assert_eq!(calls.get(), 3, "no attempts beyond max_retries");
+    }
+
+    #[test]
+    fn does_not_retry_on_first_success() {
+        let calls = Cell::new(0);
+        let out: Result<u16, ()> = retry_with_backoff(
+            2,
+            |r| matches!(r, Ok(429)),
+            || {
+                calls.set(calls.get() + 1);
+                Ok(200)
+            },
+            |_| {},
+        );
+        assert_eq!(out, Ok(200));
+        assert_eq!(calls.get(), 1);
+    }
+
+    #[test]
+    fn retryable_status_set() {
+        for code in [429, 500, 502, 503, 504] {
+            assert!(is_retryable_status(code), "{code} should retry");
+        }
+        for code in [200, 400, 401, 403, 404, 422] {
+            assert!(!is_retryable_status(code), "{code} should not retry");
+        }
     }
 }
