@@ -67,12 +67,12 @@ fn verify_rejects_missing_trust_block() {
     assert!(result.is_err());
 }
 
-/// P2-7 regression: `hector trust` must not destroy comments.
+/// Regression: `hector trust` must not destroy comments.
 ///
-/// Prior implementation round-tripped through `serde_yaml`, which drops every
-/// comment and normalizes scalar style. The fix performs a string-level edit
-/// that locates the existing `trust:` block (or appends one at EOF) and
-/// rewrites only that block, leaving the rest of the file verbatim.
+/// Round-tripping through `serde_yaml` would drop every comment and normalize
+/// scalar style. Instead the writer does a string-level edit that locates the
+/// existing `trust:` block (or appends one at EOF) and rewrites only that
+/// block, leaving the rest of the file verbatim.
 #[test]
 fn comments_preserved_through_trust_write() {
     let original = "\
@@ -106,7 +106,7 @@ rules:
     verify(&out).expect("trust round-trips");
 }
 
-/// P2-7 regression: rewriting an existing trust block in place must preserve
+/// Regression: rewriting an existing trust block in place must preserve
 /// surrounding comments and structure.
 #[test]
 fn trust_rewrite_in_place_preserves_surrounding_lines() {
@@ -138,7 +138,7 @@ rules:
     verify(&out).expect("trust round-trips after rewrite");
 }
 
-/// P2-7 regression: when there is no existing `trust:` block, write one at EOF
+/// Regression: when there is no existing `trust:` block, write one at EOF
 /// without disturbing the body.
 #[test]
 fn trust_appended_when_block_absent_preserves_body() {
@@ -159,18 +159,18 @@ rules:
     verify(&out).expect("trust round-trips");
 }
 
-/// P2-3 regression: TOCTOU between trust verify and config parse.
+/// Regression: no TOCTOU between trust verify and config parse.
 ///
-/// The TOCTOU window existed when the loader read the file twice — once for
-/// `trust::verify` and once for `parse`. An attacker with write access could
-/// swap the file between those reads. The fix (landed in Phase 1.1 via
-/// `extends::resolve_trusted`) reads the file once and passes the same
-/// in-memory buffer to both `trust::verify` and `parse_str`.
+/// Reading the file twice — once for `trust::verify`, once for `parse` —
+/// opens a window for an attacker with write access to swap the file between
+/// reads. The loader (`extends::resolve_trusted`) instead reads the file once
+/// and passes the same in-memory buffer to both `trust::verify` and
+/// `parse_str`.
 ///
-/// This test exercises the behavior end-to-end: after a successful trusted
-/// load, swap the file to a body that mismatches its (preserved) trust
-/// fingerprint. A subsequent load must reject — proving the loader re-reads
-/// the file fresh on every load *and* checks the same bytes it parses.
+/// End-to-end: after a successful trusted load, swap the file to a body that
+/// mismatches its (preserved) trust fingerprint. A subsequent load must
+/// reject — proving the loader re-reads fresh on every load *and* checks the
+/// same bytes it parses.
 #[test]
 fn p2_3_load_rejects_when_body_diverges_from_trust_fingerprint() {
     use hector_core::runner::HectorEngine;
@@ -210,16 +210,14 @@ fn p2_3_load_rejects_when_body_diverges_from_trust_fingerprint() {
     );
 }
 
-/// Investigation #29 regression: appending NEW YAML STRUCTURE after the `trust:`
-/// block must trip the gate.
+/// Regression: appending new YAML structure after the `trust:` block must
+/// trip the gate.
 ///
-/// During R3 remediation, an implementer reported that content appended after
-/// `trust:` slipped past the fingerprint check. The actual algorithm parses the
-/// YAML and re-serializes a canonicalized form before hashing — so any new
-/// mapping entry (e.g. a fresh top-level field, or a new rule under `rules:`)
-/// becomes part of the canonical form and changes the fingerprint. This test
-/// pins that behavior: an attacker-controlled `engine: script` rule appended
-/// after `trust:` MUST cause `verify` to fail.
+/// The fingerprint is computed by parsing the YAML and re-serializing a
+/// canonical form before hashing, so any new mapping entry (a fresh top-level
+/// field, or a new rule under `rules:`) becomes part of the canonical form and
+/// changes the fingerprint. An attacker-controlled `engine: script` rule
+/// appended after `trust:` MUST cause `verify` to fail.
 #[test]
 fn verify_rejects_new_rule_appended_after_trust_block() {
     let body = "schema_version: 2\nrules:\n  r:\n    description: \"x\"\n    engine: script\n    scope: [\"*\"]\n    severity: error\n    script: \"true\"\n";
@@ -250,11 +248,11 @@ fn verify_rejects_new_rule_appended_after_trust_block() {
     );
 }
 
-/// Investigation #29 documentation: pure YAML comments appended after `trust:`
-/// do NOT trip the gate. This is acceptable: comments are stripped at parse
-/// time by serde_yaml, carry no executable payload, and cannot smuggle a
-/// `script:` rule past the canonicalization step. Pinning this so future
-/// changes to the canonicalization path don't quietly alter the contract.
+/// Pure YAML comments appended after `trust:` do NOT trip the gate, and that
+/// is acceptable: comments are stripped at parse time by serde_yaml, carry no
+/// executable payload, and cannot smuggle a `script:` rule past the
+/// canonicalization step. Pinned so a future change to the canonicalization
+/// path can't quietly alter the contract.
 #[test]
 fn verify_accepts_yaml_comment_appended_after_trust_block() {
     let body = "schema_version: 2\nrules:\n  r:\n    description: \"x\"\n    engine: script\n    scope: [\"*\"]\n    severity: error\n    script: \"true\"\n";

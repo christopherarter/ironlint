@@ -1,8 +1,7 @@
-//! A3 phase 4 — verify the semantic pre-filter short-circuits before any
-//! LLM dispatch. We use an in-process `LlmClient` that counts every
-//! `evaluate` invocation; `calls == 0` after a skipped check is the
-//! functional equivalent of "no HTTP request reaches the mock" from the
-//! spec's wiremock acceptance criterion.
+//! Verify the semantic pre-filter short-circuits before any LLM dispatch.
+//! We use an in-process `LlmClient` that counts every `evaluate` invocation;
+//! `calls == 0` after a skipped check is the functional equivalent of "no
+//! HTTP request reaches the mock".
 
 use anyhow::Result;
 use hector_core::config::Rule;
@@ -211,7 +210,7 @@ fn semantic_skipped_telemetry_recorded() {
         .unwrap();
 
     let log = std::fs::read_to_string(dir.path().join(".hector/log.jsonl")).unwrap();
-    // D1: typed shape with `type` discriminator.
+    // Typed shape with a `type` discriminator.
     assert!(
         log.contains("\"type\":\"semantic_skipped\""),
         "telemetry missing semantic_skipped record; log was:\n{log}"
@@ -256,7 +255,7 @@ fn semantic_skipped_telemetry_uses_typed_variant() {
         .unwrap();
 
     let log = std::fs::read_to_string(dir.path().join(".hector/log.jsonl")).unwrap();
-    // D1: typed shape with `type` discriminator.
+    // Typed shape with a `type` discriminator.
     assert!(log.contains("\"type\":\"semantic_skipped\""), "log:\n{log}");
     assert!(
         log.contains("\"reason\":\"whitespace_only\""),

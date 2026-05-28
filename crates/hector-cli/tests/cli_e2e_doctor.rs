@@ -1,4 +1,4 @@
-//! C1 — CLI integration tests for `hector doctor`.
+//! CLI integration tests for `hector doctor`.
 //!
 //! Each test isolates `~/.claude/settings.json` lookup by setting the
 //! `HOME` env var to a tempdir, so the adapter check observes a clean

@@ -22,9 +22,8 @@ fn migrate_renames_bully_to_hector() {
     assert!(content.contains("schema_version: 2"));
 }
 
-/// P2-8 regression: migration must not rewrite `schema_version: 1` strings
-/// that appear inside comments or string values. Only the top-level field
-/// should change.
+/// Migration must not rewrite `schema_version: 1` strings that appear inside
+/// comments or string values. Only the top-level field should change.
 #[test]
 fn migrate_does_not_touch_comments_mentioning_schema_version() {
     let dir = tempdir().unwrap();

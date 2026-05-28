@@ -29,8 +29,8 @@ rules:
             content: "fn main() {}\n".to_string(),
         })
         .unwrap();
-    // Pre-fix: the rule never matches; passed_checks and violations are both empty.
-    // Post-fix: the rule matches and (because exit 1) lands in violations.
+    // The rule must match for an absolute input path: it lands in violations
+    // (exit 1) rather than leaving passed_checks and violations both empty.
     let touched = !verdict.passed_checks.is_empty() || !verdict.violations.is_empty();
     assert!(
         touched,
@@ -41,8 +41,8 @@ rules:
 #[test]
 fn check_fires_for_relative_input_path() {
     // Companion to check_fires_for_absolute_input_path: the relative-path
-    // call path must continue to work after the canonicalize/strip_prefix
-    // round-trip introduced for absolute paths.
+    // call path must keep working through the canonicalize/strip_prefix
+    // round-trip used for absolute paths.
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     fs::create_dir_all(root.join("src")).unwrap();

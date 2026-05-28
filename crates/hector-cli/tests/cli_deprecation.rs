@@ -2,14 +2,9 @@ use assert_cmd::Command;
 use std::fs;
 use tempfile::tempdir;
 
-/// P2-11: schema v1 (legacy bully) is no longer loadable — it is detected
-/// before trust verify and rejected with a clear "run `hector migrate`" hint.
-///
-/// Prior to P2-11 this test asserted that a v1 config loaded with a
-/// deprecation warning on stderr. The fix elevated the warning to a hard
-/// error: leaving v1 loadable produced repeated debugging cycles for users
-/// who signed the config and were then surprised when v1-only features
-/// silently no-op'd through v2 evaluation. Migration is now mandatory.
+/// Schema v1 (legacy bully) is not loadable — it is detected before trust
+/// verify and rejected with a clear "run `hector migrate`" hint. Migration
+/// is mandatory; loading v1 is a hard error, not a deprecation warning.
 #[test]
 fn v1_config_check_fails_with_migrate_hint() {
     let dir = tempdir().unwrap();

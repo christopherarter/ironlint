@@ -7,9 +7,9 @@ use std::time::Duration;
 
 /// Wall-clock budget for a single Anthropic request.
 ///
-/// Without this, a hung endpoint blocks the entire `check` call indefinitely
-/// (P1-7 in the 0.1 bug audit). 30s is generous for a single-shot completion
-/// at our token budget; long-running rules should be redesigned, not waited on.
+/// Without this, a hung endpoint blocks the entire `check` call indefinitely.
+/// 30s is generous for a single-shot completion at our token budget;
+/// long-running rules should be redesigned, not waited on.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug)]
@@ -67,13 +67,12 @@ impl LlmClient for AnthropicClient {
         primary: &str,
         context: Option<&str>,
     ) -> Result<Vec<RuleVerdict>> {
-        // P2-20: Anthropic's `/v1/messages` accepts a top-level `system`
-        // parameter that is processed separately from the conversation. We
-        // put the operator-authored policy + output-format instructions
-        // there, and only the attacker-controlled evidence in the user
-        // message. The model can be trained to weight `system` over
-        // `user`, which widens the trust boundary beyond what
-        // `<TRUSTED_POLICY>` sentinel tags alone can guarantee.
+        // Anthropic's `/v1/messages` accepts a top-level `system` parameter
+        // processed separately from the conversation. Operator-authored policy
+        // and output-format instructions go there; only attacker-controlled
+        // evidence goes in the user message. The model can be trained to
+        // weight `system` over `user`, widening the trust boundary beyond what
+        // the sentinel tags alone guarantee.
         let (system, user) = build_prompt_split(rules, primary, context);
         let url = format!("{}/v1/messages", self.base_url);
         let body = serde_json::json!({
@@ -93,9 +92,9 @@ impl LlmClient for AnthropicClient {
         if !response.status().is_success() {
             let status = response.status();
             let text = response.text().unwrap_or_default();
-            // P2-15: a misconfigured debug proxy or echo endpoint may return
-            // our own Bearer/API key in the body. Truncate to a debug-sized
-            // slice and redact secret-shaped tokens before bubbling up.
+            // A misconfigured debug proxy or echo endpoint may return our own
+            // Bearer/API key in the body. Truncate to a debug-sized slice and
+            // redact secret-shaped tokens before bubbling up.
             let safe = super::sanitize_error_body(&text);
             return Err(anyhow!("anthropic returned {status}: {safe}"));
         }

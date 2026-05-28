@@ -75,11 +75,10 @@ fn check_session_returns_violation_when_llm_says_so() {
 
 #[test]
 fn session_rule_with_scope_no_matching_edits_passes_trivially() {
-    // P2-17: a session rule scoped to `src/auth/**` must NOT fire when
-    // every recorded edit lives outside that scope. The aggregation step
-    // should filter edits by scope before invoking the LLM; if the
-    // filtered list is empty the rule trivially passes and the LLM is
-    // never asked.
+    // A session rule scoped to `src/auth/**` must NOT fire when every
+    // recorded edit lives outside that scope. The aggregation step filters
+    // edits by scope before invoking the LLM; an empty filtered list means
+    // the rule trivially passes and the LLM is never asked.
     let dir = tempdir().unwrap();
     let path = write_trusted(dir.path(), SESSION_RULE_CONFIG);
     // The fake is canned to "Violation" — if the runner forwards to it,

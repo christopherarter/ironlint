@@ -81,11 +81,11 @@ fn save_then_load_round_trip() {
     assert!(loaded.contains(&v3));
 }
 
-// P1-4 regression: the previous fingerprint formula was
-// `{rule_id}::{file}::{line.unwrap_or(0)}`. With `rule_id="a::b" file="c"` and
-// `rule_id="a" file="b::c"`, fingerprints collided because `::` is both the
-// separator and a legal substring of either field. We now JSON-encode the
-// tuple, which removes ambiguity for every input.
+// Regression: fingerprints must not collide when `::` appears inside a field.
+// With `rule_id="a::b" file="c"` versus `rule_id="a" file="b::c"`, a naive
+// `{rule_id}::{file}::{line}` formula collides because `::` is both the
+// separator and a legal substring; JSON-encoding the tuple removes the
+// ambiguity for every input.
 #[test]
 fn fingerprint_distinguishes_separator_in_id_vs_file() {
     let v1 = make_violation("a::b", "c", Some(0));
@@ -97,7 +97,7 @@ fn fingerprint_distinguishes_separator_in_id_vs_file() {
     );
 }
 
-// P1-4: separator embedded in either field round-trips through save/load.
+// A separator embedded in either field must round-trip through save/load.
 #[test]
 fn fingerprint_with_separator_round_trips() {
     let dir = tempdir().unwrap();
@@ -113,9 +113,8 @@ fn fingerprint_with_separator_round_trips() {
     assert!(!loaded.contains(&v_collide));
 }
 
-// Note: line-None now serializes distinctly from line-Some(0) because the
-// JSON encoding preserves the Option discriminant. This is a strict
-// improvement over the prior collision behavior.
+// line-None serializes distinctly from line-Some(0): the JSON encoding
+// preserves the Option discriminant, so the two must not collide.
 #[test]
 fn line_none_distinct_from_line_zero() {
     let v_none = make_violation("r1", "a.txt", None);
@@ -126,19 +125,16 @@ fn line_none_distinct_from_line_zero() {
     );
 }
 
-// Regression: P2-5 — `Baseline::save` used to call `std::fs::write` which
-// truncates the destination before writing. A crash mid-write left the
-// file half-empty, breaking subsequent loads. We now write to a sibling
-// `.tmp` file, `sync_all`, then atomically `rename` onto the target.
-// This test exercises the recovery property: a pre-existing corrupt file
-// at the target path must be cleanly replaced by a successful `save`.
+// Regression: `Baseline::save` writes to a sibling `.tmp` file, `sync_all`s,
+// then atomically `rename`s onto the target, so a crash mid-write can never
+// leave a half-written file. A pre-existing corrupt file at the target path
+// must be cleanly replaced by a successful `save`.
 #[test]
 fn save_replaces_corrupt_target_atomically() {
     let dir = tempdir().unwrap();
     let path = dir.path().join(".hector").join("baseline.json");
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    // Pre-existing corrupt baseline (simulates a torn write from a crash
-    // under the old non-atomic implementation).
+    // Pre-existing corrupt baseline (simulates a torn write from a crash).
     std::fs::write(&path, b"{ not valid json").unwrap();
     assert!(Baseline::load(&path).is_err(), "precondition: corrupt");
 
@@ -159,9 +155,8 @@ fn save_replaces_corrupt_target_atomically() {
     assert!(loaded.contains(&make_violation("r1", "a.txt", Some(1))));
 }
 
-// P2-5: explicit fsync + rename means the temp path is in the same
-// directory as the target (so `rename` stays atomic on the same
-// filesystem). Verify the temp path is a sibling, not somewhere else.
+// The temp file must live in the same directory as the target so `rename`
+// stays atomic on one filesystem. Verify it's a sibling, not elsewhere.
 #[test]
 fn atomic_save_keeps_temp_file_in_parent_dir() {
     let dir = tempdir().unwrap();
@@ -182,7 +177,7 @@ fn atomic_save_keeps_temp_file_in_parent_dir() {
     assert_eq!(entries[0].to_string_lossy(), "baseline.json");
 }
 
-// --- E1: line-content checksum -----------------------------------------
+// --- line-content checksum ---------------------------------------------
 
 fn content(lines: &[&str]) -> String {
     let mut s = String::new();
@@ -206,15 +201,8 @@ fn moving_baselined_line_preserves_suppression() {
     // Same violation, same file, on the original line — must match.
     assert!(b.contains_with_content(&v_record, Some(&original)));
 
-    // The same content moved to a different line. We re-record by adding
-    // the moved-line violation (engine emits the new line number); the
-    // checksum still matches the previously-stored entry on that new key
-    // only if we baselined both. The acceptance criterion is about the
-    // *content*-bound aspect: a freshly added violation with the same
-    // file but a new line that ALSO maps to the same hash key is what
-    // would have been silently silenced under v1. We assert here that the
-    // recorded entry only suppresses when the content under v.line truly
-    // matches its hash.
+    // Suppression is content-bound: an entry only suppresses when the content
+    // under `v.line` matches its stored hash, not merely the (file, line) key.
     let v_moved_unchanged = make_violation("todo-marker", "src/lib.rs", Some(3));
     let moved_same = content(&["fn main() {}", "", "TODO: ship E1", "", "fn other() {}"]);
     assert!(
@@ -254,9 +242,9 @@ fn trailing_whitespace_does_not_invalidate_checksum() {
     );
 }
 
-/// A1 regression: a file-level violation (line: None) MUST resurface when
-/// the underlying message content changes. Pre-fix behavior silenced any
-/// future violation with the same (rule_id, file) regardless of body.
+/// Regression: a file-level violation (line: None) must resurface when the
+/// underlying message content changes — suppression keys on the body, not
+/// just the (rule_id, file) pair.
 #[test]
 fn file_level_baseline_resurfaces_when_message_changes() {
     use hector_core::baseline::Baseline;
@@ -290,7 +278,7 @@ fn file_level_baseline_resurfaces_when_message_changes() {
     );
 }
 
-/// A1: timestamp-shaped substrings must not defeat body matching.
+/// Timestamp-shaped substrings must not defeat body matching.
 #[test]
 fn file_level_baseline_ignores_timestamps_in_body() {
     use hector_core::baseline::Baseline;
@@ -320,7 +308,7 @@ fn file_level_baseline_ignores_timestamps_in_body() {
     );
 }
 
-/// A1: ANSI color escapes must not defeat body matching.
+/// ANSI color escapes must not defeat body matching.
 #[test]
 fn file_level_baseline_ignores_ansi_in_body() {
     use hector_core::baseline::Baseline;
@@ -411,7 +399,7 @@ fn refresh_drops_entries_whose_line_no_longer_exists() {
     assert!(!b.contains_with_content(&v, Some("fn main() {}\n")));
 }
 
-// --- E1: coverage for the long-tail refresh / contains arms -----------
+// --- long-tail refresh / contains arms ---------------------------------
 
 // File-level (`line: None`) entries pass straight through `refresh`
 // untouched — there's no line to re-hash.
@@ -487,8 +475,8 @@ fn contains_without_content_falls_back_to_match() {
     let mut b = Baseline::default();
     let v = make_violation("r1", "a.txt", Some(2));
     b.add_with_content(&v, Some("first\nsecond\n"));
-    // Stored checksum exists; passing None for content => conservative
-    // match (preserves pre-E1 behavior for that path).
+    // Stored checksum exists; passing None for content falls back to a
+    // conservative match.
     assert!(b.contains_with_content(&v, None));
 }
 
@@ -549,11 +537,9 @@ fn add_with_content_line_zero_records_no_checksum() {
     );
 }
 
-/// A1 follow-up: strip_timestamps must preserve multi-byte UTF-8
-/// characters intact. Earlier byte-to-char casts exploded them into
-/// separate per-byte chars, which was self-consistent but a forward
-/// compatibility hazard for any future change to the normalization
-/// pipeline.
+/// Body normalization must preserve multi-byte UTF-8 characters intact: a
+/// byte-to-char cast would explode them into separate per-byte scalars,
+/// corrupting the checksum.
 #[test]
 fn body_checksum_preserves_non_ascii_characters() {
     use hector_core::baseline::Baseline;
@@ -586,10 +572,9 @@ fn body_checksum_preserves_non_ascii_characters() {
     //   3. lines().map(trim_end).join("\n") — trims trailing space -> "cost was €5 at"
     // sha256("cost was €5 at") = 09d918d8b04de137d6886c8d5cb5c3226c282d3d49bd5c3840a31b51198c9bfd
     //
-    // The buggy byte-cast path inflated €'s bytes (E2 82 AC) into three
-    // separate Unicode scalars (U+00E2, U+0082, U+00AC), producing a
-    // different hash. Pinning this exact expected value catches regressions
-    // in either direction.
+    // A byte-cast bug would inflate €'s bytes (E2 82 AC) into three separate
+    // Unicode scalars (U+00E2, U+0082, U+00AC) and yield a different hash;
+    // pinning the exact value catches regressions in either direction.
     assert_eq!(
         h_euro, "09d918d8b04de137d6886c8d5cb5c3226c282d3d49bd5c3840a31b51198c9bfd",
         "body_checksum must hash the true UTF-8 encoding of €, not per-byte scalars"

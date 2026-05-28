@@ -54,8 +54,7 @@ fn detect_stack(dir: &Path) -> Stack {
     Stack::Unknown
 }
 
-/// Top-level template assembly. One function per template part keeps
-/// cognitive complexity bounded.
+/// Top-level template assembly, dispatching to one emitter per stack.
 fn build_config(
     stack: Stack,
     workspace: Option<&Workspace>,

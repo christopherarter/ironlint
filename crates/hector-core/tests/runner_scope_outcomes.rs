@@ -1,7 +1,6 @@
-//! C2 — coverage for the read-only `scope_outcomes` helper used by
-//! `hector explain` and `hector guide`. Verifies scope match reporting,
-//! skip-pattern resolution, and out-of-scope listing — all without any
-//! engine dispatch.
+//! Coverage for the read-only `scope_outcomes` helper used by `hector
+//! explain` and `hector guide`. Verifies scope match reporting, skip-pattern
+//! resolution, and out-of-scope listing — all without any engine dispatch.
 
 use hector_core::runner::{HectorEngine, ScopeMatch};
 use std::path::PathBuf;

@@ -1,7 +1,7 @@
-//! H1 — DeferredVerdict serde-shape lockfile. The wire format is part of
-//! the adapter contract (`adapters/claude-code/hooks/hook.sh` consumes it
-//! via `jq`); changing it without bumping DEFERRED_SCHEMA_VERSION is a
-//! silent break.
+//! DeferredVerdict serde-shape lockfile. The wire format is part of the
+//! adapter contract (`adapters/claude-code/hooks/hook.sh` consumes it via
+//! `jq`); changing it without bumping DEFERRED_SCHEMA_VERSION is a silent
+//! break.
 
 use hector_core::verdict_deferred::{
     DeferredPayload, DeferredRule, DeferredVerdict, DEFERRED_SCHEMA_VERSION,
@@ -9,12 +9,11 @@ use hector_core::verdict_deferred::{
 
 #[test]
 fn deferred_schema_version_is_three() {
-    // History:
+    // Version history:
     // - v1: initial shape.
-    // - v2 (R5): added optional `payload.evaluator_model`.
-    // - v3 (B5, 2026-05-25): non-additive change to `_evaluator_input`
-    //   shape (per-call random sentinel, per-rule context expansion).
-    //   B4's `payload.warnings` shipped alongside as additive.
+    // - v2: added optional `payload.evaluator_model`.
+    // - v3: non-additive change to `_evaluator_input` (per-call random
+    //   sentinel, per-rule context expansion); `payload.warnings` is additive.
     assert_eq!(DEFERRED_SCHEMA_VERSION, 3);
 }
 
@@ -90,8 +89,8 @@ fn deferred_verdict_with_two_rules_serializes() {
     insta::assert_json_snapshot!(&v);
 }
 
-/// R5: snapshot the payload shape WITH the evaluator_model override set.
-/// Locks the field name, position, and serialized form.
+/// Snapshot the payload shape with the evaluator_model override set, locking
+/// the field name, position, and serialized form.
 #[test]
 fn deferred_verdict_carries_evaluator_model_when_set() {
     let v = DeferredVerdict {
@@ -141,8 +140,8 @@ fn deferred_verdict_carries_evaluator_model_when_set() {
     "###);
 }
 
-/// B4 (2026-05-25): snapshot the payload shape with deterministic
-/// warnings carried alongside the deferred rules.
+/// Snapshot the payload shape with deterministic warnings carried alongside
+/// the deferred rules.
 #[test]
 fn deferred_verdict_carries_deterministic_warnings() {
     use hector_core::verdict::Engine;

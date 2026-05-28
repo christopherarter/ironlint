@@ -1,10 +1,8 @@
 use hector_core::baseline::Baseline;
 
-/// A1 follow-up: refresh() does NOT upgrade v2 file-level entries to
-/// v3. File-level entries don't have a line to re-hash; their body
-/// hash can only come from a fresh `hector baseline record` call.
-/// This test documents the actual behavior so future engineers don't
-/// confuse "no upgrade" with "bug to fix."
+/// refresh() does NOT upgrade v2 file-level entries to v3: file-level entries
+/// have no line to re-hash, so their body hash can only come from a fresh
+/// `hector baseline record` call. "No upgrade" here is intended, not a bug.
 #[test]
 fn refresh_does_not_upgrade_v2_file_level_entries() {
     let tmp = tempfile::tempdir().unwrap();

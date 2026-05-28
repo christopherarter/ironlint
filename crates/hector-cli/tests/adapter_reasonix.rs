@@ -3,9 +3,8 @@
 //! These exercise the adapter's PreToolUse contract end-to-end against the
 //! real compiled `hector` binary: synthetic Reasonix event JSON is piped to
 //! the hook on stdin, and we assert on the exit code (0 = pass-through,
-//! 2 = block) and stderr. This replaces the removed Docker e2e harness with a
-//! fast, deterministic, `cargo test`-native check of the integration seam —
-//! no model, no container.
+//! 2 = block) and stderr — a fast, deterministic, `cargo test`-native check
+//! of the integration seam, with no model and no container.
 //!
 //! Reasonix is a **PreToolUse / pre-write** adapter: it sends the *proposed*
 //! content via `hector check --content -`, before the edit lands on disk.

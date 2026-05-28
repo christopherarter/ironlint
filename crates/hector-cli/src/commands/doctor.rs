@@ -1,16 +1,10 @@
-//! C1 — `hector doctor` diagnostic subcommand.
+//! `hector doctor` diagnostic subcommand.
 //!
 //! Read-only. Walks a fixed list of checks (binary on PATH, config
 //! present, config parses, trust verifies, schema version, scope
 //! globs, engine availability, adapter presence, runtime state) and
 //! prints a checklist by default, or a JSON `Report` under `--format
 //! json`. Exit code: 0 on all-pass-or-warn, 1 on any fail.
-//!
-//! The orchestrator (`run`) is one function that calls one function
-//! per check. Each check returns a `CheckResult`. Per-check functions
-//! stay under 15 cognitive complexity by composition: helpers
-//! (`load_claude_settings`, `claude_hook_wired`) split the only
-//! check that would otherwise breach the cap.
 
 use crate::cli::OutputFormat;
 use anyhow::Result;
@@ -313,9 +307,6 @@ fn check_scope_globs(ctx: &DoctorContext) -> CheckResult {
 ///     `api_key_env` resolves to a non-empty value (Ollama is exempt
 ///     from the api-key requirement, mirroring `llm::build_from_config`).
 ///   - All-script / all-ast configs → trivially pass.
-///
-/// Decomposed via `llm_block_status` so this function stays cheap on
-/// cognitive complexity.
 fn check_engines(ctx: &DoctorContext) -> CheckResult {
     let cfg = match hector_core::config::parse_file_with_extends(&ctx.config_path) {
         Ok(c) => c,
@@ -365,10 +356,9 @@ fn llm_block_status(cfg: Option<&hector_core::config::LlmConfig>) -> CheckResult
         return CheckResult {
             name: "engines",
             status: Status::Pass,
-            // R2: `model` is `Option<String>` since 0.2.x. Ollama still
-            // *requires* it at runtime (`build_from_config` errors when
-            // None), so the doctor row reflects the configured value or
-            // "(unset)" to surface the misconfiguration.
+            // Ollama requires a model at runtime (`build_from_config`
+            // errors when None), so the row surfaces the configured value
+            // or "(unset)" rather than masking the misconfiguration.
             detail: format!(
                 "provider=ollama, model={}",
                 llm.model.as_deref().unwrap_or("(unset)")
@@ -393,9 +383,8 @@ fn llm_block_status(cfg: Option<&hector_core::config::LlmConfig>) -> CheckResult
         CheckResult {
             name: "engines",
             status: Status::Pass,
-            // R2: render `(unset)` instead of panicking when model is
-            // None. Direct-API providers must set it; the doctor row
-            // surfaces the misconfiguration rather than masking it.
+            // Direct-API providers must set a model; render `(unset)`
+            // rather than panicking so the row surfaces the misconfiguration.
             detail: format!(
                 "provider={}, model={}, ${env_name} resolves",
                 llm.provider,
@@ -508,20 +497,12 @@ fn check_runtime_state(ctx: &DoctorContext) -> CheckResult {
     }
 }
 
-/// R7: surfaces the capability-sandbox story for the running platform.
+/// Surfaces the capability-sandbox story for the running platform.
 ///
 /// Linux enforces `network: false` via `CLONE_NEWNET` (best-effort
 /// fallback on EPERM, which still warns at runtime because the user
 /// asked for isolation and didn't get it). macOS and other non-Linux
 /// targets have no equivalent — they run script rules unrestricted.
-///
-/// Pre-R7 the macOS situation was advertised by an `eprintln!` from
-/// inside `engine::capability::run_best_effort_macos` on every script
-/// rule. That leaked into the user's terminal on every direct `hector
-/// check` (and survived the per-process dedup landed in `f47ef82`
-/// because the Claude Code adapter hook spawns ~3 hector processes per
-/// edit). Doctor is the right home for it: a one-shot diagnostic row
-/// the user sees when they go looking for "is this set up right?".
 ///
 /// Status is `warn` (not `fail`) on best-effort platforms because the
 /// limitation is platform reality, not a misconfiguration the user can
@@ -861,7 +842,7 @@ mod tests {
         assert!(!claude_hook_wired(&v));
     }
 
-    // R7: doctor's `capabilities` row reflects the platform's sandbox story.
+    // The `capabilities` row reflects the platform's sandbox story.
     // Linux passes (CLONE_NEWNET enforces network: false); non-Linux warns
     // (sandbox is best-effort, runtime never blocks the script).
     #[test]

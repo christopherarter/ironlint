@@ -1,5 +1,5 @@
-//! C3 — `hector show-resolved-config`. Print the post-extends merged
-//! rule set in one of three formats. Read-only.
+//! `hector show-resolved-config`. Print the post-extends merged rule
+//! set in one of three formats. Read-only.
 
 use crate::cli::ShowFormat;
 use anyhow::Result;

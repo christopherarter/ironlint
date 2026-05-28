@@ -18,9 +18,8 @@ use std::time::Duration;
 /// Wall-clock budget for a single OpenAI-compatible request.
 ///
 /// Without this, a hung Ollama / OpenRouter / OpenAI endpoint blocks the
-/// entire `check` call indefinitely (P1-7 in the 0.1 bug audit). 30s is
-/// generous for a single-shot completion; long-running rules should be
-/// redesigned, not waited on.
+/// entire `check` call indefinitely. 30s is generous for a single-shot
+/// completion; long-running rules should be redesigned, not waited on.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug)]
@@ -90,9 +89,9 @@ impl LlmClient for OpenAICompatClient {
         if !response.status().is_success() {
             let status = response.status();
             let text = response.text().unwrap_or_default();
-            // P2-15: aggregator proxies (OpenRouter, etc.) and Ollama debug
-            // builds occasionally echo the Authorization header into 5xx
-            // bodies. Truncate + redact before propagating.
+            // Aggregator proxies (OpenRouter, etc.) and Ollama debug builds
+            // occasionally echo the Authorization header into 5xx bodies.
+            // Truncate + redact before propagating.
             let safe = super::sanitize_error_body(&text);
             return Err(anyhow!("openai-compat server returned {status}: {safe}"));
         }

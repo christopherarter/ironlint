@@ -1,9 +1,9 @@
-//! B1: lock down the determinism + env-override invariants.
+//! Lock down the determinism + env-override invariants.
 //!
 //! Determinism is intrinsic to `rayon::par_iter().collect::<Vec<_>>()` (the
 //! output order matches input order regardless of completion order), but
-//! future maintainers reading "rayon" might assume "non-deterministic" —
-//! the order test pins the contract.
+//! "rayon" reads as "non-deterministic" at a glance — the order test pins
+//! the contract.
 
 use anyhow::Result;
 use hector_core::config::Rule;

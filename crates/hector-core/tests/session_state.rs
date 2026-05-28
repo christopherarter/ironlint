@@ -42,11 +42,10 @@ fn session_state_atomic_write() {
 
 #[test]
 fn session_state_save_caps_edits_at_thousand() {
-    // P2-18 regression: previously `append` was an unbounded push, so a
-    // long-running agent session could grow session.json to 100MB+ and the
-    // O(N) read-modify-write tax in `hector session record` turned into
-    // O(N^2). Cap the stored edits at 1000 (most recent), dropping the
-    // oldest, so the file size is bounded.
+    // Regression: stored edits must be capped at 1000 (most recent), dropping
+    // the oldest. An unbounded `append` lets a long-running session grow
+    // session.json without limit and turns the read-modify-write in
+    // `hector session record` into O(N^2).
     let dir = tempdir().unwrap();
     let state_path = dir.path().join(".hector/session.json");
     let mut state = SessionState::new("long-running");
@@ -84,9 +83,9 @@ fn session_state_save_caps_edits_at_thousand() {
 
 #[test]
 fn session_state_load_missing_returns_empty() {
-    // P2-2 regression: `load` on a non-existent path previously surfaced an
-    // IO error. Adapters all had to special-case this. Treat missing as
-    // empty state so `hector check --session` on a fresh checkout just works.
+    // Regression: `load` on a non-existent path must return empty state, not
+    // an IO error, so `hector check --session` on a fresh checkout just works
+    // and adapters don't have to special-case a missing file.
     let dir = tempdir().unwrap();
     let nonexistent = dir.path().join("does/not/exist/session.json");
     let loaded = SessionState::load(&nonexistent).expect("missing file is empty, not error");
@@ -106,7 +105,7 @@ fn session_state_clear() {
     });
     s.save(&state_path).unwrap();
     SessionState::clear(&state_path).unwrap();
-    // After P2-2, `load` on a missing path is empty state, not an error.
+    // `load` on a missing path yields empty state, not an error.
     assert!(!state_path.exists());
     let loaded = SessionState::load(&state_path).unwrap();
     assert!(loaded.edits.is_empty());

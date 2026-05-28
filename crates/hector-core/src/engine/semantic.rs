@@ -17,19 +17,18 @@ impl RuleEngine for SemanticEngine {
             context_text.as_deref(),
         )?;
         let total = verdicts.len();
-        // P1-6: the LLM must return a verdict whose `rule_id` matches what we
-        // asked about. If it hallucinates a different id, surface that as an
-        // engine error instead of silently passing — preserved across the
-        // P1-11 trait-shape change.
+        // The LLM must return a verdict whose `rule_id` matches what we asked
+        // about. If it hallucinates a different id, surface that as an engine
+        // error rather than silently passing.
         let Some(v) = verdicts.into_iter().find(|v| v.rule_id == ctx.rule_id) else {
             return Err(anyhow!(
                 "LLM returned no verdict for rule `{}`; got {total} other verdicts",
                 ctx.rule_id
             ));
         };
-        // P1-11: semantic emits at most one violation per call. Empty vec
-        // means pass; one-element vec means violation. The shape matches
-        // script — only AST is multi-element today.
+        // Semantic emits at most one violation per call: empty vec means pass,
+        // one-element vec means violation. Matches script — only AST is
+        // multi-element today.
         match v.status {
             crate::llm::RuleStatus::Pass => Ok(Vec::new()),
             crate::llm::RuleStatus::Violation { message, line } => {

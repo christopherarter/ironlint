@@ -6,7 +6,7 @@ use hector_core::telemetry::{
 use std::fs::OpenOptions;
 use std::path::Path;
 
-/// D1: emit a `session_init` telemetry record carrying this binary's
+/// Emit a `session_init` telemetry record carrying this binary's
 /// version + the telemetry schema version. Best-effort: telemetry
 /// append failures stderr-warn and do not surface as a non-zero exit
 /// (matches the runner's posture).
@@ -21,7 +21,7 @@ fn emit_session_init(log_path: &Path) {
     }
 }
 
-/// D1: stamp a `session_init` telemetry record. Each invocation appends —
+/// Stamp a `session_init` telemetry record. Each invocation appends —
 /// every `hector session start` call writes one record, matching bully's
 /// session-boundary stamping behavior.
 pub fn start(dir: &Path) -> Result<i32> {
@@ -45,7 +45,7 @@ pub fn record(dir: &Path, file: &Path, diff: &str, session_id: Option<String>) -
     // entire load → mutate → save sequence. Without this, two concurrent
     // `hector session record` invocations each read the same baseline state,
     // each append their edit, and the slower writer's rename clobbers the
-    // faster one. P2-1.
+    // faster one.
     //
     // We deliberately open (and keep) the lock file open; the lock is
     // released when `lock_file` is dropped at end of scope. We never delete
@@ -65,12 +65,12 @@ pub fn record(dir: &Path, file: &Path, diff: &str, session_id: Option<String>) -
             .with_context(|| format!("locking {}", lock_path.display()))?;
     }
 
-    // Load (treats missing as empty after P2-2), append, save.
+    // Load (missing state treated as empty), append, save.
     let mut state = if state_path.exists() {
         SessionState::load(&state_path)?
     } else {
-        // D1: first edit of a session — stamp a session_init alongside
-        // the session.json creation, matching bully's behavior. Failures
+        // First edit of a session — stamp a session_init alongside the
+        // session.json creation, matching bully's behavior. Failures
         // here are best-effort: the edit record is the source of truth.
         emit_session_init(&hector_dir.join("log.jsonl"));
         let id =

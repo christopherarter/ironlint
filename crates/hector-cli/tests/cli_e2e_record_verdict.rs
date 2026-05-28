@@ -1,4 +1,4 @@
-//! H2 — end-to-end coverage that `hector record-verdict` appends a
+//! End-to-end coverage that `hector record-verdict` appends a
 //! `SemanticVerdict` line to `.hector/log.jsonl`.
 
 use assert_cmd::Command;
@@ -120,8 +120,8 @@ fn record_verdict_with_no_file_omits_field() {
 #[test]
 fn record_verdict_writes_session_init_lazily() {
     // The first record-verdict in a fresh project stamps a session_init
-    // record before its semantic_verdict, so `hector coverage` (D2) and
-    // the legacy-format lifter see a well-formed log.
+    // record before its semantic_verdict, so `hector coverage` and the
+    // legacy-format lifter see a well-formed log.
     let tmp = tempdir().unwrap();
     Command::cargo_bin("hector")
         .unwrap()

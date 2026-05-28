@@ -9,10 +9,10 @@ use wait_timeout::ChildExt;
 /// Hard wall-clock cap on a single script-rule subprocess.
 ///
 /// A runaway shell (infinite loop, hung `tail -f`, accidental `sleep 30`)
-/// previously blocked the entire `check` invocation because `Command::output()`
-/// reads to EOF. The timeout fires here, the child is killed, and the runner
-/// returns a synthetic `ExecOutcome` so callers can render a verdict like any
-/// other failure. See P1-12 in `docs/audits/2026-05-12-bug-audit.md`.
+/// would otherwise block the entire `check` invocation, since
+/// `Command::output()` reads to EOF. The timeout fires here, the child is
+/// killed, and the runner returns a synthetic `ExecOutcome` so callers can
+/// render a verdict like any other failure.
 const TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Per-stream cap on captured output (1 MiB). A noisy linter that floods
@@ -63,11 +63,11 @@ pub fn run_with_capabilities_env(
 /// shared `spawn_with_timeout` fast path used by macOS and the
 /// no-isolation case.
 ///
-/// **B6 invariant.** The parent process never `unshare`s. Namespace flags
-/// are applied to the cloned child only, so the next rule in the same
-/// `hector` invocation sees a clean parent state. Before B6, a single
-/// `network: false` rule mutated the parent and silently broke every
-/// subsequent `network: true` rule.
+/// **Invariant: the parent process never `unshare`s.** Namespace flags are
+/// applied to the cloned child only, so the next rule in the same `hector`
+/// invocation sees a clean parent state. Unsharing in the parent would let a
+/// single `network: false` rule mutate it and silently break every subsequent
+/// `network: true` rule.
 #[cfg(target_os = "linux")]
 fn run_linux(
     cmd: &str,
@@ -100,12 +100,10 @@ fn run_linux(
 /// applied to the child only, enforcing the same wall-clock timeout and
 /// per-stream output cap as `spawn_with_timeout`.
 ///
-/// On a privilege-related failure (`clone(2)` returning `EPERM`, which
-/// is what unprivileged hosts without `CLONE_NEWUSER` get), this falls
-/// back to the unrestricted `spawn_with_timeout` path with a one-time
-/// stderr warning — matching the existing P0-8 behaviour. Preserving the
-/// fallback is the audit's stated "no UX regression for unprivileged
-/// users" constraint.
+/// On a privilege-related failure (`clone(2)` returning `EPERM`, which is what
+/// unprivileged hosts without `CLONE_NEWUSER` get), this falls back to the
+/// unrestricted `spawn_with_timeout` path with a one-time stderr warning — so
+/// unprivileged users see no UX regression.
 #[cfg(target_os = "linux")]
 fn spawn_clone_with_timeout(
     cmd: &str,
@@ -119,10 +117,10 @@ fn spawn_clone_with_timeout(
     let (child_pid, stdout_r, stderr_r) = match spawn_clone(cmd, cwd, env, flags) {
         Ok(triple) => triple,
         Err(err) => {
-            // Most likely EPERM from `clone(2)` without privilege —
-            // identical UX to the pre-B6 fallback. We can't probe ahead
-            // of time without mutating the parent (the whole point of B6
-            // is that we don't), so a real spawn attempt is the probe.
+            // Most likely EPERM from `clone(2)` without privilege. We can't
+            // probe ahead of time without mutating the parent (which the
+            // never-unshare invariant forbids), so a real spawn attempt is the
+            // probe.
             if !WARNED.swap(true, Ordering::Relaxed) {
                 eprintln!(
                     "hector: capability sandbox unavailable for unprivileged user ({err}); \
@@ -379,12 +377,11 @@ fn run_best_effort_macos(
     _caps: &Capabilities,
     env: &[(&str, &str)],
 ) -> Result<ExecOutcome> {
-    // R7 (2026-05-23): no eprintln here. The platform-best-effort
-    // story is surfaced by `hector doctor` (see `platform_capability_status`
-    // and `commands::doctor::check_capabilities`) rather than by every
-    // `check` invocation. Pre-R7 we deduped per-process via a static
-    // AtomicBool, but the Claude Code adapter hook spawns ~3 hector
-    // processes per edit so the warning still leaked to users.
+    // No eprintln here. The platform-best-effort story is surfaced by
+    // `hector doctor` (see `platform_capability_status` and
+    // `commands::doctor::check_capabilities`), not by every `check`
+    // invocation: a per-process AtomicBool dedup still leaks to users because
+    // the Claude Code adapter hook spawns ~3 hector processes per edit.
     spawn_with_timeout(cmd, cwd, env)
 }
 
@@ -490,10 +487,9 @@ mod tests {
     fn platform_capability_status_is_some_on_macos() {
         // macOS (and any non-Linux target) cannot enforce the requested
         // capability constraints today. Doctor surfaces this via a
-        // `capabilities` row whose `detail` includes the returned
-        // message verbatim. Pre-R7 the same message was eprintln!'d
-        // from every script-rule invocation; consolidating it here
-        // keeps routine `check` runs quiet on stderr.
+        // `capabilities` row whose `detail` includes the returned message
+        // verbatim; consolidating it here keeps routine `check` runs quiet on
+        // stderr.
         let msg = platform_capability_status().expect("non-linux platform reports a message");
         assert!(
             msg.contains("best-effort"),

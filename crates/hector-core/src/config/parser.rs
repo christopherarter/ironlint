@@ -31,7 +31,7 @@ pub fn is_legacy(cfg: &Config) -> bool {
 ///
 /// Used by the runner to detect v1 *before* trust verification so we can emit
 /// a friendly "run `hector migrate`" hint instead of the generic
-/// "trust block missing" error (P2-11).
+/// "trust block missing" error.
 ///
 /// Returns `None` for any input that does not have a parseable integer
 /// `schema_version` at the top level — the normal load path will then surface

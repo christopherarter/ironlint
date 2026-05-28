@@ -55,11 +55,10 @@ fn parse_disable_directives(line: &str) -> Vec<String> {
 /// that begins a comment terminator (`//` or `*/...` style `*/`, captured
 /// here as `//` or `/*`).
 ///
-/// P2-4: previously `/` was an unconditional terminator, which silently
-/// truncated namespaced rule IDs like `python/no-print` to `python`. We
-/// now only break on `/` when the next byte is `/` (line-comment opener)
-/// or `*` (block-comment opener) — the patterns that actually close a
-/// trailing comment context.
+/// A `/` only terminates when the next byte is `/` (line-comment opener) or
+/// `*` (block-comment opener) — the patterns that actually close a trailing
+/// comment context. Treating `/` as an unconditional terminator would
+/// truncate namespaced rule IDs like `python/no-print` to `python`.
 ///
 /// Returns the rule IDs and the number of bytes consumed from `s` so the
 /// outer loop can continue scanning for additional directives.

@@ -1,5 +1,5 @@
-//! C4 — runner-level coverage for CheckOptions: rule-id filter, explain
-//! capture, and the prompt-render path that bypasses LLM dispatch.
+//! Runner-level coverage for CheckOptions: rule-id filter, explain capture,
+//! and the prompt-render path that bypasses LLM dispatch.
 
 use anyhow::Result;
 use hector_core::config::Rule;
@@ -244,10 +244,9 @@ fn rule_filter_runs_only_listed_ids() {
     assert!(verdict.violations.is_empty());
 }
 
-/// C4: when a rule is filtered out via `CheckOptions.rules`, the runner
-/// must not enter the parallel dispatch pool for it — and in particular,
-/// must not dispatch to the LLM. This is the upstream-filtering
-/// acceptance criterion from the C4 plan.
+/// When a rule is filtered out via `CheckOptions.rules`, the runner must not
+/// enter the parallel dispatch pool for it — and in particular must not
+/// dispatch to the LLM.
 #[test]
 fn rule_filter_prevents_llm_dispatch_for_filtered_rules() {
     let dir = tempdir().unwrap();

@@ -1,10 +1,10 @@
-//! R5 — `llm.evaluator_model` propagates through the DeferredVerdict envelope.
+//! `llm.evaluator_model` propagates through the DeferredVerdict envelope.
 //!
-//! Policy authors can now pin the Claude Code subagent's model from
-//! `.hector.yml` instead of editing `adapters/claude-code/agents/hector-evaluator.md`
-//! frontmatter (which has the "which copy of the file?" gotcha). The
-//! field is free-form: Claude Code's subagent dispatch validates the
-//! value at the right layer.
+//! Policy authors can pin the Claude Code subagent's model from `.hector.yml`
+//! instead of editing `adapters/claude-code/agents/hector-evaluator.md`
+//! frontmatter (which has the "which copy of the file?" gotcha). The field
+//! is free-form: Claude Code's subagent dispatch validates the value at the
+//! right layer.
 
 use hector_core::config::parse_str;
 use hector_core::runner::{CheckInput, CheckOptions, HectorEngine};
@@ -32,8 +32,8 @@ rules:
 
 #[test]
 fn evaluator_model_absent_deserializes_to_none() {
-    // Default — no field, no override. The envelope must remain
-    // byte-compatible with the pre-R5 shape.
+    // Default — no field, no override. The envelope must stay byte-compatible
+    // with the shape that has no evaluator_model.
     let yaml = r#"schema_version: 2
 llm:
   provider: claude-code-subagent
@@ -103,9 +103,8 @@ rules:
 
 #[test]
 fn deferred_payload_omits_evaluator_model_when_unset() {
-    // Regression: an envelope without the override must remain
-    // byte-compatible with the pre-R5 shape — the field is skipped
-    // entirely when None, not serialized as `"evaluator_model": null`.
+    // Regression: when the override is unset the field must be skipped
+    // entirely, not serialized as `"evaluator_model": null`.
     let tmp = tempdir().unwrap();
     let yaml = r#"
 schema_version: 2

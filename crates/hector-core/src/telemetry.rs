@@ -1,7 +1,7 @@
 //! Append-only check log at `.hector/log.jsonl`.
 //!
-//! D1: typed records. Every line is one `LogEntry`. The discriminator is
-//! `type`, snake_case to match the rest of the spec; payload fields are
+//! Typed records: every line is one `LogEntry`. The discriminator is `type`
+//! (snake_case to match the rest of the spec); payload fields are
 //! variant-specific.
 //!
 //! **Backwards compat:** the [`read_all`] reader accepts the legacy flat
@@ -40,8 +40,8 @@ pub struct PerRuleRecord {
 /// One line in `.hector/log.jsonl`.
 ///
 /// Discriminator field is `type`; variant payload follows. `Check.rules`
-/// is an empty vec when the file was short-circuited by an A2 skip
-/// pattern (file was checked, no rule ran).
+/// is an empty vec when the file was short-circuited by a skip pattern
+/// (file was checked, no rule ran).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum LogEntry {
@@ -75,7 +75,7 @@ pub enum LogEntry {
 /// Has the legacy-format deprecation warning been emitted in this process?
 static LEGACY_WARNING_EMITTED: OnceLock<()> = OnceLock::new();
 
-/// Pre-D1 flat shape. Read-only; never serialized.
+/// Legacy flat shape. Read-only; never serialized.
 #[derive(Deserialize)]
 struct LogEntryLegacy {
     timestamp: String,
@@ -166,7 +166,7 @@ pub fn append(path: &Path, entry: &LogEntry) -> Result<()> {
     {
         // Telemetry entries echo back file paths from the user's project, so
         // create owner-only by default rather than inheriting umask (typically
-        // 0644). P2-16.
+        // 0644).
         use std::os::unix::fs::OpenOptionsExt;
         opts.mode(0o600);
     }
@@ -182,7 +182,7 @@ pub fn append(path: &Path, entry: &LogEntry) -> Result<()> {
     // the kernel's atomic-append guarantee for O_APPEND no longer applies, and
     // concurrent writers can interleave even a single write_all. Serialize
     // writers with an advisory exclusive flock. The cost vs corruption risk
-    // is negligible; we hold the lock only for the single write. P1-10.
+    // is negligible; we hold the lock only for the single write.
     #[cfg(unix)]
     {
         use fs4::fs_std::FileExt;

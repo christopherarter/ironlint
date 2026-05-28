@@ -31,9 +31,7 @@ impl RuleEngine for AstEngine {
             crate::config::Severity::Warning => Severity::Warning,
         };
 
-        // P1-11: emit one violation per matched node, not just the first one.
-        // The previous `Option<Violation>` return shape forced us to drop
-        // every match after the first; `Vec<Violation>` is the fix.
+        // Emit one violation per matched node, not just the first.
         let matches = find_all_matches(content, pattern_str, lang_name)?;
         let mut violations = Vec::with_capacity(matches.len());
         for (line, column, context_str) in matches {

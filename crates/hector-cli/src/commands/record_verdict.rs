@@ -1,7 +1,6 @@
-//! H2: `hector record-verdict` — append a single `SemanticVerdict`
-//! record to `.hector/log.jsonl`. Consumed by the Claude Code
-//! interpreter skill after a subagent evaluates a deferred semantic
-//! rule.
+//! `hector record-verdict` — append a single `SemanticVerdict` record
+//! to `.hector/log.jsonl`. Consumed by the Claude Code interpreter
+//! skill after a subagent evaluates a deferred semantic rule.
 
 use anyhow::Result;
 use clap::ValueEnum;

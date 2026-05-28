@@ -1,7 +1,6 @@
-//! E2: integration coverage for the script-engine `output: parsed |
-//! passthrough` mode. Drives the engine end-to-end through a real
-//! subprocess so we observe the same `Vec<Violation>` shape the runner
-//! sees in production.
+//! Integration coverage for the script-engine `output: parsed | passthrough`
+//! mode. Drives the engine end-to-end through a real subprocess so we observe
+//! the same `Vec<Violation>` shape the runner sees in production.
 
 use hector_core::config::{Capabilities, EngineKind, OutputMode, Rule, Severity, WritesPolicy};
 use hector_core::engine::script::run_script_rule;
@@ -28,9 +27,9 @@ fn make_rule(script: &str, output: OutputMode) -> Rule {
 
 #[test]
 fn parsed_mode_extracts_line_from_grep_n_output() {
-    // The bug E2 fixes: `grep -n` emits `<line>:<text>` and used to land
-    // verbatim in the message with `line: None`. Parsed mode must split
-    // it into `line=Some(N)` and a clean message.
+    // `grep -n` emits `<line>:<text>`. Parsed mode must split that into
+    // `line=Some(N)` and a clean message, not dump it verbatim with
+    // `line: None`.
     let dir = tempdir().unwrap();
     let file = dir.path().join("dirty.txt");
     std::fs::write(&file, "ok line 1\nconsole.log('boom')\nok line 3\n").unwrap();
@@ -60,19 +59,16 @@ fn parsed_mode_extracts_line_from_grep_n_output() {
 
 #[test]
 fn passthrough_mode_is_the_default_when_field_omitted() {
-    // R4 (2026-05-23): default flipped from Parsed → Passthrough so
-    // unconfigured `output:` lands the verbatim stream in `message`. This
-    // test pins the new default: a script whose stdout *would* parse cleanly
-    // under the old parsed default (`42:beta` → `line=42, message=beta`)
-    // must instead come through verbatim, with `line: None`. If this fails
-    // with `vs[0].line == Some(42)` the default is silently parsed again
-    // and biome-style frames will mangle (see audit transcript 2 lines
-    // 38–90).
+    // The default `output:` mode is Passthrough: an unconfigured rule lands
+    // the verbatim stream in `message`. A stdout that *would* parse cleanly
+    // under Parsed (`42:beta` → `line=42, message=beta`) must instead come
+    // through verbatim with `line: None`. A `vs[0].line == Some(42)` here
+    // means the default reverted to Parsed and biome-style frames will mangle.
     let dir = tempdir().unwrap();
     let file = dir.path().join("dirty.txt");
     std::fs::write(&file, "alpha\n42:beta\n").unwrap();
-    // Explicit print of `42:beta`: under the old default this parsed as
-    // grep-n shape; under the new default it must land verbatim.
+    // A `42:beta` line has grep-n shape but, under the passthrough default,
+    // must land verbatim rather than being parsed into line + message.
     let rule = make_rule("printf '42:beta\\n' && exit 1", OutputMode::default());
     let vs = run_script_rule("default-mode", &rule, &file, "", dir.path()).expect("run");
     assert_eq!(vs.len(), 1, "expected one violation, got {vs:?}");
@@ -139,11 +135,11 @@ fn parsed_mode_canonical_line_col_extracts_both() {
 
 #[test]
 fn passthrough_mode_concatenates_stdout_and_stderr() {
-    // Spec (specs/2026-05-12-bully-parity-closures.md:430): passthrough
-    // emits combined stdout+stderr as one violation message verbatim.
-    // Regression: the engine previously selected one stream before
-    // dispatching to passthrough, so a script writing to both lost half
-    // its output. The combined message must contain *both* tokens.
+    // Spec (specs/2026-05-12-bully-parity-closures.md:430): passthrough emits
+    // combined stdout+stderr as one violation message verbatim. Regression:
+    // the engine must combine both streams, not pick one — a script writing
+    // to both must not lose half its output. The message must contain *both*
+    // tokens.
     let dir = tempdir().unwrap();
     let file = dir.path().join("any.txt");
     std::fs::write(&file, "x\n").unwrap();

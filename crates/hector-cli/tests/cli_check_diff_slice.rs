@@ -1,10 +1,7 @@
-//! C2 regression: `hector check --diff` against a mismatched diff
-//! (where `--- a/<other>` precedes `+++ b/<target>`) must produce
-//! a verdict for the correct file only.
-//!
-//! Pre-fix: `build_single_file_diff` included the foreign `--- a/<other>`
-//! header unconditionally. Post-fix: it verifies the header path matches the
-//! target before including it.
+//! `hector check --diff` against a mismatched diff (where `--- a/<other>`
+//! precedes `+++ b/<target>`) must produce a verdict for the correct file
+//! only. `build_single_file_diff` verifies the `--- a/` header path matches
+//! the target before including it, so a foreign header is dropped.
 
 use assert_cmd::Command;
 use std::fs;
@@ -47,10 +44,8 @@ rules:
     fs::create_dir_all(b_file.parent().unwrap()).unwrap();
     fs::write(&b_file, "// BANNED\n").unwrap();
 
-    // Mismatched diff: `--- a/src/a.rs` but `+++ b/src/b.rs`.
-    // Pre-fix: the slice for `src/b.rs` starts with `--- a/src/a.rs`, and
-    // any future-aware parser would interpret it as a second file entry.
-    // Post-fix: the foreign header is dropped; only `src/b.rs` is processed.
+    // Mismatched diff: `--- a/src/a.rs` but `+++ b/src/b.rs`. The foreign
+    // `--- a/` header must be dropped so only `src/b.rs` is processed.
     let patch = tmp.path().join("t.patch");
     fs::write(
         &patch,

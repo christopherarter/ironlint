@@ -1,4 +1,4 @@
-//! H1: deferred-evaluation envelope for the Claude Code subagent path.
+//! Deferred-evaluation envelope for the Claude Code subagent path.
 //!
 //! When `llm.provider: claude-code-subagent` (or `--emit-semantic-payload`)
 //! is active and at least one `engine: semantic` or `engine: session` rule
@@ -17,27 +17,12 @@ use serde::{Deserialize, Serialize};
 /// Schema version for the deferred-evaluation envelope. Independent of
 /// [`crate::verdict::SCHEMA_VERSION`] — the two schemas evolve separately.
 ///
-/// **Policy (C6, 2026-05-25):** same additive-no-bump policy as
-/// `SCHEMA_VERSION`. Bumps only on field removals, type changes, or
-/// semantic re-interpretations. Additive fields with
-/// `skip_serializing_if` do NOT bump.
-///
-/// History:
-/// - v1: initial deferred-verdict shape (`schema_version`, `deferred`,
-///   `hector_version`, `passed_checks`, `payload`, `elapsed_ms`).
-/// - v2 (R5, 2026-05-23): new optional `payload.evaluator_model` field.
-///   `#[serde(skip_serializing_if = "Option::is_none")]` keeps envelopes
-///   without the field byte-compatible with the v1 shape, so existing
-///   consumers that don't read the field do not break.
-/// - v3 (B5, 2026-05-25): non-additive change to `_evaluator_input`. The
-///   field now interpolates a per-call random sentinel
-///   (`<TP-{32hex}>` / `<UE-{32hex}>`) instead of the literal
-///   `<TRUSTED_POLICY>` / `<UNTRUSTED_EVIDENCE>` tags, and the rendered
-///   prompt is built per-rule (each rule sees its declared `context:`
-///   expansion) instead of sharing a single primary blob. Consumers
-///   doing string-based extraction against the old tag names must update.
-///   Additive: B4's `payload.warnings` (`skip_serializing_if =
-///   "Vec::is_empty"`) — would not have bumped on its own.
+/// Same additive-no-bump policy as `SCHEMA_VERSION`: bumps only on field
+/// removals, type changes, or semantic re-interpretations. Additive fields
+/// with `skip_serializing_if` do NOT bump. Consumers doing string-based
+/// extraction against `_evaluator_input` must track this version — the field
+/// interpolates a per-call random sentinel (`<TP-{32hex}>` / `<UE-{32hex}>`)
+/// rather than literal tag names, and is built per-rule.
 pub const DEFERRED_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -74,24 +59,22 @@ pub struct DeferredPayload {
     /// Field name uses an underscore prefix to match bully's wire format.
     #[serde(rename = "_evaluator_input")]
     pub evaluator_input: String,
-    /// R5 (2026-05-23): optional subagent model override. When the user
-    /// sets `llm.evaluator_model: <id>` in `.hector.yml` and
-    /// `provider == claude-code-subagent`, the runner threads the value
-    /// here so the Claude Code skill can surface it (today the skill
-    /// reports the requested model so the operator can edit the
-    /// `hector-evaluator` subagent's frontmatter — Claude Code's
-    /// subagent dispatch does not accept an inline model override).
-    /// `skip_serializing_if` keeps envelopes without the field
-    /// byte-compatible with the v1 shape.
+    /// Optional subagent model override. When the user sets
+    /// `llm.evaluator_model: <id>` in `.hector.yml` and
+    /// `provider == claude-code-subagent`, the runner threads the value here
+    /// so the Claude Code skill can surface it — the skill reports the
+    /// requested model so the operator can edit the `hector-evaluator`
+    /// subagent's frontmatter, since Claude Code's subagent dispatch does not
+    /// accept an inline model override. `skip_serializing_if` keeps envelopes
+    /// without the field byte-compatible with the v1 shape.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evaluator_model: Option<String>,
-    /// B4 (2026-05-25): warn-severity deterministic violations
-    /// (script / AST rules with `severity: warning`) that would otherwise
-    /// vanish from the CLI's deferred branch. The CLI suppresses the
-    /// standard `Verdict` JSON when emitting a `DeferredVerdict`, so
-    /// before B4 these violations were dropped entirely from stdout
-    /// (still written to `.hector/log.jsonl`, but invisible to the
-    /// operator and to the in-session subagent).
+    /// Warn-severity deterministic violations (script / AST rules with
+    /// `severity: warning`). The CLI suppresses the standard `Verdict` JSON
+    /// when emitting a `DeferredVerdict`, so without this field these
+    /// violations would never reach stdout — they'd be written to
+    /// `.hector/log.jsonl` but invisible to the operator and the in-session
+    /// subagent.
     ///
     /// Block-severity violations stay on `Verdict::violations` and
     /// suppress the deferred envelope entirely — see the CLI branch in
@@ -102,9 +85,9 @@ pub struct DeferredPayload {
 
 /// A single warn-severity deterministic violation on a deferred envelope.
 ///
-/// B4 (2026-05-25). Mirrors the shape of [`crate::verdict::Violation`]
-/// but without `suggestion` / `context` (the subagent renders these
-/// inline; the deferred channel is for recall, not display).
+/// Mirrors the shape of [`crate::verdict::Violation`] but without
+/// `suggestion` / `context` (the subagent renders these inline; the deferred
+/// channel is for recall, not display).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeferredWarning {
     pub rule_id: String,

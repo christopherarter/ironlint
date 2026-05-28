@@ -1,4 +1,4 @@
-//! C2: `hector explain <file>` — read-only scope/skip resolution report.
+//! `hector explain <file>` — read-only scope/skip resolution report.
 //!
 //! Output contract:
 //! * Stdout is greppable. One rule per line. A `MATCH <id> via <glob>`

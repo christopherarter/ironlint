@@ -12,11 +12,8 @@ fn engine_enum_separates_trust_from_internal() {
 
 #[test]
 fn schema_version_is_two() {
-    // P1-1: bumped 1 → 2 when Engine::Internal split out of Engine::Trust.
-    // R6 (2026-05-23): added additive `deferred_rules` field with
-    // `skip_serializing_if = "Vec::is_empty"` — no bump per C6 policy.
-    // SCHEMA_VERSION was briefly 3 and reverted (C6, 2026-05-25) because
-    // additive fields must NOT increment SCHEMA_VERSION.
+    // SCHEMA_VERSION is 2. Only shape-breaking changes bump it; additive
+    // fields (e.g. `deferred_rules`, skipped when empty) must NOT.
     assert_eq!(SCHEMA_VERSION, 2);
 }
 
@@ -60,10 +57,9 @@ fn verdict_pass_with_no_violations() {
 
 #[test]
 fn verdict_with_internal_engine_violation_serializes() {
-    // P1-1: engine-runtime errors (LLM down, AST refused, script spawn
-    // failure) serialize with `engine: "internal"` and a `__internal`
-    // rule-id suffix so consumers can distinguish them from real rule
-    // violations.
+    // Engine-runtime errors (LLM down, AST refused, script spawn failure)
+    // serialize with `engine: "internal"` and a `__internal` rule-id suffix
+    // so consumers can distinguish them from real rule violations.
     let v = Verdict::from_violations(
         vec![Violation {
             rule_id: "no-derived-state__internal".to_string(),
@@ -79,16 +75,15 @@ fn verdict_with_internal_engine_violation_serializes() {
         vec![],
         7,
     );
-    // B7: internal engine violations now resolve to InternalError, not Block.
+    // Internal engine violations resolve to InternalError, not Block.
     assert_eq!(v.status, Status::InternalError);
     insta::assert_json_snapshot!(v, { ".hector_version" => "[VERSION]" });
 }
 
 #[test]
 fn two_warnings_aggregate_to_warn_status() {
-    // P2-22: pin the (Warn, Warn) aggregation rule so a future "fix" to
-    // `from_violations` cannot silently downgrade two warnings to Pass or
-    // upgrade them to Block.
+    // Pin the (Warn, Warn) aggregation rule so a change to `from_violations`
+    // cannot downgrade two warnings to Pass or upgrade them to Block.
     let v = Verdict::from_violations(
         vec![
             Violation {
@@ -133,10 +128,9 @@ fn verdict_pass_constructor_returns_canonical_empty_verdict() {
 
 #[test]
 fn verdict_block_with_deferred_rules_serializes() {
-    // R6 (2026-05-23): when a deterministic block fires and there are
-    // semantic/session rules whose evaluation was suppressed, they
-    // surface in `deferred_rules`. Lock the on-wire shape: an array of
-    // `{rule_id, severity, reason}` objects appended after `elapsed_ms`.
+    // When a deterministic block fires and semantic/session rules were
+    // suppressed, they surface in `deferred_rules`. Lock the on-wire shape:
+    // an array of `{rule_id, severity, reason}` objects after `elapsed_ms`.
     let v = Verdict {
         schema_version: SCHEMA_VERSION,
         hector_version: "0.1.0".to_string(),

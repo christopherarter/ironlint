@@ -2,11 +2,10 @@ use assert_cmd::Command;
 use std::fs;
 use tempfile::tempdir;
 
-// Regression: P2-6 — a corrupt `.hector/baseline.json` used to flow through
-// `unwrap_or_default()` in the runner, silently producing wrong suppression
-// behavior with no warning. The runner now distinguishes `NotFound` (treat
-// as empty) from any other load error (warn to stderr and proceed with an
-// empty baseline so the check still runs).
+// A corrupt `.hector/baseline.json` must not silently produce wrong
+// suppression behavior. The runner distinguishes `NotFound` (treat as empty)
+// from any other load error (warn to stderr and proceed with an empty
+// baseline so the check still runs).
 #[test]
 fn corrupt_baseline_emits_stderr_warning() {
     let dir = tempdir().unwrap();
@@ -54,8 +53,8 @@ fn corrupt_baseline_emits_stderr_warning() {
     );
 }
 
-// P2-6 negative case: a missing baseline file is the normal first-run
-// state. The runner must NOT print a warning in that case.
+// A missing baseline file is the normal first-run state. The runner must
+// NOT print a warning in that case.
 #[test]
 fn missing_baseline_is_silent() {
     let dir = tempdir().unwrap();
@@ -115,10 +114,9 @@ fn baseline_skips_gitignored_and_target_dirs() {
     )
     .unwrap();
     // A directory that is *not* in the built-in skip globs but *is*
-    // gitignored. The current walkdir impl will fingerprint it; a
-    // gitignore-aware impl must skip it. This is the canonical P0-10
-    // regression: real repos contain large gitignored dirs (caches, vendor
-    // mirrors, generated docs) that aren't in the built-in skip list.
+    // gitignored — the walk must honor .gitignore and skip it. Real repos
+    // contain large gitignored dirs (caches, vendor mirrors, generated docs)
+    // that aren't in the built-in skip list.
     fs::create_dir_all(root.join("myignored")).unwrap();
     fs::write(
         root.join("myignored/junk.rs"),
@@ -144,9 +142,8 @@ fn baseline_skips_gitignored_and_target_dirs() {
     let baseline: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(root.join(".hector/baseline.json")).unwrap())
             .unwrap();
-    // E1: on-disk shape switched from `fingerprints: [string]` to
-    // `entries: { string: option<string> }`. The keys are still the
-    // tuple-fingerprint strings.
+    // On-disk shape is `entries: { string: option<string> }`; the keys are
+    // the tuple-fingerprint strings.
     let entries = baseline["entries"].as_object().unwrap();
     let printed: Vec<String> = entries.keys().cloned().collect();
     assert!(

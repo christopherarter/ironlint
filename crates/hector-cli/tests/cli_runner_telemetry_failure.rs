@@ -1,12 +1,6 @@
-// P2-21: telemetry append failures used to be silently dropped — the
-// runner logged `let _ = crate::telemetry::append(...)` at three sites
-// in `runner.rs`. If the log directory was unwritable (read-only mount,
-// disk full, parent path collision), the user got zero diagnostic.
-//
-// The runner now wraps each append in `if let Err(e) = … { eprintln! … }`.
-// This regression test forces telemetry to fail by pre-placing a regular
-// FILE at the path where the runner wants to `create_dir_all` a
-// directory, then asserts:
+// Telemetry append failures must surface to stderr rather than being dropped.
+// Forces a failure by placing a regular file where the runner wants to
+// `create_dir_all` a directory, then asserts:
 //
 // 1. The check still succeeds — telemetry is best-effort, never the
 //    source of truth for verdicts.

@@ -22,7 +22,7 @@ pub fn record(config: &Path, scan_glob: Option<String>) -> Result<i32> {
     // `.ignore`, `.git/info/exclude`, and global excludes. Without this, a
     // walkdir-based scan reads every file under target/, node_modules/, and
     // any other build-output or vendored directory the project has chosen
-    // to ignore — which on a real repo OOMs or takes minutes (P0-10). The
+    // to ignore — which on a real repo OOMs or takes minutes. The
     // built-in `SkipMatcher` in core still short-circuits engine.check, but
     // by then we've already done the I/O.
     //
@@ -50,8 +50,8 @@ pub fn record(config: &Path, scan_glob: Option<String>) -> Result<i32> {
         let Ok(content) = std::fs::read_to_string(path) else {
             return;
         };
-        // E1: clone the file content so the engine can take ownership
-        // while we still have a borrow to hash for the line_sha256.
+        // Clone the file content so the engine can take ownership while
+        // we still have a borrow to hash for the line_sha256.
         let content_for_hash = content.clone();
         let Ok(verdict) = engine.check(CheckInput::File {
             path: path.clone(),

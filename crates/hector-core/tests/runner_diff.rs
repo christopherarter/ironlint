@@ -55,8 +55,8 @@ fn runner_accepts_diff_input_with_blocking_rule() {
     assert_eq!(verdict.violations[0].rule_id, "always-fail");
 }
 
-// P0-5: in diff mode, AST rules should run against the post-edit file on disk
-// (not see an empty `content` and guarantee-fail with "requires file content").
+// In diff mode, AST rules must run against the post-edit file on disk, not
+// see an empty `content` and fail with "requires file content".
 #[test]
 fn ast_rule_runs_in_diff_mode_when_file_on_disk() {
     let tmp = tempfile::tempdir().unwrap();
@@ -75,8 +75,8 @@ fn ast_rule_runs_in_diff_mode_when_file_on_disk() {
             unified_diff: diff.to_string(),
         })
         .unwrap();
-    // Pre-fix: this produces a Block with an `__internal` error about file content.
-    // Post-fix: the rule runs against on-disk content and produces a real Warn.
+    // The rule must run against on-disk content and produce a real Warn, not
+    // a Block with an `__internal` error about missing file content.
     assert!(
         v.violations.iter().any(|x| x.rule_id == "no-unwrap"),
         "ast rule must fire in diff mode; got {v:?}"
@@ -89,8 +89,8 @@ fn ast_rule_runs_in_diff_mode_when_file_on_disk() {
     );
 }
 
-// P0-7: `hector-disable` directives are read from the file source; in diff mode
-// the runner must read the file from disk so those directives still apply.
+// `hector-disable` directives are read from the file source; in diff mode the
+// runner must read the file from disk so those directives still apply.
 #[test]
 fn hector_disable_directive_applies_in_diff_mode() {
     let tmp = tempfile::tempdir().unwrap();
@@ -116,9 +116,8 @@ fn hector_disable_directive_applies_in_diff_mode() {
         !v.violations.iter().any(|x| x.rule_id == "no-unwrap"),
         "hector-disable on the same line must silence the rule, got {v:?}"
     );
-    // Pre-fix this test passed vacuously because the AST engine errored out
-    // with an `__internal` suffix (empty content). Post-fix we want to see
-    // the rule actually evaluated and silenced, so no internal error either.
+    // The rule must be actually evaluated and silenced — no `__internal`
+    // error either, which would mean the engine never ran against real content.
     assert!(
         v.violations
             .iter()

@@ -1,4 +1,4 @@
-//! C2: `hector guide <file>` — list rules whose scope matches `<file>`,
+//! `hector guide <file>` — list rules whose scope matches `<file>`,
 //! with severity and description. Read-only.
 //!
 //! Output contract:

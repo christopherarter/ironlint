@@ -51,10 +51,8 @@ impl JsRunner {
 /// query by name. We never parse the linter's config — file presence
 /// is enough.
 //
-// `struct_excessive_bools` flags >3 bools as a state-machine smell.
-// This isn't a state machine; it's a presence set, one boolean per
-// independently-detected linter. Adding more linters in the future is
-// the explicit growth direction.
+// A presence set, one boolean per independently-detected linter — not a
+// state machine.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Default, Clone, Copy)]
 pub struct LinterSet {

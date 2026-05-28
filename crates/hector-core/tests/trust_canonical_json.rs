@@ -1,22 +1,19 @@
 use hector_core::trust::{canonicalize_for_fingerprint, fingerprint};
 
-/// C1 regression: the canonical output the fingerprint hashes must be
-/// JSON, not YAML. The pre-fix algorithm routed through
-/// `serde_yaml::to_string`, whose output is not normative (scalar style
-/// and indent width drifted across serde_yaml 0.8/0.9/0.10 — a cargo
-/// update could invalidate every checked-in fingerprint with no actual
-/// config change). The fix routes through `serde_json::Value` →
-/// `serde_json::to_string`, which is normative per RFC 8259.
+/// Regression: the canonical output the fingerprint hashes must be JSON, not
+/// YAML. `serde_yaml::to_string` is not normative — scalar style and indent
+/// width drift across serde_yaml versions, so a cargo update could invalidate
+/// every checked-in fingerprint with no actual config change. Canonicalizing
+/// through `serde_json::Value` → `serde_json::to_string` is normative per
+/// RFC 8259.
 ///
 /// Pin: the canonical string parses as JSON and starts with `{` (a JSON
-/// object literal). The old YAML-emitter output (`schema_version: 2\n…`)
-/// is not valid JSON.
+/// object literal).
 #[test]
 fn canonical_output_is_json_not_yaml() {
     let cfg = "schema_version: 2\nrules:\n  r:\n    description: \"x\"\n    engine: script\n    scope: [\"*\"]\n    severity: error\n    script: \"true\"\n";
     let canonical = canonicalize_for_fingerprint(cfg).expect("canonicalize");
-    // Pre-fix: canonical was YAML and would NOT round-trip through
-    // serde_json. Post-fix: canonical is RFC 8259 JSON and does.
+    // Canonical output must be RFC 8259 JSON and round-trip through serde_json.
     let parsed: serde_json::Value =
         serde_json::from_str(&canonical).expect("canonical output must be valid JSON");
     assert!(
@@ -32,12 +29,10 @@ fn canonical_output_is_json_not_yaml() {
     );
 }
 
-/// C1: the same semantic content in block-style and flow-style YAML
-/// must hash identically. (This was true under the old emitter too — both
-/// styles parse to the same `serde_yaml::Value` — but it's the
-/// "alpha-equivalence" property the canonical form should preserve and
-/// is worth pinning so a future canonicalization change can't regress
-/// it.)
+/// The same semantic content in block-style and flow-style YAML must hash
+/// identically — both parse to the same value, and the canonical form must
+/// preserve that alpha-equivalence. Pinned so a future canonicalization
+/// change can't regress it.
 #[test]
 fn fingerprint_stable_across_yaml_styles() {
     let block = "schema_version: 2\nrules:\n  r:\n    description: \"x\"\n    engine: script\n    scope: [\"*\"]\n    severity: error\n    script: \"true\"\n";
@@ -50,9 +45,8 @@ fn fingerprint_stable_across_yaml_styles() {
     );
 }
 
-/// C1: unsupported YAML features (binary scalars, anchor references)
-/// must error at fingerprint time with a clear message instead of
-/// silently producing a fragile hash.
+/// Unsupported YAML features (binary scalars, anchor references) must error
+/// at fingerprint time with a clear message rather than produce a fragile hash.
 #[test]
 fn fingerprint_rejects_anchor_reference() {
     let with_anchor = "schema_version: 2\nrules:\n  base: &b\n    description: \"x\"\n    engine: script\n    scope: [\"*\"]\n    severity: error\n    script: \"true\"\n  alias: *b\n";

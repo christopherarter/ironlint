@@ -1,4 +1,4 @@
-/// C4 regression: paths outside config_dir must be rejected by default.
+/// Paths outside config_dir must be rejected by default.
 /// Pass `--allow-external-paths` to opt in.
 use assert_cmd::Command;
 use tempfile::tempdir;
@@ -16,9 +16,9 @@ fn write_trusted(dir: &std::path::Path, body: &str) -> std::path::PathBuf {
 
 const RULE_YAML: &str = "schema_version: 2\nrules:\n  noop:\n    description: \"x\"\n    engine: script\n    scope: [\"*\"]\n    severity: error\n    script: \"true\"\n";
 
-/// C4: a file whose canonical path falls outside the config_dir must be
-/// rejected with a non-zero exit and a stderr message mentioning "outside"
-/// or "external".
+/// A file whose canonical path falls outside the config_dir must be rejected
+/// with a non-zero exit and a stderr message mentioning "outside" or
+/// "external".
 #[test]
 fn external_path_rejected_by_default() {
     // Two separate temp dirs: one holds the config, the other holds the file.
@@ -56,8 +56,8 @@ fn external_path_rejected_by_default() {
     );
 }
 
-/// C4: with --allow-external-paths, a file outside config_dir is accepted
-/// and the noop script rule exits 0.
+/// With --allow-external-paths, a file outside config_dir is accepted and the
+/// noop script rule exits 0.
 #[test]
 fn external_path_allowed_with_flag() {
     let config_dir = tempdir().unwrap();

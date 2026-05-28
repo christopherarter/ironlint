@@ -147,8 +147,8 @@ async fn openai_compat_returns_err_on_http_500() {
 
 #[tokio::test]
 async fn openai_compat_error_body_is_truncated_and_redacted() {
-    // P2-15: openai-compat servers (Ollama, OpenRouter, debug proxies) may
-    // echo Authorization headers or keys back into 5xx bodies. Truncate + redact.
+    // openai-compat servers (Ollama, OpenRouter, debug proxies) may echo
+    // Authorization headers or keys back into 5xx bodies, so truncate + redact.
     let server = MockServer::start().await;
     let leaky = "error: Bearer sk-1234567890abcdef and more text".to_string() + &"x".repeat(500);
     Mock::given(method("POST"))
@@ -209,7 +209,7 @@ async fn openai_compat_returns_err_on_malformed_text() {
 
 #[tokio::test]
 async fn openai_compat_client_times_out_on_hung_request() {
-    // P1-7: a hung OpenAI-compatible endpoint must not block the entire check call.
+    // A hung OpenAI-compatible endpoint must not block the entire check call.
     // The client builds with a 30s timeout; a 120s server delay must surface
     // as an Err in well under that, not block indefinitely.
     let server = MockServer::start().await;

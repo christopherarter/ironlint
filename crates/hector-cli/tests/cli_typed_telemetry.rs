@@ -1,4 +1,4 @@
-//! D1: end-to-end assertion that a realistic `hector` session writes every
+//! End-to-end assertion that a realistic `hector` session writes every
 //! typed-telemetry variant to .hector/log.jsonl.
 
 use assert_cmd::Command;
@@ -68,8 +68,8 @@ fn full_session_emits_every_typed_variant() {
 fn semantic_skipped_record_is_emitted_for_pure_deletion_diff() {
     let dir = tempdir().unwrap();
 
-    // Semantic rule with "avoid" phrasing → A3 short-circuits pure-deletion
-    // diffs without dispatching to the LLM.
+    // Semantic rule with "avoid" phrasing → pure-deletion diffs short-circuit
+    // without dispatching to the LLM.
     let cfg_body = r#"schema_version: 2
 llm:
   provider: anthropic

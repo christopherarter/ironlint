@@ -2,30 +2,16 @@ use serde::{Deserialize, Serialize};
 
 /// Verdict JSON schema version.
 ///
-/// **Policy (C6, 2026-05-25):**
-/// `SCHEMA_VERSION` bumps ONLY on:
+/// Bumps ONLY on:
 /// - field removals or type changes,
 /// - enum variant removals,
 /// - semantic re-interpretations of existing fields.
 ///
 /// Additive changes (new optional field with `skip_serializing_if`,
-/// new enum variant marked `#[non_exhaustive]`) do NOT bump.
-/// Consumers wanting backward compatibility should read
-/// `MIN_REQUIRED_SCHEMA_VERSION` and accept anything `>=`.
-///
-/// History:
-/// - v1: initial 0.1 shape with five `Engine` variants (`Script`, `Ast`,
-///   `Semantic`, `Session`, `Trust`).
-/// - v2 (P1-1): split overloaded `Engine::Trust` into `Engine::Trust`
-///   (true trust-gate failures) and `Engine::Internal` (engine runtime
-///   errors). Wire format for the new variant is `"internal"`.
-/// - v2 retained (R6, 2026-05-23): added optional `deferred_rules:
-///   [{rule_id, severity, reason}]` field with
-///   `skip_serializing_if = "Vec::is_empty"`. Additive — verdicts
-///   without deferred rules are byte-compatible with the original v2
-///   shape. SCHEMA_VERSION was briefly bumped to 3 and reverted here
-///   (C6, 2026-05-25) because strict consumers rejected every new
-///   verdict despite zero wire-format change.
+/// new enum variant marked `#[non_exhaustive]`) do NOT bump. Consumers
+/// wanting backward compatibility should read `MIN_REQUIRED_SCHEMA_VERSION`
+/// and accept anything `>=`. Strict consumers reject any unexpected version,
+/// so the additive `deferred_rules` field stays on v2 rather than bumping.
 pub const SCHEMA_VERSION: u32 = 2;
 
 /// Floor schema version that all current verdicts satisfy.
@@ -43,11 +29,11 @@ pub struct Verdict {
     pub violations: Vec<Violation>,
     pub passed_checks: Vec<String>,
     pub elapsed_ms: u64,
-    /// R6 (2026-05-23): semantic/session rules whose evaluation was
-    /// suppressed because a deterministic rule fired with `severity:
-    /// error` on the same edit. Empty in all non-deferred-mode flows
-    /// (and serialized as omitted via `skip_serializing_if`), so
-    /// existing v2 consumers see no wire-format change.
+    /// Semantic/session rules whose evaluation was suppressed because a
+    /// deterministic rule fired with `severity: error` on the same edit.
+    /// Empty in all non-deferred-mode flows (and serialized as omitted via
+    /// `skip_serializing_if`), so existing v2 consumers see no wire-format
+    /// change.
     ///
     /// Populated only when `CheckOptions::emit_semantic_payload` is true
     /// AND the resulting `Verdict::status` is `Block`. The full deferred
@@ -58,8 +44,8 @@ pub struct Verdict {
     pub deferred_rules: Vec<DeferredRuleRef>,
 }
 
-/// R6 (2026-05-23): minimal reference to a deferred rule whose
-/// evaluation was suppressed by a deterministic block.
+/// Minimal reference to a deferred rule whose evaluation was suppressed by
+/// a deterministic block.
 ///
 /// Lives on `Verdict` (not `DeferredVerdict`) because it surfaces in the
 /// deterministic-block path where the full deferred envelope is dropped.
@@ -81,9 +67,9 @@ pub enum Status {
     Pass,
     Warn,
     Block,
-    /// B7 (2026-05-25): at least one rule failed to evaluate due to an
-    /// engine-internal error (LLM unavailable, AST refused diff, script
-    /// spawn failure). Surfaces in `Violation::engine = Internal` rows.
+    /// At least one rule failed to evaluate due to an engine-internal error
+    /// (LLM unavailable, AST refused diff, script spawn failure). Surfaces in
+    /// `Violation::engine = Internal` rows.
     /// CLI maps to exit code 3 so adapters can distinguish "config
     /// wrong" from "policy violated" (exit 2).
     #[serde(rename = "internal_error")]
@@ -99,18 +85,17 @@ pub struct Violation {
     pub line: Option<u32>,
     /// 1-based column of the violation's start position.
     ///
-    /// P2-19 / P1-3: only the AST engine populates this — it reads the
-    /// column from the matched node's start byte. The `script`,
-    /// `semantic`, and `session` engines have no positional information
-    /// from a regex/LLM hit and always leave this `None`.
+    /// Only the AST engine populates this — it reads the column from the
+    /// matched node's start byte. The `script`, `semantic`, and `session`
+    /// engines have no positional information from a regex/LLM hit and always
+    /// leave this `None`.
     pub column: Option<u32>,
     pub message: String,
     pub suggestion: Option<String>,
     /// Snippet of source surrounding the violation.
     ///
-    /// P2-19 / P1-3: AST populates this with the matched node's line
-    /// ±3 lines for editor display. Script, semantic, and session
-    /// engines leave it `None`.
+    /// AST populates this with the matched node's line ±3 lines for editor
+    /// display. Script, semantic, and session engines leave it `None`.
     pub context: Option<String>,
 }
 

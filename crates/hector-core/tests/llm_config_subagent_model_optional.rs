@@ -1,9 +1,8 @@
-//! R2 — `llm.model` is optional when `provider == claude-code-subagent`.
+//! `llm.model` is optional when `provider == claude-code-subagent`.
 //!
-//! Pre-R2 the parser required `model:` for every provider, even though
-//! the subagent path never reads it (the in-session subagent inherits
-//! the Claude Code session's model). Users were typing `model: ignored`
-//! literally just to satisfy the parser. After R2:
+//! The subagent path never reads `model:` — the in-session subagent inherits
+//! the Claude Code session's model — so requiring it would force users to
+//! type a placeholder. The invariants:
 //!
 //! * Configs with `provider: claude-code-subagent` and no `model:` field
 //!   load successfully and `LlmConfig.model` is `None`.
@@ -19,7 +18,7 @@ use tempfile::tempdir;
 
 #[test]
 fn subagent_provider_loads_without_model_field() {
-    // The whole point of R2: subagent users no longer need `model:` at all.
+    // Subagent users do not need `model:` at all.
     let yaml = r#"schema_version: 2
 llm:
   provider: claude-code-subagent

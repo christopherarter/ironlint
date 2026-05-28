@@ -20,7 +20,7 @@ pub fn resolve(root: &Path) -> Result<Config> {
 /// Same as [`resolve`], but additionally calls [`crate::trust::verify`] on
 /// every config visited by the DFS (root and every transitive ancestor).
 /// Closes the bypass where a signed child could `extends:` an unsigned parent
-/// and still load — see audit P0-2.
+/// and still load.
 pub fn resolve_trusted(root: &Path) -> Result<Config> {
     let mut seen = HashSet::new();
     resolve_inner(root, &mut seen, true)
@@ -35,7 +35,7 @@ fn resolve_inner(path: &Path, seen: &mut HashSet<PathBuf>, verify_trust: bool) -
     }
     let content = std::fs::read_to_string(&canonical)
         .with_context(|| format!("reading {}", canonical.display()))?;
-    // P2-11: detect schema v1 BEFORE trust verify so users see a clear
+    // Detect schema v1 BEFORE trust verify so users see a clear
     // "run `hector migrate`" hint instead of "trust block missing".
     if matches!(super::parser::peek_schema_version(&content), Some(1)) {
         return Err(anyhow!(
@@ -79,7 +79,7 @@ fn merge_inherited(local: &mut Config, inherited: Config) {
     // trust block is per-config; never inherited.
 }
 
-/// C3: resolve extends and return a per-rule origin map.
+/// Resolve extends and return a per-rule origin map.
 ///
 /// The map attributes every surviving rule id to the canonical path of
 /// the file it was defined in. Local definitions win on collision —

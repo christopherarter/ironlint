@@ -104,8 +104,8 @@ async fn anthropic_returns_err_on_http_500() {
 
 #[tokio::test]
 async fn anthropic_error_body_is_truncated_and_redacted() {
-    // P2-15: when the endpoint echoes a Bearer token or API key in its 5xx body,
-    // we must not propagate the raw secret. Truncate to ~200 chars and redact.
+    // When the endpoint echoes a Bearer token or API key in its 5xx body, we
+    // must not propagate the raw secret: truncate to ~200 chars and redact.
     let server = MockServer::start().await;
     let leaky = "error: Bearer sk-1234567890abcdef and more text".to_string() + &"x".repeat(500);
     Mock::given(method("POST"))
@@ -169,9 +169,9 @@ async fn anthropic_returns_err_on_malformed_text_json() {
 
 #[tokio::test]
 async fn anthropic_client_times_out_on_hung_request() {
-    // P1-7: a hung Anthropic endpoint must not block the entire check call.
-    // The client builds with a 30s timeout; a 120s server delay must surface
-    // as an Err in well under that, not block indefinitely.
+    // A hung Anthropic endpoint must not block the entire check call. The
+    // client builds with a 30s timeout; a 120s server delay must surface as an
+    // Err in well under that, not block indefinitely.
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/messages"))

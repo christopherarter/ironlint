@@ -169,10 +169,10 @@ fn extends_chain_rejects_untrusted_parent() {
     );
 }
 
-/// D6: multi-parent `extends:` precedence is **first-parent-wins** on
-/// `llm:` and rule-id collisions. Pinned per Phase 0 decision in
-/// `docs/audits/2026-05-24-check-end-to-end-audit.md#d6`. Local
-/// declarations in the child always win over both inherited copies.
+/// Multi-parent `extends:` precedence is first-parent-wins on `llm:` and
+/// rule-id collisions (see
+/// `docs/audits/2026-05-24-check-end-to-end-audit.md#d6`). Local declarations
+/// in the child always win over both inherited copies.
 #[test]
 fn extends_first_parent_llm_wins_on_multi_parent_conflict() {
     let dir = tempfile::tempdir().unwrap();

@@ -1,9 +1,7 @@
 //! Contract tests for the Claude Code adapter (`adapters/claude-code/hooks/`).
 //!
-//! Ported from the former bash suites (`hook_integration.sh`,
-//! `subagent_mode.sh`, `synthesize_diff.sh`) to Rust so the adapter contract
-//! runs under `cargo test` against the real compiled `hector` binary — no
-//! Docker, no model. Synthetic Claude Code event JSON is piped to `hook.sh`
+//! These run under `cargo test` against the real compiled `hector` binary —
+//! no Docker, no model. Synthetic Claude Code event JSON is piped to `hook.sh`
 //! on stdin and we assert exit codes, stdout (the subagent envelope), and
 //! stderr (verdict JSON).
 //!
@@ -102,7 +100,7 @@ severity: error\n    \
 script: \"grep -nE 'DEBUG' {file} && exit 1 || exit 0\"\n";
 
 // ===================================================================
-// hook_integration.sh — core PostToolUse contract
+// Core PostToolUse contract
 // ===================================================================
 
 #[test]
@@ -183,7 +181,7 @@ fn posttooluse_untrusted_config_exit_1() {
 }
 
 /// Zero out the `sha256:` digest in a trusted config so trust verification
-/// fails (mirrors the bash suite's `sed 's/sha256:.*/sha256:00..0/'`).
+/// fails.
 fn break_trust(cfg: &Path) {
     let body = std::fs::read_to_string(cfg).unwrap();
     let out = if let Some(idx) = body.find("sha256:") {
@@ -205,17 +203,14 @@ fn break_trust(cfg: &Path) {
 }
 
 // ===================================================================
-// subagent_mode.sh — claude-code-subagent provider envelope branches
+// claude-code-subagent provider envelope branches
 // ===================================================================
 
 // `context: file` is explicit on the semantic rules. The default context is
 // `diff`, but the claude-code PostToolUse hook gates with `--file` (no diff),
-// so a `context: diff` rule errors with "context: diff but no diff provided"
-// when the subagent deferred envelope is built. The original bash
-// `subagent_mode.sh` omitted `context` and has been rotting out-of-CI; this
-// port pins `context: file` to exercise the envelope branches as intended.
-// (The `--file`-vs-`--diff` behavior of the subagent gate is a separate
-// adapter question — see the session notes.)
+// so a `context: diff` rule would error with "context: diff but no diff
+// provided" when the subagent deferred envelope is built. Pinning
+// `context: file` exercises the envelope branches as intended.
 const SUBAGENT_CONFIG: &str = "schema_version: 2\n\
 llm:\n  \
 provider: claude-code-subagent\n\
@@ -488,8 +483,8 @@ fn synth_empty_old_multiline_new() {
 
 #[test]
 fn synth_scrubs_embedded_diff_headers() {
-    // P1-9: a new_string carrying header-looking lines must not produce real
-    // diff headers that reframe the edit onto another file.
+    // A new_string carrying header-looking lines must not produce real diff
+    // headers that reframe the edit onto another file.
     let evil = "x\n--- a/SECRET\n+++ b/SECRET\n@@ -1 +1 @@\n+pwn";
     let out = run_synth("foo.ts", "", evil);
     assert!(

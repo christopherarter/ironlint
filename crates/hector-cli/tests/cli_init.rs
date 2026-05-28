@@ -36,15 +36,14 @@ fn init_refuses_to_overwrite() {
         .failure();
 }
 
-/// P2-9 regression: `grep PATTERN {file} && exit 1 || exit 0` collapses
-/// grep's exit-2 (regex/parse error) into exit 0 (pass), so a broken
-/// rule silently passes forever. The fix routes exit codes through a
-/// `case` statement so:
+/// `grep PATTERN {file} && exit 1 || exit 0` collapses grep's exit-2
+/// (regex/parse error) into exit 0 (pass), masking a broken rule forever.
+/// The template routes exit codes through a `case` statement instead:
 ///   - 0 (found)        → exit 1 (violation)
 ///   - 1 (not found)    → exit 0 (pass)
 ///   - 2 (grep error)   → exit 2 (surfaced as violation by runner)
 ///
-/// The template must not contain `|| exit 0` (the masking idiom) and
+/// So the template must not contain `|| exit 0` (the masking idiom) and
 /// must contain `case $?` (the explicit exit-code routing).
 #[test]
 fn init_template_preserves_grep_error_exit_codes() {
@@ -81,8 +80,7 @@ fn init_template_preserves_grep_error_exit_codes() {
 }
 
 // ---------------------------------------------------------------------
-// R1: workspace + linter detection. Each test below is one scenario
-// from the audit's R1 spec.
+// Workspace + linter detection. Each test below is one scenario.
 // ---------------------------------------------------------------------
 
 /// Every generated config must end with a commented-out `llm:` block +
@@ -127,9 +125,8 @@ fn init_appends_commented_llm_block_for_every_stack() {
     }
 }
 
-/// Scenario 1: single-package npm project with no linter configured.
-/// Today's behaviour preserved — scopes default to `src/**/*.<ext>` —
-/// plus the new commented LLM block.
+/// Single-package npm project with no linter configured: scopes default to
+/// `src/**/*.<ext>` plus the commented LLM block.
 #[test]
 fn init_single_package_npm_no_linter() {
     let dir = tempdir().unwrap();
@@ -144,9 +141,9 @@ fn init_single_package_npm_no_linter() {
     assert!(cfg.contains("# llm:"));
 }
 
-/// Scenario 2: single-package npm + biome. The `no-console-log` grep
-/// rule is dropped (biome's `noConsole` catches it) and a passthrough
-/// `biome-check` wrapper is scaffolded instead.
+/// Single-package npm + biome: the `no-console-log` grep rule is dropped
+/// (biome's `noConsole` catches it) and a passthrough `biome-check` wrapper
+/// is scaffolded instead.
 #[test]
 fn init_single_package_npm_with_biome_drops_console_log() {
     let dir = tempdir().unwrap();
@@ -176,9 +173,9 @@ fn init_single_package_npm_with_biome_drops_console_log() {
     );
 }
 
-/// Scenario 3: pnpm workspace + biome. Scopes use the workspace
-/// `packages:` globs, `no-console-log` is dropped, and the wrapper
-/// uses `pnpm exec` because `pnpm-lock.yaml` exists.
+/// pnpm workspace + biome: scopes use the workspace `packages:` globs,
+/// `no-console-log` is dropped, and the wrapper uses `pnpm exec` because
+/// `pnpm-lock.yaml` exists.
 #[test]
 fn init_pnpm_workspace_with_biome_uses_workspace_scopes() {
     let dir = tempdir().unwrap();
@@ -216,9 +213,8 @@ fn init_pnpm_workspace_with_biome_uses_workspace_scopes() {
     );
 }
 
-/// Scenario 4: pnpm workspace, no linter. The grep `no-console-log`
-/// rule still fires but its scopes use the workspace shape, not a
-/// single-root `src/`.
+/// pnpm workspace, no linter: the grep `no-console-log` rule still fires but
+/// its scopes use the workspace shape, not a single-root `src/`.
 #[test]
 fn init_pnpm_workspace_no_linter_uses_workspace_scopes() {
     let dir = tempdir().unwrap();
@@ -242,11 +238,9 @@ fn init_pnpm_workspace_no_linter_uses_workspace_scopes() {
     );
 }
 
-/// Scenario 5: Cargo workspace with clippy.toml present. The Rust grep
-/// rule scopes use the workspace members glob (Rust workspaces often
-/// don't use `src/` at the top), and clippy.toml does NOT cause us to
-/// drop the unwrap grep rule — clippy is repo-wide and lives in
-/// session rules (future work).
+/// Cargo workspace with clippy.toml present. The Rust grep rule scopes use
+/// the workspace members glob (Rust workspaces often don't use `src/` at the
+/// top), and clippy.toml does NOT cause us to drop the unwrap grep rule.
 #[test]
 fn init_cargo_workspace_scopes_match_members() {
     let dir = tempdir().unwrap();
@@ -259,9 +253,8 @@ fn init_cargo_workspace_scopes_match_members() {
     run_init(dir.path());
     let cfg = read_cfg(dir.path());
 
-    // The Rust unwrap rule stays — clippy.toml doesn't suppress it (see
-    // R1 spec: clippy is repo-wide; passthrough is a future session-rule
-    // shape).
+    // The Rust unwrap rule stays — clippy.toml doesn't suppress it
+    // (clippy is repo-wide).
     assert!(cfg.contains("no-unwrap-in-src"));
     // Cargo workspaces don't have a single-root src/ — scope should
     // reference workspace members.
@@ -275,9 +268,8 @@ fn init_cargo_workspace_scopes_match_members() {
     );
 }
 
-/// Scenario 6: single-package python with `[tool.ruff]`. Today's
-/// `ruff-check` template stays — its scope is `**/*.py` which already
-/// works for non-monorepo Python.
+/// Single-package python with `[tool.ruff]`: the `ruff-check` template stays —
+/// its scope is `**/*.py`, which already works for non-monorepo Python.
 #[test]
 fn init_python_with_ruff_keeps_template() {
     let dir = tempdir().unwrap();
@@ -294,8 +286,7 @@ fn init_python_with_ruff_keeps_template() {
     assert!(cfg.contains("# llm:"));
 }
 
-/// Scenario 7: unknown stack (no manifest). Today's generic template +
-/// the new LLM comment block.
+/// Unknown stack (no manifest): generic template plus the LLM comment block.
 #[test]
 fn init_unknown_stack_uses_generic_template() {
     let dir = tempdir().unwrap();
@@ -306,9 +297,9 @@ fn init_unknown_stack_uses_generic_template() {
     assert!(cfg.contains("# llm:"));
 }
 
-/// Scenario 8: single-package npm + ESLint config (no biome). The
-/// `no-console-log` grep rule is dropped (eslint's `no-console` covers
-/// it) and an `eslint-check` passthrough wrapper is scaffolded.
+/// Single-package npm + ESLint config (no biome): the `no-console-log` grep
+/// rule is dropped (eslint's `no-console` covers it) and an `eslint-check`
+/// passthrough wrapper is scaffolded.
 #[test]
 fn init_single_package_npm_with_eslint_drops_console_log() {
     let dir = tempdir().unwrap();
@@ -349,9 +340,8 @@ fn init_with_yarn_lock_uses_yarn_exec() {
 }
 
 /// Both biome AND eslint configured is unusual (typically during a
-/// migration). Resolve in favor of biome — it's the more modern tool
-/// and the audit's source case had biome. Either way, neither produces
-/// a duplicate `no-console-log` grep rule.
+/// migration). Resolve in favor of biome — the more modern tool. Either
+/// way, neither produces a duplicate `no-console-log` grep rule.
 #[test]
 fn init_with_both_biome_and_eslint_prefers_biome() {
     let dir = tempdir().unwrap();

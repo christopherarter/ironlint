@@ -1,5 +1,5 @@
-//! B2 regression: session-engine rules with pathed scopes must match
-//! when SessionState.edits carry absolute paths (the adapter shape).
+//! Regression: session-engine rules with pathed scopes must match when
+//! SessionState.edits carry absolute paths (the adapter shape).
 
 use anyhow::Result;
 use hector_core::config::Rule;

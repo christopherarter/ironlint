@@ -2,13 +2,10 @@ use assert_cmd::Command;
 use std::fs;
 use tempfile::tempdir;
 
-/// P2-11 regression: a fresh v1 config (no trust block yet) must emit a
-/// "run `hector migrate`" hint before falling through to the generic
-/// "trust block missing" error.
-///
-/// Previously, `trust::verify` ran first and produced the misleading
-/// "run `hector trust`" advice. The user would follow that, end up with a
-/// v1-body / v2-trust-block hybrid, and waste a debugging cycle.
+/// A fresh v1 config (no trust block yet) must emit a "run `hector migrate`"
+/// hint before falling through to the generic "trust block missing" error.
+/// v1 detection runs before `trust::verify` so the user isn't steered toward
+/// `hector trust` and a v1-body / v2-trust-block hybrid.
 #[test]
 fn v1_config_without_trust_emits_migrate_hint() {
     let dir = tempdir().unwrap();
@@ -44,10 +41,9 @@ fn v1_config_without_trust_emits_migrate_hint() {
     );
 }
 
-/// P2-11 regression: the same hint must surface for a v1 config that has
-/// somehow acquired a (necessarily stale-for-v2-shape) trust block, because
-/// the v1 body itself is the problem. Detecting v1 before trust verify also
-/// avoids the confusing "fingerprint mismatch" error in this path.
+/// The same hint must surface for a v1 config that has acquired a trust
+/// block, because the v1 body itself is the problem. Detecting v1 before
+/// trust verify also avoids a confusing "fingerprint mismatch" error here.
 #[test]
 fn v1_config_with_trust_block_still_emits_migrate_hint_on_load() {
     use hector_core::runner::HectorEngine;

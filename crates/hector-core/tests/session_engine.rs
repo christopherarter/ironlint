@@ -144,10 +144,9 @@ fn session_engine_returns_none_on_llm_pass() {
     );
 }
 
-// Regression: P1-6. Bug-audit finding — when the LLM hallucinates a different
-// rule_id than the one we requested, the engine used to silently return
-// Ok(None) (a "pass" verdict for a rule we never actually got an answer for).
-// The engine must instead bail so the runner surfaces it as an internal
+// Regression: when the LLM hallucinates a different rule_id than the one we
+// requested, the engine must not return Ok(None) (a "pass" for a rule we
+// never got an answer for). It must bail so the runner surfaces an internal
 // engine error.
 #[test]
 fn session_engine_errors_on_rule_id_mismatch() {
@@ -182,17 +181,16 @@ fn session_engine_errors_on_rule_id_mismatch() {
     );
 }
 
-// Regression: P1-9. Bug-audit finding — the session engine framed each
-// edit with `--- file:<path> ---`, which is content an attacker can
-// reproduce verbatim inside their own diff. With the random `session_id`
-// included in the frame, the boundary is unguessable and a spoofed
-// delimiter inside an edit's diff cannot be confused for a real frame.
+// Regression: the per-edit frame delimiter must include the random
+// `session_id`. A frame like `--- file:<path> ---` is content an attacker
+// can reproduce verbatim inside their own diff; folding the session_id into
+// the frame makes the boundary unguessable so a spoofed delimiter cannot be
+// confused for a real frame.
 #[test]
 fn session_aggregation_frame_resists_spoof_in_diff() {
     // Build a state where the (attacker-controlled) diff content tries to
-    // forge an extra frame for a different file. The legacy framing was
-    // `--- file: <path> ---` (single colon, space-padded); the new framing
-    // includes the random session id between the literal and the path.
+    // forge an extra frame for a different file using a plausible-looking
+    // `--- file: <path> ---` delimiter that omits the random session id.
     let session_id = "spoof-test-session-0123456789abcdef";
     let mut state = SessionState::new(session_id);
     state.edits.push(EditRecord {
@@ -214,10 +212,8 @@ fn session_aggregation_frame_resists_spoof_in_diff() {
     let body = llm.body();
 
     // There must be exactly one real frame for our one edit. The exact
-    // delimiter is "<<<EDIT {session_id}/" so spoofs missing the session id
-    // cannot match. (B3 changed the framing from `--- file:{id}:` to
-    // `<<<EDIT {id}/` so the same security property is preserved under
-    // the new format.)
+    // delimiter is "<<<EDIT {session_id}/", so a spoof missing the session id
+    // cannot match.
     let frame_marker = format!("<<<EDIT {session_id}/");
     let frame_count = body.matches(&frame_marker).count();
     assert_eq!(

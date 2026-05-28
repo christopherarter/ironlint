@@ -30,8 +30,8 @@ fn validate_rejects_bad_config() {
         .code(1);
 }
 
-/// `validate` must reject a config with an untrusted parent — same contract
-/// as `check`, since validate was previously lying about loadability.
+/// `validate` must reject a config with an untrusted parent — same
+/// loadability contract as `check`.
 #[test]
 fn validate_rejects_untrusted_extends_parent() {
     let dir = tempdir().unwrap();

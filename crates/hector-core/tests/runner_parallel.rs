@@ -1,6 +1,6 @@
-//! B1: prove rule dispatch is parallel by measuring overlap between mock
-//! LLM call timestamps. Serial dispatch would space the five rules
-//! ~200ms apart; parallel dispatch lands them within tens of ms.
+//! Prove rule dispatch is parallel by measuring overlap between mock LLM
+//! call timestamps. Serial dispatch would space the five rules ~200ms
+//! apart; parallel dispatch lands them within tens of ms.
 
 use anyhow::Result;
 use hector_core::config::Rule;
@@ -41,7 +41,7 @@ impl LlmClient for DelayingLlm {
 
 fn write_trusted_five_rule_config(dir: &std::path::Path) -> std::path::PathBuf {
     // Five distinct semantic rules, all matching `*.rs`, all phrased so the
-    // A3 pre-filter won't skip them (real-addition diff + non-"avoid"
+    // semantic pre-filter won't skip them (real-addition diff + non-"avoid"
     // descriptions).
     let path = dir.join(".hector.yml");
     let body = r#"schema_version: 2
@@ -91,7 +91,7 @@ fn five_semantic_rules_dispatch_in_parallel() {
     let file = dir.path().join("foo.rs");
     std::fs::write(&file, "fn main() {}\nfn hello() {}\n").unwrap();
 
-    // Real-addition diff so A3 pre-filter doesn't short-circuit anything.
+    // Real-addition diff so the semantic pre-filter doesn't short-circuit.
     let diff = "\
 --- a/foo.rs
 +++ b/foo.rs

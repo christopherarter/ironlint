@@ -1,10 +1,10 @@
-//! B5 — runner-level pin: the deferred path's `payload.evaluator_input`
-//! must equal what `expand_context` + the direct-API prompt builder
-//! produces, for ALL `ContextScope` values (Diff, File, Repo).
+//! Runner-level pin: the deferred path's `payload.evaluator_input` must equal
+//! what `expand_context` + the direct-API prompt builder produces, for ALL
+//! `ContextScope` values (Diff, File, Repo).
 //!
-//! Regression: the pin test in `llm/prompt.rs` exercised the prompt
-//! builder in isolation, so it missed the runner's `expand_for_deferred`
-//! helper that returned a different stub for Repo scope.
+//! Regression: a pin test in `llm/prompt.rs` exercises the prompt builder in
+//! isolation and misses the runner's `expand_for_deferred` helper, which can
+//! diverge for Repo scope.
 
 use hector_core::runner::{CheckInput, CheckOptions, HectorEngine};
 use std::collections::HashSet;
@@ -115,14 +115,14 @@ fn deferred_evaluator_input_matches_direct_path_for_context_file() {
     );
 }
 
-/// TDD anchor for fix (3): expansion failures must surface as __internal
-/// violations → InternalError verdict, not be silently dropped.
+/// Expansion failures must surface as __internal violations → InternalError
+/// verdict, not be silently dropped from the envelope.
 #[test]
 fn deferred_expansion_failure_surfaces_as_internal_error() {
     // A `context: diff` rule running against `CheckInput::File` (no diff)
-    // causes expand_context to error. Under the old behavior this rule
-    // was silently dropped from the envelope. Now it must surface as an
-    // __internal violation → InternalError verdict.
+    // causes expand_context to error. That error must surface as an
+    // __internal violation → InternalError verdict, not be dropped from the
+    // envelope.
     let tmp = tempdir().unwrap();
     let cfg = write_cfg(tmp.path(), "diff");
     let src = tmp.path().join("foo.rs");

@@ -1,11 +1,7 @@
-//! B1 regression: `hector check --diff` from an unrelated CWD must
-//! resolve diff target paths against `config_dir`, not process CWD.
-//!
-//! Pre-B1 fix, AST rules emit `<rule>__internal` violations because
-//! `check_inner` reads the file relative to the process CWD (which is
-//! `/tmp/B`), not relative to `config_dir` (which is `/tmp/A`). The
-//! read returns empty content, and the AST engine degrades to an
-//! `__internal` error violation.
+//! `hector check --diff` from an unrelated CWD must resolve diff target
+//! paths against `config_dir`, not the process CWD. Otherwise `check_inner`
+//! reads the file relative to the process CWD, gets empty content, and the
+//! AST engine degrades to an `<rule>__internal` error violation.
 
 use assert_cmd::Command;
 use std::fs;
@@ -52,10 +48,9 @@ fn ast_rule_fires_when_run_from_unrelated_cwd() {
     )
     .unwrap();
 
-    // Run from other_cwd — NOT from proj. Before the fix, hector tries to
-    // read `other_cwd/src.rs`, gets empty content, and degrades to an
-    // __internal violation. After the fix, it reads
-    // `config_dir/src.rs` = `proj/src.rs` and fires the real AST rule.
+    // Run from other_cwd — NOT from proj. hector must read
+    // `config_dir/src.rs` = `proj/src.rs` and fire the real AST rule,
+    // rather than reading `other_cwd/src.rs` and degrading to __internal.
     let out = Command::cargo_bin("hector")
         .unwrap()
         .args(["check", "--diff"])
@@ -80,7 +75,7 @@ fn ast_rule_fires_when_run_from_unrelated_cwd() {
         .as_array()
         .unwrap_or_else(|| panic!("expected violations array; got: {stdout}"));
 
-    // Post-fix: the real rule must have fired.
+    // The real rule must have fired.
     let rule_ids: Vec<&str> = violations
         .iter()
         .filter_map(|v| v["rule_id"].as_str())
@@ -91,7 +86,7 @@ fn ast_rule_fires_when_run_from_unrelated_cwd() {
         "expected a real 'no-panic' violation; got rule_ids={rule_ids:?}\nstdout={stdout}\nstderr={stderr}"
     );
 
-    // Pre-fix marker: __internal suffix must not appear anywhere.
+    // The __internal suffix (empty-content read) must not appear anywhere.
     assert!(
         !stdout.contains("__internal"),
         "must not produce __internal violation (indicates empty content read); stdout={stdout}\nstderr={stderr}"

@@ -99,10 +99,9 @@ fn semantic_engine_returns_none_when_llm_says_pass() {
     assert!(vs.is_empty(), "expected no violations, got {vs:?}");
 }
 
-// Regression: P1-6. Bug-audit finding — when the LLM hallucinates a different
-// rule_id than the one we requested, the engine used to silently return
-// Ok(None) (a "pass" verdict for a rule we never actually got an answer for).
-// The engine must instead bail so the runner surfaces it as an internal
+// Regression: when the LLM hallucinates a different rule_id than the one we
+// requested, the engine must not return Ok(None) (a "pass" for a rule we
+// never got an answer for). It must bail so the runner surfaces an internal
 // engine error.
 #[test]
 fn semantic_engine_errors_on_rule_id_mismatch() {

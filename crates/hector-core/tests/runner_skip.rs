@@ -1,4 +1,4 @@
-//! A2 — skip-pattern short-circuit at the top of HectorEngine::check.
+//! Skip-pattern short-circuit at the top of HectorEngine::check.
 
 use hector_core::runner::{CheckInput, HectorEngine};
 use std::fs;
@@ -45,7 +45,7 @@ rules:
     assert!(verdict.passed_checks.is_empty(), "no rules should run");
 
     let log = fs::read_to_string(dir.path().join(".hector/log.jsonl")).expect("telemetry");
-    // D1: skip-pattern record folds into a Check with empty rules.
+    // A skip-pattern record folds into a Check with empty rules.
     assert!(
         log.contains("\"type\":\"check\"") && log.contains("\"rules\":[]"),
         "expected a typed check record with empty rules; log was:\n{log}"
@@ -78,7 +78,7 @@ rules:
         .expect("check");
 
     let log = fs::read_to_string(dir.path().join(".hector/log.jsonl")).expect("telemetry");
-    // D1: skip-pattern record is a `Check` with empty `rules`.
+    // A skip-pattern record is a `Check` with empty `rules`.
     assert!(
         log.contains("\"type\":\"check\""),
         "telemetry must use typed shape; got:\n{log}"

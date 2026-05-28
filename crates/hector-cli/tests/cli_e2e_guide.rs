@@ -1,4 +1,4 @@
-//! C2 — CLI integration tests for `hector guide <file>`.
+//! CLI integration tests for `hector guide <file>`.
 
 use assert_cmd::Command;
 use tempfile::tempdir;

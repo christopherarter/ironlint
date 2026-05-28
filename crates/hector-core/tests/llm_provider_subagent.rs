@@ -1,4 +1,4 @@
-//! H1 — `provider: claude-code-subagent` is recognised by build_from_config.
+//! `provider: claude-code-subagent` is recognised by build_from_config.
 //! Returns Ok(None) (so the runner knows to use the deferred path) and emits
 //! NO stderr warning (distinct from the missing-API-key path, which warns).
 
@@ -9,9 +9,8 @@ use hector_core::llm::build_from_config;
 fn claude_code_subagent_provider_returns_none_without_warning() {
     let cfg = LlmConfig {
         provider: "claude-code-subagent".to_string(),
-        // R2: model is now optional for the subagent provider. Passing
-        // None here is the canonical shape; pre-R2 this field had to be
-        // `Some("ignored")` literally just to satisfy the parser.
+        // model is optional for the subagent provider; None is the canonical
+        // shape.
         model: None,
         evaluator_model: None,
         api_key_env: None,

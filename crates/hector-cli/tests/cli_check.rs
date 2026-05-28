@@ -103,10 +103,10 @@ fn check_with_untrusted_config_exits_one() {
 
 #[test]
 fn check_with_relative_config_runs_script_in_config_dir() {
-    // Repro: --config .hector.yml (bare filename, no directory component)
-    // makes Path::parent() return Some("") on a relative path, not None — so
-    // the runner's config_dir ends up empty and the script engine spawns its
-    // subprocess with cwd="", which fails with ENOENT.
+    // --config .hector.yml (bare filename, no directory component) makes
+    // Path::parent() return Some("") rather than None. The runner must not
+    // let config_dir collapse to "" and spawn the script engine with cwd="",
+    // which would fail with ENOENT.
     let dir = tempdir().unwrap();
     let bad = dir.path().join("bad.txt");
     std::fs::write(&bad, "forbidden\n").unwrap();
@@ -142,8 +142,8 @@ fn check_with_relative_config_runs_script_in_config_dir() {
         .clone();
     let parsed: serde_json::Value = serde_json::from_slice(&out).expect("valid json");
     assert_eq!(parsed["status"], "block");
-    // An "__internal" suffix means the script subprocess could not spawn — the
-    // signature of the empty-cwd bug. The real rule id must come through.
+    // An "__internal" suffix would mean the script subprocess failed to spawn
+    // (empty cwd). The real rule id must come through instead.
     assert_eq!(parsed["violations"][0]["rule_id"], "noforbidden");
 }
 
@@ -194,9 +194,8 @@ fn check_diff_input_parses_and_runs() {
     assert_eq!(status, "pass");
 }
 
-// P0-6: a unified diff with multiple changed files should result in every
-// file being checked. Pre-fix the CLI only fed the first `+++ b/` file to the
-// runner; violations in the second file silently disappeared.
+// A unified diff with multiple changed files must check every file, not just
+// the first `+++ b/` entry — violations in later files must not be dropped.
 #[test]
 fn cli_check_diff_processes_every_changed_file() {
     let tmp = tempfile::tempdir().unwrap();

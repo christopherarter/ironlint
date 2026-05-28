@@ -34,26 +34,24 @@ pub struct ExecutionConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmConfig {
     pub provider: String,
-    /// R2 (2026-05-23): now `Option<String>`. Required at load time for
-    /// direct-API providers (`anthropic`, `openrouter`, `ollama`); optional
-    /// for `provider: claude-code-subagent` because that provider never
-    /// reads it — the in-session subagent uses the Claude Code session's
-    /// model. Validation lives in `runner::HectorEngine::load`, not in
-    /// the serde derivation, so the missing-model error message can name
-    /// the provider explicitly rather than surfacing a generic serde
-    /// "missing field" diagnostic.
+    /// Required at load time for direct-API providers (`anthropic`,
+    /// `openrouter`, `ollama`); optional for `provider: claude-code-subagent`,
+    /// which never reads it — the in-session subagent uses the Claude Code
+    /// session's model. Validation lives in `runner::HectorEngine::load`, not
+    /// the serde derivation, so the missing-model error can name the provider
+    /// explicitly rather than surfacing a generic serde "missing field"
+    /// diagnostic.
     #[serde(default)]
     pub model: Option<String>,
     #[serde(default)]
     pub api_key_env: Option<String>,
     #[serde(default)]
     pub base_url: Option<String>,
-    /// R5 (2026-05-23): optional model id propagated through the deferred
-    /// envelope so the Claude Code skill can dispatch the
-    /// `hector-evaluator` subagent under a specific model (e.g. `haiku`
-    /// for cheap policy checks). Free-form: Claude Code's subagent
-    /// dispatch validates the value at the right layer. Ignored when
-    /// `provider != claude-code-subagent`.
+    /// Optional model id propagated through the deferred envelope so the
+    /// Claude Code skill can dispatch the `hector-evaluator` subagent under a
+    /// specific model (e.g. `haiku` for cheap policy checks). Free-form:
+    /// Claude Code's subagent dispatch validates the value at the right layer.
+    /// Ignored when `provider != claude-code-subagent`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evaluator_model: Option<String>,
 }
@@ -84,11 +82,11 @@ pub struct Rule {
     #[serde(default)]
     pub fix_hint: Option<String>,
 
-    /// E2 (bully parity): how to interpret the script's stdout/stderr.
+    /// How to interpret the script's stdout/stderr (bully parity).
     ///
-    /// `Passthrough` (default since R4, 2026-05-23) keeps the chosen stream
-    /// verbatim in `Violation.message` with `line: None` — matches bully's
-    /// design and avoids mis-parsing pretty-printed linter frames (biome,
+    /// `Passthrough` (the default) keeps the chosen stream verbatim in
+    /// `Violation.message` with `line: None` — matches bully's design and
+    /// avoids mis-parsing pretty-printed linter frames (biome,
     /// eslint pretty, clippy default, …) as chains of false violations.
     /// `Parsed` is opt-in for the formats we explicitly support
     /// ([`crate::engine::output::parse`] handles canonical
@@ -105,8 +103,8 @@ pub struct Rule {
 
 /// Per-rule script-output interpretation.
 ///
-/// Default is [`OutputMode::Passthrough`] (R4, 2026-05-23) — matches bully
-/// and keeps unconfigured rules safe against pretty-printed linter frames.
+/// Default is [`OutputMode::Passthrough`] — matches bully and keeps
+/// unconfigured rules safe against pretty-printed linter frames.
 /// [`OutputMode::Parsed`] is opt-in; see the [`Rule::output`] docs for the
 /// list of formats it knows.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

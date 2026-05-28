@@ -1,4 +1,4 @@
-//! C3 — `hector show-resolved-config` end-to-end coverage.
+//! End-to-end coverage for `hector show-resolved-config`.
 
 use assert_cmd::Command;
 use tempfile::tempdir;

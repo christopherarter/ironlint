@@ -4,13 +4,13 @@ use crate::session_state::SessionState;
 use crate::verdict::{Engine, Severity, Violation};
 use anyhow::{anyhow, Result};
 
-/// B3: build the session-aggregate diff string from all edits in `state`.
+/// Build the session-aggregate diff string from all edits in `state`.
 ///
-/// Each edit is wrapped in a framing delimiter that embeds the
-/// `session_id` to prevent attacker-controlled diff content from forging
-/// a frame for a different file (P1-9). The framing uses `timestamp` and
-/// `diff` from [`crate::session_state::EditRecord`]; there is no `tool`
-/// field on the record.
+/// Each edit is wrapped in a framing delimiter that embeds the `session_id`
+/// to prevent attacker-controlled diff content from forging a frame for a
+/// different file. The framing uses `timestamp` and `diff` from
+/// [`crate::session_state::EditRecord`]; there is no `tool` field on the
+/// record.
 ///
 /// Called by both [`SessionEngine::evaluate`] (direct-LLM path) and the
 /// runner's `check_session_with_options` (deferred envelope path) so the
@@ -42,14 +42,12 @@ impl SessionEngine {
         rule: &Rule,
         llm: &dyn LlmClient,
     ) -> Result<Option<Violation>> {
-        // P1-9: bind the per-edit framing delimiter to the random
-        // `session_id` so attacker-controlled diff content cannot forge
-        // a frame for a different file. The legacy boundary
-        // `--- file: <path> ---` was trivially reproducible inside any
-        // edit's diff; the session id makes the boundary unpredictable.
-        //
-        // B3: delegate to `framed_aggregate` so the LLM path and the
-        // deferred-envelope path produce byte-identical evidence.
+        // Bind the per-edit framing delimiter to the random `session_id` so
+        // attacker-controlled diff content cannot forge a frame for a
+        // different file — a fixed boundary like `--- file: <path> ---` would
+        // be trivially reproducible inside any edit's diff. Delegate to
+        // `framed_aggregate` so the LLM path and the deferred-envelope path
+        // produce byte-identical evidence.
         let aggregated = framed_aggregate(state);
         let verdicts = llm.evaluate(&[(rule_id, rule)], &aggregated, None)?;
         let total = verdicts.len();

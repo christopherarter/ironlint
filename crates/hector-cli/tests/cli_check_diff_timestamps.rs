@@ -1,11 +1,6 @@
-//! A2 regression: end-to-end test that `hector check --diff` against a
-//! POSIX `diff -u`-style patch (with `\t<timestamp>`) actually runs the
-//! configured rules.
-//!
-//! Pre-fix: the tab+timestamp landed in the PathBuf, scope matching failed
-//! silently, and the verdict was a clean pass (exit 0).
-//! Post-fix: the path is clean, the scope matches, the rule runs, and the
-//! block exits 2.
+//! `hector check --diff` against a POSIX `diff -u`-style patch (with a
+//! `\t<timestamp>` on the header path) must strip the timestamp so scope
+//! matching succeeds and the configured rules actually run.
 
 use assert_cmd::Command;
 use std::fs;
@@ -66,7 +61,7 @@ rules:
         .output()
         .expect("run hector");
 
-    // The rule blocks → exit 2. Pre-A2 fix: exit 0 (silent no-op).
+    // The rule blocks → exit 2.
     assert_eq!(
         out.status.code(),
         Some(2),

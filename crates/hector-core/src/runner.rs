@@ -9,9 +9,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-/// Map a config `EngineKind` to the verdict-side `Engine` used in
-/// telemetry. Free-standing helper so the per-rule record construction
-/// stays a single-line expression in the hot paths.
+/// Map a config `EngineKind` to the verdict-side `Engine` used in telemetry.
 fn engine_kind_to_verdict_engine(kind: EngineKind) -> crate::verdict::Engine {
     match kind {
         EngineKind::Script => crate::verdict::Engine::Script,
@@ -21,15 +19,14 @@ fn engine_kind_to_verdict_engine(kind: EngineKind) -> crate::verdict::Engine {
     }
 }
 
-/// H1: decide whether a semantic or session rule should be collected
-/// into the deferred envelope instead of dispatched. Returns true only
-/// when the option is set AND the engine is one of the two LLM-dispatch
-/// engines — `Script` and `Ast` always run.
+/// Whether a rule is collected into the deferred envelope instead of
+/// dispatched: true only when `emit_semantic_payload` is set and the engine
+/// is `Semantic` or `Session` (`Script`/`Ast` always run).
 fn should_defer(engine: EngineKind, options: &CheckOptions) -> bool {
     options.emit_semantic_payload && matches!(engine, EngineKind::Semantic | EngineKind::Session)
 }
 
-/// H1: render a `Severity` as the bully-compatible string the deferred
+/// Render a `Severity` as the bully-compatible string the deferred
 /// envelope's `severity` field carries.
 fn severity_string(s: crate::config::Severity) -> String {
     match s {
@@ -38,20 +35,8 @@ fn severity_string(s: crate::config::Severity) -> String {
     }
 }
 
-/// B4 (2026-05-25): sweep warn-severity deterministic violations off the
-/// verdict so the deferred envelope can carry them on
-/// [`crate::verdict_deferred::DeferredPayload::warnings`]. The CLI's
-/// deferred branch suppresses the standard `Verdict` JSON, so before B4
-/// these violations vanished from stdout entirely.
-///
-/// Block-severity violations are left in place; the CLI also suppresses
-/// the deferred envelope in that case (the verdict's block is the
-/// terminal signal).
-/// fix(3): translate expansion failures into `__internal` violations and
-/// push them onto `violations`. Free function (not a method) because it needs
-/// no `HectorEngine` state. Extracted from `check_inner` to keep that
-/// function's cognitive complexity below the workspace cap (the for-loop +
-/// struct construction was nudging the count).
+/// Translate deferred-context expansion failures into `__internal`
+/// violations and append them to `violations`.
 fn push_expansion_failures_into_violations(
     failures: &[(String, anyhow::Error)],
     path: &Path,
@@ -72,6 +57,9 @@ fn push_expansion_failures_into_violations(
     }
 }
 
+/// Sweep warn-severity violations onto the deferred envelope. The CLI
+/// suppresses the standard verdict JSON when it emits an envelope, so
+/// without this they would never reach stdout.
 fn build_deferred_warnings(verdict: &Verdict) -> Vec<crate::verdict_deferred::DeferredWarning> {
     verdict
         .violations
@@ -88,31 +76,29 @@ fn build_deferred_warnings(verdict: &Verdict) -> Vec<crate::verdict_deferred::De
         .collect()
 }
 
-/// C4: optional per-run knobs for `HectorEngine::check`. Plumbed via
-/// `HectorEngine::builder().with_options(...)` so the public `check`
-/// signature stays stable across additions.
+/// Optional per-run knobs for `HectorEngine::check`. Plumbed via
+/// `builder().with_options(...)` so the public `check` signature stays
+/// stable as knobs are added.
 #[derive(Debug, Clone, Default)]
 pub struct CheckOptions {
     /// Restrict evaluation to these rule ids. Empty set = run all rules.
-    /// The runner enforces the filter *upstream* of the parallel
-    /// dispatch pool, so filtered-out rules never enter the work queue
-    /// and never trigger their engine (in particular, no LLM call).
+    /// The filter is enforced upstream of the dispatch pool, so filtered-out
+    /// rules never enter the work queue or trigger their engine (no LLM call).
     pub rules: HashSet<String>,
     /// If true, capture per-rule outcomes for the explain report.
     pub explain: bool,
-    /// H1: when true, `engine: semantic` and `engine: session` rules are
-    /// not dispatched — they are collected into [`CheckReport::deferred`]
-    /// for an in-session Claude Code subagent to evaluate.
+    /// When true, `semantic`/`session` rules are collected into
+    /// [`CheckReport::deferred`] for an in-session subagent rather than
+    /// dispatched.
     pub emit_semantic_payload: bool,
-    /// C4: when true, allow checking files whose canonical path falls
-    /// outside the config_dir. Disabled by default to prevent wrappers
-    /// from inadvertently running policy against arbitrary host files.
+    /// Allow checking files whose canonical path falls outside `config_dir`.
+    /// Off by default so wrappers can't run policy against arbitrary host
+    /// files.
     pub allow_external_paths: bool,
 }
 
-/// C4: one row of the `--explain` report. Stays out of the verdict JSON
-/// (verdict shape is locked at 0.1) — surfaced to the CLI via
-/// [`CheckReport`].
+/// One row of the `--explain` report. Surfaced to the CLI via
+/// [`CheckReport`], kept out of the verdict JSON (whose shape is locked).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuleExplain {
     pub rule_id: String,
@@ -128,25 +114,24 @@ pub enum ExplainOutcome {
     Pass,
     /// Semantic rule reached the LLM and the LLM returned `pass`.
     Dispatched,
-    /// Rule was short-circuited before engine dispatch (e.g. A3 diff
+    /// Rule was short-circuited before engine dispatch (e.g. the diff
     /// pre-filter) or the engine returned an error.
     Skipped { reason: String },
 }
 
-/// C4: companion return shape for [`HectorEngine::check_with_explain`].
+/// Companion return shape for [`HectorEngine::check_with_explain`].
 #[derive(Debug, Clone)]
 pub struct CheckReport {
     pub verdict: Verdict,
     pub explain: Vec<RuleExplain>,
-    /// H1: present when `CheckOptions::emit_semantic_payload` was true
-    /// and at least one semantic/session rule survived scope/skip/
-    /// diff-prefilter. `None` otherwise. The CLI inspects this to
-    /// decide whether to emit a `DeferredVerdict` or a standard
-    /// `Verdict`.
+    /// Present when `emit_semantic_payload` was set and at least one
+    /// semantic/session rule survived scope/skip/diff-prefilter; `None`
+    /// otherwise. The CLI branches on this to emit a `DeferredVerdict` or a
+    /// standard `Verdict`.
     pub deferred: Option<crate::verdict_deferred::DeferredVerdict>,
 }
 
-/// C4: one rendered semantic prompt. `system` + `user` mirror Anthropic's
+/// One rendered semantic prompt. `system` + `user` mirror Anthropic's
 /// `/v1/messages` split; OpenAI-compat providers concatenate them.
 #[derive(Debug, Clone)]
 pub struct RenderedPrompt {
@@ -155,12 +140,10 @@ pub struct RenderedPrompt {
     pub user: String,
 }
 
-/// C2: snapshot of which rules are in scope for a given file, plus any
-/// skip-pattern hit. Returned by [`HectorEngine::scope_outcomes`] and
-/// rendered by `hector explain` / `hector guide` in the CLI.
+/// Which rules are in scope for a file, plus any skip-pattern hit.
 ///
-/// This is the *read-only* counterpart to `check_inner`'s scope walk. No
-/// engine runs, no LLM is constructed, no telemetry is written.
+/// The read-only counterpart to `check_inner`'s scope walk: no engine runs,
+/// no LLM, no telemetry. Rendered by `hector explain` / `hector guide`.
 #[derive(Debug, Clone)]
 pub struct ScopeOutcomes {
     /// `Some(hit)` if the file matches a built-in or user skip pattern.
@@ -176,22 +159,17 @@ pub struct ScopeOutcomes {
     pub rules: Vec<RuleScopeEntry>,
 }
 
-/// C2: which skip pattern (built-in or user-supplied) matched the file.
-///
-/// `pattern` is the *raw* glob string the matcher was built from — what
-/// the author would put in `skip:` to reproduce or override the hit.
+/// Which skip pattern matched the file. `pattern` is the raw glob the
+/// matcher was built from — what the author would put in `skip:` to
+/// reproduce or override the hit.
 #[derive(Debug, Clone)]
 pub struct SkipHit {
     pub pattern: String,
 }
 
-/// C2: per-rule scope outcome.
-///
-/// `engine`, `severity`, and `description` are mirrored here (cheap
-/// clones of `Copy` enums + a `String`) so `guide` can render its
-/// `<rule-id> [<severity>] <description>` line without re-borrowing
-/// the engine — that lets the helper be called once and the result
-/// rendered out into either format.
+/// Per-rule scope outcome. `engine`, `severity`, and `description` are
+/// mirrored here (cheap clones) so `guide` can render its
+/// `<rule-id> [<severity>] <description>` line without re-borrowing.
 #[derive(Debug, Clone)]
 pub struct RuleScopeEntry {
     pub rule_id: String,
@@ -201,7 +179,7 @@ pub struct RuleScopeEntry {
     pub scope_match: ScopeMatch,
 }
 
-/// C2: scope-match outcome for one rule against one file.
+/// Scope-match outcome for one rule against one file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScopeMatch {
     /// File matches the rule's scope. `glob` is the *first* scope glob
@@ -220,35 +198,30 @@ pub enum ScopeMatch {
 /// (no match, no engine output, or every match suppressed by a disable
 /// directive); `None` otherwise. Splitting passed/violations from one
 /// `Result<Vec<Violation>>` keeps the parallel `collect` straightforward.
-///
-/// C4: `explain` carries an optional explain row. The row is produced
-/// inside `evaluate_one_rule` so the parallel dispatch keeps a single
-/// per-rule output type — the runner concatenates explain rows after
-/// collecting outcomes. When `CheckInputs.collect_explain` is false the
-/// field is always `None` (one branch, zero allocation).
+/// `explain` carries an optional explain row (always `None` when
+/// `collect_explain` is off), produced inside `evaluate_one_rule` so the
+/// parallel dispatch keeps a single per-rule output type.
 struct RuleOutcome {
     violations: Vec<Violation>,
     passed: Option<String>,
     explain: Option<RuleExplain>,
-    /// D1: per-rule telemetry line. Always populated when the rule
-    /// reached engine dispatch (or was short-circuited by A3); `None`
-    /// when the rule was out-of-scope (won't appear in the Check.rules
-    /// array, matches "rule didn't run for this file" semantics).
+    /// Per-rule telemetry line. Populated when the rule reached dispatch
+    /// (or was short-circuited by the diff pre-filter); `None` when the
+    /// rule was out of scope.
     record: Option<PerRuleRecord>,
 }
 
-/// fix(3): result of pre-expanding deferred rule contexts before the
-/// verdict is finalised. Failures become `__internal` violations; only
-/// successes are threaded into the deferred envelope.
+/// Result of pre-expanding deferred rule contexts before the verdict is
+/// finalised. Failures become `__internal` violations; only successes are
+/// threaded into the deferred envelope.
 struct DeferredExpansion<'a> {
     successes: Vec<(crate::llm::prompt::RuleRef<'a>, String, Option<String>)>,
     /// `(rule_id, error)` pairs for rules whose context could not expand.
     failures: Vec<(String, anyhow::Error)>,
 }
 
-/// D1: per-call accumulators for `check_session`. Bundled into a single
-/// struct so `absorb_session_outcome` stays under the workspace's
-/// argument-count lint while still owning the three independent vecs.
+/// The three accumulators `check_session` threads through each rule's
+/// outcome, bundled so `absorb_session_outcome` takes one argument.
 struct SessionAcc<'a> {
     violations: &'a mut Vec<Violation>,
     passed: &'a mut Vec<String>,
@@ -256,8 +229,7 @@ struct SessionAcc<'a> {
 }
 
 /// Per-file inputs reused across every rule evaluation in one `check()`
-/// call. Bundled into a single struct so `evaluate_one_rule` stays under
-/// the workspace's argument-count lint.
+/// call.
 struct CheckInputs<'a> {
     match_path: &'a Path,
     path: &'a Path,
@@ -272,27 +244,56 @@ struct CheckInputs<'a> {
     content: Option<&'a str>,
     diff: &'a str,
     disable_map: &'a crate::disable::DisableMap,
-    /// C4: build a `RuleExplain` row for every rule whose evaluation
-    /// reaches engine dispatch (or is short-circuited by the A3 diff
-    /// pre-filter). Out-of-scope and filter-skipped rules never enter
-    /// `evaluate_one_rule` so they don't appear in the report.
+    /// Build a `RuleExplain` row for every rule that reaches dispatch (or is
+    /// short-circuited by the diff pre-filter). Out-of-scope and
+    /// filter-skipped rules never enter `evaluate_one_rule`, so they don't
+    /// appear in the report.
     collect_explain: bool,
+}
+
+/// Outcome of normalizing a [`CheckInput`] into the path/content/diff the
+/// rule loop needs. A rejected path (outside `config_dir`) short-circuits
+/// to a terminal verdict the caller returns verbatim.
+enum InputResolution {
+    Resolved {
+        path: PathBuf,
+        content: String,
+        diff: String,
+        content_authoritative: bool,
+    },
+    Rejected(Verdict),
+}
+
+/// Rules split by how they run: `selected` dispatch through the engine
+/// pool, `deferred` are handed to an in-session evaluator. `explain` holds
+/// the rows the deferred split contributes when `--explain` is on.
+struct RulePartition<'a> {
+    selected: Vec<(&'a String, &'a Rule)>,
+    deferred: Vec<crate::verdict_deferred::DeferredRule>,
+    explain: Vec<RuleExplain>,
+}
+
+/// Folded result of dispatching the selected rules in parallel.
+#[derive(Default)]
+struct DispatchOutcome {
+    violations: Vec<Violation>,
+    passed: Vec<String>,
+    explain: Vec<RuleExplain>,
+    records: Vec<PerRuleRecord>,
 }
 
 pub struct HectorEngine {
     config: Config,
     config_dir: PathBuf,
-    /// D4: canonical form of `config_dir`, computed once at load time.
-    /// `relativize` calls `root.canonicalize()` on every invocation; caching
-    /// the result eliminates a syscall from every `rule_matches_path` call.
+    /// Canonical form of `config_dir`, computed once at load time so
+    /// `rule_matches_path` doesn't `canonicalize()` the root on every call.
     config_dir_canon: PathBuf,
     llm: Option<Box<dyn crate::llm::LlmClient>>,
     skip: SkipMatcher,
     options: CheckOptions,
-    /// D4: per-rule ScopeMatcher cache, keyed by rule id. Populated once at
-    /// load time so `rule_matches_path` avoids rebuilding a GlobSet on every
-    /// (rule, file) pair. BTreeMap order mirrors `config.rules` iteration
-    /// order, keeping parallel dispatch deterministic.
+    /// Per-rule `ScopeMatcher` cache, keyed by rule id and built once at load
+    /// time so `rule_matches_path` never rebuilds a GlobSet per (rule, file).
+    /// `BTreeMap` order mirrors `config.rules`, keeping dispatch deterministic.
     scope_matchers: BTreeMap<String, crate::config::scope::ScopeMatcher>,
 }
 
@@ -361,14 +362,12 @@ fn relativize(path: &std::path::Path, root: &std::path::Path) -> std::path::Path
         .unwrap_or(canon_path)
 }
 
-/// C2: identify which raw skip glob matched a path. Mirrors the
-/// construction order in `SkipMatcher::with_built_ins` (built-ins first,
-/// user extras second) so the reported pattern matches what the author
-/// would type to reproduce the skip. Returns `None` when no pattern
-/// matches — the caller should treat that as "file is in scope for the
-/// usual rule walk." Silently returns `None` on any glob construction
-/// error, since the same globs already round-tripped through
-/// `SkipMatcher::with_built_ins` at engine load time.
+/// Identify which raw skip glob matched a path. Mirrors the construction
+/// order in `SkipMatcher::with_built_ins` (built-ins first, user extras
+/// second) so the reported pattern matches what the author would type to
+/// reproduce the skip. `None` means no pattern matched (file is in scope for
+/// the usual walk); glob construction errors also yield `None`, since the
+/// same globs already round-tripped at engine load time.
 fn first_matching_skip_glob(file: &std::path::Path, extras: &[String]) -> Option<String> {
     use globset::{Glob, GlobSetBuilder};
     let candidates: Vec<String> = crate::config::skip::built_in_skip_globs()
@@ -403,11 +402,9 @@ fn first_matching_skip_glob(file: &std::path::Path, extras: &[String]) -> Option
     None
 }
 
-/// C2: walk a rule's scope list in author order and return the first
-/// glob that matches `path`. Returns `None` if no glob matches. Mirrors
-/// the right-anchored bare-pattern semantics of
-/// `crate::config::scope::ScopeMatcher` (a bare `*.py` also matches at
-/// any depth via the `**/<pattern>` form).
+/// Walk a rule's scope list in author order and return the first glob that
+/// matches `path`, or `None`. Mirrors the bare-pattern semantics of
+/// `ScopeMatcher` (a bare `*.py` also matches at any depth via `**/<pattern>`).
 fn first_matching_scope_glob(scopes: &[String], path: &std::path::Path) -> Option<String> {
     use globset::{Glob, GlobSetBuilder};
     for raw in scopes {
@@ -446,7 +443,7 @@ impl HectorEngineBuilder {
         self
     }
 
-    /// C4: attach optional per-run knobs (rule filter, explain capture).
+    /// Attach optional per-run knobs (rule filter, explain capture).
     pub fn with_options(mut self, options: CheckOptions) -> Self {
         self.options = options;
         self
@@ -468,10 +465,9 @@ pub enum CheckInput {
     Diff { file: PathBuf, unified_diff: String },
 }
 
-/// C4: translate `(engine, errored, emitted)` into the explain outcome for
-/// a rule that *did* reach engine dispatch (i.e. wasn't filtered or
-/// short-circuited by the A3 diff pre-filter — those produce their own
-/// rows upstream).
+/// Translate `(engine, errored, emitted)` into the explain outcome for a
+/// rule that reached engine dispatch (rules filtered or short-circuited by
+/// the diff pre-filter produce their own rows upstream).
 ///
 /// * `engine_errored` → `Skipped { reason: "engine_error" }`. The rule
 ///   surfaced a `__internal` violation but its policy verdict is
@@ -507,34 +503,29 @@ impl HectorEngine {
         HectorEngineBuilder::new()
     }
 
-    /// C4: iterator over every rule id in the loaded config. Used by the
-    /// CLI to validate `--rule` arguments at the boundary, before any
-    /// dispatch happens.
+    /// Iterator over every rule id in the loaded config. The CLI uses it to
+    /// validate `--rule` arguments at the boundary, before any dispatch.
     pub fn config_rule_ids(&self) -> impl Iterator<Item = &str> {
         self.config.rules.keys().map(|k| k.as_str())
     }
 
-    /// D5: replace the rule-id filter on an already-loaded engine. The CLI
-    /// uses this to avoid a second load: it loads once, validates `--rule`
-    /// args against the loaded config, then stores the validated set here.
-    /// `pub` — only the CLI adapter calls this; library callers set
-    /// the filter at build time via `HectorEngineBuilder::with_options`.
+    /// Replace the rule-id filter on an already-loaded engine, so the CLI can
+    /// load once, validate `--rule` against the config, then store the
+    /// validated set rather than loading twice. Library callers set the filter
+    /// at build time via [`HectorEngineBuilder::with_options`].
     pub fn set_rule_filter(&mut self, rules: HashSet<String>) {
         self.options.rules = rules;
     }
 
-    /// Lookup a rule by id from the loaded config.
-    ///
-    /// H1: used to resolve `DeferredRule` ids back to their full definitions
-    /// when building the evaluator-input string.
-    /// B5: also used by callers that need the full Rule after filtering by id.
+    /// Look up a rule by id from the loaded config — used to resolve
+    /// `DeferredRule` ids back to their full definitions.
     pub fn config_rule(&self, id: &str) -> Option<&crate::config::Rule> {
         self.config.rules.get(id)
     }
 
-    /// C2: read-only scope walk. Returns the skip-pattern hit (if any)
-    /// and a per-rule scope outcome for every rule in the resolved config.
-    /// No engine runs; no LLM is constructed; no telemetry is written.
+    /// Read-only scope walk: the skip-pattern hit (if any) and a per-rule
+    /// scope outcome for every rule in the resolved config. No engine runs,
+    /// no LLM is constructed, no telemetry is written.
     ///
     /// Used by `hector explain <file>` and `hector guide <file>` so they
     /// share one source of truth for "what's in scope for this path?"
@@ -584,13 +575,10 @@ impl HectorEngine {
     /// carries `+++ b/<rel>` paths) resolves to the same on-disk file
     /// regardless of the agent's CWD.
     ///
-    /// C4: by default, returns `Err` when the canonicalized path falls
-    /// outside `config_dir`. Pass `--allow-external-paths` (surfaced via
-    /// `CheckOptions::allow_external_paths`) to opt in. Files that cannot
-    /// be canonicalized (e.g. diff-mode paths not yet on disk) skip the
+    /// By default, returns `Err` when the canonicalized path falls outside
+    /// `config_dir`; `allow_external_paths` opts in. Files that can't be
+    /// canonicalized (e.g. diff-mode paths not yet on disk) skip the
     /// outside-check and return the raw resolved path unchanged.
-    ///
-    /// Introduced for B1; extended by C4 to gate external paths.
     pub fn resolve_input_path(&self, p: &std::path::Path) -> anyhow::Result<std::path::PathBuf> {
         let resolved = if p.is_absolute() {
             p.to_path_buf()
@@ -620,19 +608,14 @@ impl HectorEngine {
     /// Match a path against a rule's scope, using the unified `relativize`
     /// step shared with `check_inner`.
     ///
-    /// D4: looks up the pre-built `ScopeMatcher` from the load-time cache
-    /// instead of constructing a new GlobSet. Uses the pre-computed
-    /// `config_dir_canon` to avoid a `canonicalize` syscall on the root on
-    /// every call. Relative paths are matched directly without a syscall (they
-    /// are already config-dir-relative). Returns `false` for an unknown rule
-    /// id (defensive; callers only pass ids that came from the config).
-    ///
-    /// Introduced for B2 and extended by D4 to use the memoized cache.
+    /// Looks up the pre-built `ScopeMatcher` from the load-time cache instead
+    /// of constructing a GlobSet, and uses `config_dir_canon` to avoid a
+    /// `canonicalize` syscall on the root. Relative paths are matched directly
+    /// (already config-dir-relative); an unknown rule id returns `false`.
     pub fn rule_matches_path(&self, rule_id: &str, file: &std::path::Path) -> bool {
-        // D4 fast path: relative paths are already config-dir-relative — skip
-        // the canonicalize syscall entirely. Absolute paths go through the
-        // strip-prefix dance so that adapter payloads (which carry absolute
-        // paths) still match correctly.
+        // Relative paths are already config-dir-relative — skip the
+        // canonicalize syscall. Absolute paths (e.g. adapter payloads) go
+        // through the strip-prefix dance to match correctly.
         let match_path: PathBuf = if file.is_relative() {
             PathBuf::from(file)
         } else {
@@ -669,9 +652,9 @@ impl HectorEngine {
         // trust verify and surfaces a `hector migrate` hint.
         let config = crate::config::extends::resolve_trusted(config_path)?;
 
-        // Validate every rule's scope by constructing the matcher up front.
-        // D4: also cache the matcher so rule_matches_path never rebuilds a
-        // GlobSet — one build per rule at load time instead of per (rule, file).
+        // Validate every rule's scope by constructing the matcher up front,
+        // and cache it so `rule_matches_path` never rebuilds a GlobSet —
+        // one build per rule at load time instead of per (rule, file).
         let mut scope_matchers: BTreeMap<String, crate::config::scope::ScopeMatcher> =
             BTreeMap::new();
         for (rule_id, rule) in &config.rules {
@@ -707,8 +690,8 @@ impl HectorEngine {
         }
         let skip = SkipMatcher::with_built_ins(&skip_extras)?;
 
-        // D4: cache the canonical config_dir once so rule_matches_path never
-        // calls canonicalize() on the root on every invocation.
+        // Cache the canonical config_dir once so rule_matches_path never
+        // calls canonicalize() on the root per invocation.
         let config_dir_canon = config_dir
             .canonicalize()
             .unwrap_or_else(|_| config_dir.clone());
@@ -749,22 +732,20 @@ impl HectorEngine {
             .expect("rayon pool construction must not fail")
     }
 
-    /// Evaluate a single rule against a single file. Pure helper extracted
-    /// so the parallel dispatch in `check()` can `par_iter().map(…)` over
-    /// it. Owns nothing — every input is borrowed; output is three owned
-    /// fields that merge cleanly via `extend`/`push` post-iteration.
+    /// Evaluate a single rule against a single file. Borrows everything so
+    /// `check`'s parallel dispatch can `par_iter().map(…)` over it; the owned
+    /// output fields merge cleanly post-iteration.
     ///
-    /// C4: when `inputs.collect_explain` is true, the outcome carries a
-    /// `RuleExplain` row describing the disposition of the rule (fire /
-    /// pass / dispatched / skipped). Out-of-scope rules return early with
-    /// `explain: None` because they don't appear in the explain report.
+    /// When `collect_explain` is set, the outcome carries a `RuleExplain` row
+    /// (fire / pass / dispatched / skipped). Out-of-scope rules return early
+    /// with `explain: None`, since they don't appear in the report.
     fn evaluate_one_rule(
         &self,
         rule_id: &str,
         rule: &Rule,
         inputs: &CheckInputs<'_>,
     ) -> RuleOutcome {
-        // D4: use the load-time cached matcher — no GlobSet rebuild per call.
+        // Use the load-time cached matcher — no GlobSet rebuild per call.
         if !self.rule_matches_path(rule_id, inputs.match_path) {
             return RuleOutcome {
                 violations: vec![],
@@ -773,10 +754,9 @@ impl HectorEngine {
                 record: None,
             };
         }
-        // A3: short-circuit semantic dispatch when the diff cannot
-        // plausibly match — see `try_semantic_skip`. The returned reason
-        // string also feeds the explain row so authors see the same
-        // string the telemetry recorded.
+        // Short-circuit semantic dispatch when the diff can't plausibly match
+        // (see `try_semantic_skip`). The reason string feeds the explain row,
+        // so authors see the same string the telemetry recorded.
         if let Some(reason) = self.try_semantic_skip(rule_id, rule, inputs.path, inputs.diff) {
             let explain = inputs.collect_explain.then(|| RuleExplain {
                 rule_id: rule_id.to_string(),
@@ -803,10 +783,10 @@ impl HectorEngine {
             rule_id,
             rule,
             file: inputs.path,
-            // `inputs.content` already encodes authoritative-vs-missing —
-            // pass it through. Pre-fix this site silently collapsed an
-            // explicitly-empty PreToolUse payload onto `None`, which the
-            // AST engine then refused with an `__internal` violation.
+            // `inputs.content` already encodes authoritative-vs-missing;
+            // pass it through verbatim. Collapsing an explicitly-empty
+            // PreToolUse payload to `None` would make the AST engine refuse
+            // it with an `__internal` violation.
             content: inputs.content,
             diff: if inputs.diff.is_empty() {
                 None
@@ -826,10 +806,9 @@ impl HectorEngine {
             _ => Ok(Vec::new()),
         };
         let rule_elapsed = rule_start.elapsed().as_millis() as u64;
-        // D1: when a semantic rule reached the LLM and produced a
-        // result, emit a SemanticVerdict telemetry line. Errors don't
-        // produce a verdict line — those surface as engine_error in the
-        // per-rule record.
+        // A semantic rule that reached the LLM and produced a result emits a
+        // SemanticVerdict telemetry line; errors don't (they surface as
+        // engine_error in the per-rule record).
         if rule.engine == EngineKind::Semantic {
             if let Ok(ref vs) = outcome {
                 let verdict_str = if vs.is_empty() { "pass" } else { "violation" };
@@ -843,9 +822,9 @@ impl HectorEngine {
         Self::merge_engine_outcome(rule_id, rule.engine, inputs, outcome, rule_elapsed)
     }
 
-    /// D1: emit a SemanticVerdict telemetry line. Used by the semantic
-    /// dispatch arm of `evaluate_one_rule` and by `check_session` when a
-    /// session rule reaches the LLM. Best-effort: failures stderr-warn.
+    /// Emit a SemanticVerdict telemetry line, used by `evaluate_one_rule`'s
+    /// semantic arm and by `check_session` when a session rule reaches the
+    /// LLM. Best-effort: failures warn to stderr.
     fn append_semantic_verdict(&self, rule_id: &str, file: Option<&str>, verdict_str: &str) {
         let entry = LogEntry::SemanticVerdict {
             ts: chrono::Utc::now().to_rfc3339(),
@@ -859,15 +838,11 @@ impl HectorEngine {
         }
     }
 
-    /// Post-process the engine's `Result<Vec<Violation>>` into a `RuleOutcome`.
-    /// Applies disable-directive suppression and converts engine errors into
-    /// `Engine::Internal` violations. Split out of `evaluate_one_rule` to
-    /// keep the per-rule cognitive complexity well below the workspace cap.
-    ///
-    /// C4: when `inputs.collect_explain` is true, the outcome carries a
-    /// `RuleExplain` row whose `outcome` is derived from
-    /// `(engine_errored, any_emitted, engine_kind)` by
-    /// [`explain_outcome_for`].
+    /// Post-process the engine's `Result<Vec<Violation>>` into a `RuleOutcome`:
+    /// apply disable-directive suppression and convert engine errors into
+    /// `Engine::Internal` violations. When `collect_explain` is set, the
+    /// outcome's `RuleExplain` row is derived from
+    /// `(engine_errored, any_emitted, engine)` by [`explain_outcome_for`].
     fn merge_engine_outcome(
         rule_id: &str,
         engine: EngineKind,
@@ -877,10 +852,10 @@ impl HectorEngine {
     ) -> RuleOutcome {
         let verdict_engine = engine_kind_to_verdict_engine(engine);
         match outcome {
-            // P1-11: the engine may return many violations (AST emits one
-            // per match). Walk the vec, apply per-violation disable
-            // directives, and only record the rule as passed if every match
-            // was suppressed (or there were none to begin with).
+            // The engine may return many violations (AST emits one per
+            // match). Walk them, apply per-violation disable directives, and
+            // record the rule as passed only if every match was suppressed
+            // (or there were none to begin with).
             Ok(vs) if vs.is_empty() => {
                 let explain = inputs.collect_explain.then(|| RuleExplain {
                     rule_id: rule_id.to_string(),
@@ -902,8 +877,8 @@ impl HectorEngine {
             }
             Ok(vs) => Self::apply_disables(rule_id, engine, inputs, vs, elapsed),
             Err(e) => {
-                // P1-1: engine runtime errors are Engine::Internal, not
-                // Engine::Trust. Trust failures halt at load time and never
+                // Engine runtime errors are Engine::Internal, not
+                // Engine::Trust — trust failures halt at load time and never
                 // reach this arm.
                 let v = Violation {
                     rule_id: format!("{rule_id}__internal"),
@@ -1004,99 +979,69 @@ impl HectorEngine {
     }
 
     /// Run the loaded rules against `input` and return the verdict.
-    ///
-    /// Thin wrapper over `check_inner` that drops the explain rows; the
-    /// public signature is held stable so callers don't have to opt into
-    /// the C4 explain shape unless they want it.
     pub fn check(&self, input: CheckInput) -> Result<Verdict> {
         self.check_inner(input, false).map(|r| r.verdict)
     }
 
-    /// C4: like [`Self::check`], but returns a per-rule outcome list
-    /// when the engine was built with `CheckOptions { explain: true, .. }`.
-    /// With explain off, the returned `explain` list is empty.
+    /// Like [`Self::check`], but returns per-rule explain rows when the
+    /// engine was built with `CheckOptions { explain: true, .. }`. With
+    /// explain off the returned list is empty.
     pub fn check_with_explain(&self, input: CheckInput) -> Result<CheckReport> {
         self.check_inner(input, self.options.explain)
     }
 
-    // Central orchestration: input-mode normalization, skip short-circuit,
-    // four-engine dispatch, telemetry. Decomposing further would split the
-    // flow across helpers without making any individual piece easier to
-    // reason about; the complexity is intrinsic to the work this method
-    // does, not an accident.
-    #[allow(clippy::cognitive_complexity)]
-    fn check_inner(&self, input: CheckInput, collect_explain: bool) -> Result<CheckReport> {
-        use crate::disable::DisableMap;
-        let start = Instant::now();
-        // `content_authoritative`: the caller (CLI or library) supplied content
-        // directly — so even an empty string is a legitimate input that
-        // engines must evaluate. Diff mode reads from disk, so a read
-        // failure surfaces as `false` to preserve the existing behavior
-        // (AST engine reports an `__internal` violation rather than
-        // silently passing).
-        let (path, content, diff, content_authoritative) = match input {
-            // B1: resolve the caller-supplied path through config_dir so
-            // that relative paths (e.g. from an editor calling `hector
-            // check --file src/foo.rs` from a different CWD) land on the
-            // correct on-disk file. Absolute paths pass through unchanged.
-            // C4: reject paths outside config_dir unless allow_external_paths
-            // is set — surface the error as an __internal violation so the
-            // verdict shape is preserved and the exit code is 2 (Block).
-            CheckInput::File { path, content } => {
-                let resolved = match self.resolve_input_path(&path) {
-                    Ok(p) => p,
-                    Err(e) => {
-                        let v = Violation {
-                            rule_id: "__internal".to_string(),
-                            severity: crate::verdict::Severity::Error,
-                            engine: crate::verdict::Engine::Internal,
-                            file: path.display().to_string(),
-                            line: None,
-                            column: None,
-                            message: format!("{e:#}"),
-                            suggestion: None,
-                            context: None,
-                        };
-                        let elapsed = start.elapsed().as_millis() as u64;
-                        let verdict = Verdict::from_violations(vec![v], vec![], elapsed);
-                        return Ok(CheckReport {
-                            verdict,
-                            explain: vec![],
-                            deferred: None,
-                        });
-                    }
-                };
-                (resolved, content, String::new(), true)
-            }
+    /// Normalize a [`CheckInput`] into the path, content, and diff the rule
+    /// loop evaluates against.
+    ///
+    /// Both modes resolve the caller's path through `config_dir`, so a
+    /// relative path from an editor running in a different CWD lands on the
+    /// right on-disk file. A path outside `config_dir` is rejected (unless
+    /// `allow_external_paths`); in file mode that becomes a terminal
+    /// `__internal` verdict, in diff mode a warning that continues with the
+    /// original path.
+    ///
+    /// `content_authoritative` distinguishes "caller supplied this content"
+    /// (file mode — even an empty string is a real target) from "we read it
+    /// off disk and the read failed" (diff mode). A failed read yields
+    /// `false` so AST/semantic engines surface `__internal` rather than
+    /// silently passing on missing content.
+    fn resolve_check_input(&self, input: CheckInput, start: Instant) -> InputResolution {
+        match input {
+            CheckInput::File { path, content } => match self.resolve_input_path(&path) {
+                Ok(resolved) => InputResolution::Resolved {
+                    path: resolved,
+                    content,
+                    diff: String::new(),
+                    content_authoritative: true,
+                },
+                Err(e) => {
+                    let v = Violation {
+                        rule_id: "__internal".to_string(),
+                        severity: crate::verdict::Severity::Error,
+                        engine: crate::verdict::Engine::Internal,
+                        file: path.display().to_string(),
+                        line: None,
+                        column: None,
+                        message: format!("{e:#}"),
+                        suggestion: None,
+                        context: None,
+                    };
+                    let elapsed = start.elapsed().as_millis() as u64;
+                    InputResolution::Rejected(Verdict::from_violations(vec![v], vec![], elapsed))
+                }
+            },
             CheckInput::Diff { file, unified_diff } => {
-                // B1: the `+++ b/<rel>` path in a unified diff is relative
-                // to the repo root, not to the agent's CWD. Resolve against
-                // config_dir before reading so AST rules, disable
-                // directives, and semantic-context: file all see real
-                // content. In the agent flow, diff mode runs *after* the
-                // agent's edit has landed on disk, so reading the file here
-                // is the correct semantics (P0-5, P0-7).
-                // C4: diff-mode paths for files not yet on disk skip the
-                // outside-check (canonicalize fails → early-return Ok in
-                // resolve_input_path). For existing files, the same gate
-                // applies; treat the error as a warning so the diff still
-                // runs (the read below will fail anyway if the path is wrong).
-                let resolved = match self.resolve_input_path(&file) {
-                    Ok(p) => p,
-                    Err(e) => {
-                        eprintln!(
-                            "hector: path rejected for diff check ({e}); \
-                             continuing with original path",
-                        );
-                        file
-                    }
-                };
-                // Surface read failures as a warning rather than silently
-                // returning empty content — the silent fallback is what
-                // made this bug invisible in CI. `content_authoritative`
-                // tracks the read outcome so AST/semantic rules still
-                // surface the failure as `__internal` downstream.
-                let (content, authoritative) = match std::fs::read_to_string(&resolved) {
+                // Diff mode runs after the agent's edit has landed, so the
+                // on-disk read is the post-edit content AST/semantic rules
+                // and disable directives need.
+                let resolved = self.resolve_input_path(&file).unwrap_or_else(|e| {
+                    eprintln!(
+                        "hector: path rejected for diff check ({e}); \
+                         continuing with original path",
+                    );
+                    file
+                });
+                let (content, content_authoritative) = match std::fs::read_to_string(&resolved) {
                     Ok(s) => (s, true),
                     Err(e) => {
                         eprintln!(
@@ -1107,99 +1052,83 @@ impl HectorEngine {
                         (String::new(), false)
                     }
                 };
-                (resolved, content, unified_diff, authoritative)
+                InputResolution::Resolved {
+                    path: resolved,
+                    content,
+                    diff: unified_diff,
+                    content_authoritative,
+                }
             }
-        };
-
-        if self.skip.matches(&path) {
-            let elapsed = start.elapsed().as_millis() as u64;
-            let verdict = Verdict {
-                schema_version: crate::verdict::SCHEMA_VERSION,
-                hector_version: env!("CARGO_PKG_VERSION").to_string(),
-                status: crate::verdict::Status::Pass,
-                violations: vec![],
-                passed_checks: vec![],
-                elapsed_ms: elapsed,
-                deferred_rules: vec![],
-            };
-            // P2-21: surface telemetry append failures (disk-full,
-            // unwritable path, FS lock issues) instead of silently
-            // swallowing them. The check itself still succeeds; the
-            // append is best-effort and never the source of truth.
-            if let Err(e) = crate::telemetry::append(
-                &self.config_dir.join(".hector/log.jsonl"),
-                &LogEntry::Check {
-                    ts: chrono::Utc::now().to_rfc3339(),
-                    file: path.display().to_string(),
-                    status: Status::Pass,
-                    elapsed_ms: elapsed,
-                    rules: vec![],
-                },
-            ) {
-                eprintln!("hector: telemetry append failed: {e:#}");
-            }
-            return Ok(CheckReport {
-                verdict,
-                explain: Vec::new(),
-                deferred: None,
-            });
         }
+    }
 
-        let disable_map = DisableMap::from_source(&content);
+    /// The clean `Pass` verdict emitted when a file matches a skip pattern.
+    fn skip_verdict(start: Instant) -> Verdict {
+        Verdict {
+            schema_version: crate::verdict::SCHEMA_VERSION,
+            hector_version: env!("CARGO_PKG_VERSION").to_string(),
+            status: Status::Pass,
+            violations: vec![],
+            passed_checks: vec![],
+            elapsed_ms: start.elapsed().as_millis() as u64,
+            deferred_rules: vec![],
+        }
+    }
 
-        let mut violations: Vec<Violation> = Vec::new();
-        let mut passed: Vec<String> = Vec::new();
-        let mut explain: Vec<RuleExplain> = Vec::new();
-
-        let match_path = relativize(&path, &self.config_dir);
-
-        let inputs = CheckInputs {
-            match_path: &match_path,
-            path: &path,
-            // Authoritative content is passed through verbatim (empty
-            // proposed content is still a valid evaluation target).
-            // Non-authoritative empty content collapses to `None` so
-            // AST/semantic engines emit `__internal` rather than
-            // silently passing on a missed disk read.
-            content: if content_authoritative {
-                Some(content.as_str())
-            } else if content.is_empty() {
-                None
-            } else {
-                Some(content.as_str())
+    /// Append one `Check` line to the telemetry log. Best-effort: a failed
+    /// append (disk-full, unwritable path, FS lock) warns to stderr but
+    /// never fails the check — the log is never the source of truth.
+    fn append_check_log(
+        &self,
+        file: &str,
+        status: Status,
+        elapsed_ms: u64,
+        rules: Vec<PerRuleRecord>,
+    ) {
+        if let Err(e) = crate::telemetry::append(
+            &self.config_dir.join(".hector/log.jsonl"),
+            &LogEntry::Check {
+                ts: chrono::Utc::now().to_rfc3339(),
+                file: file.to_string(),
+                status,
+                elapsed_ms,
+                rules,
             },
-            diff: &diff,
-            disable_map: &disable_map,
-            collect_explain,
-        };
+        ) {
+            eprintln!("hector: telemetry append failed: {e:#}");
+        }
+    }
 
-        // C4: apply the `--rule` filter *upstream* of the parallel
-        // dispatch so filtered-out rules never enter the work queue and
-        // never trigger their engine (in particular, no LLM call). Empty
-        // set = run every rule. The collected pair list also keeps the
-        // single-rule fast-path measurable (skip pool construction when
-        // the filter narrows down to one rule).
-        //
-        // H1: when `emit_semantic_payload` is set, partition out the
-        // semantic/session rules into `deferred_rules` and drop them
-        // from the dispatch queue. Deterministic engines (script, ast)
-        // still run on the same per-file path. In-scope deferred rules
-        // are recorded for the envelope; out-of-scope deferred rules
-        // never enter the deferred payload (same scope discipline as
-        // the dispatch path).
+    /// Split the resolved rules into those dispatched through the engine
+    /// pool and those deferred to an in-session evaluator.
+    ///
+    /// The `--rule` filter is applied here, upstream of dispatch, so a
+    /// filtered-out rule never enters the work queue or triggers its engine
+    /// (in particular, no LLM call). With `emit_semantic_payload` set, the
+    /// semantic/session rules are collected into the deferred set instead of
+    /// dispatched; deterministic rules still run. Deferred rules out of
+    /// scope for the file are dropped, mirroring the dispatch path.
+    fn partition_rules(&self, match_path: &Path, collect_explain: bool) -> RulePartition<'_> {
         let filter: &HashSet<String> = &self.options.rules;
-        let mut selected: Vec<(&String, &Rule)> = Vec::new();
-        let mut deferred_rules: Vec<crate::verdict_deferred::DeferredRule> = Vec::new();
+        let mut partition = RulePartition {
+            selected: Vec::new(),
+            deferred: Vec::new(),
+            explain: Vec::new(),
+        };
         for (rule_id, rule) in &self.config.rules {
             if !filter.is_empty() && !filter.contains(rule_id.as_str()) {
                 continue;
             }
-            if should_defer(rule.engine, &self.options) {
-                // D4: use the load-time cached matcher — no GlobSet rebuild per call.
-                if !self.rule_matches_path(rule_id, &match_path) {
-                    continue;
-                }
-                deferred_rules.push(crate::verdict_deferred::DeferredRule {
+            if !should_defer(rule.engine, &self.options) {
+                partition.selected.push((rule_id, rule));
+                continue;
+            }
+            if !self.rule_matches_path(rule_id, match_path) {
+                continue;
+            }
+            partition
+                .deferred
+                .push(crate::verdict_deferred::DeferredRule {
                     id: rule_id.clone(),
                     description: rule.description.clone(),
                     severity: severity_string(rule.severity),
@@ -1209,59 +1138,58 @@ impl HectorEngine {
                         _ => unreachable!("should_defer guards on Semantic/Session"),
                     },
                 });
-                if collect_explain {
-                    explain.push(RuleExplain {
-                        rule_id: rule_id.clone(),
-                        engine: rule.engine,
-                        outcome: ExplainOutcome::Skipped {
-                            reason: "deferred_subagent".into(),
-                        },
-                    });
-                }
-                continue;
+            if collect_explain {
+                partition.explain.push(RuleExplain {
+                    rule_id: rule_id.clone(),
+                    engine: rule.engine,
+                    outcome: ExplainOutcome::Skipped {
+                        reason: "deferred_subagent".into(),
+                    },
+                });
             }
-            selected.push((rule_id, rule));
         }
+        partition
+    }
 
-        // B1: dispatch rules in parallel. Output order matches input
-        // (`BTreeMap` key order, preserved by the partitioning loop
-        // above) — `par_iter().collect::<Vec<_>>()` is deterministic.
-        // Single-rule workloads skip pool construction entirely.
+    /// Evaluate the selected rules and fold their outcomes. Output order
+    /// matches input (`BTreeMap` key order), so the parallel collect is
+    /// deterministic. Single-rule workloads skip pool construction.
+    fn dispatch_selected(
+        &self,
+        selected: &[(&String, &Rule)],
+        inputs: &CheckInputs<'_>,
+    ) -> DispatchOutcome {
         let outcomes: Vec<RuleOutcome> = if selected.len() <= 1 {
             selected
                 .iter()
-                .map(|(rule_id, rule)| self.evaluate_one_rule(rule_id, rule, &inputs))
+                .map(|(rule_id, rule)| self.evaluate_one_rule(rule_id, rule, inputs))
                 .collect()
         } else {
             let pool = self.execution_pool();
             pool.install(|| {
                 selected
                     .par_iter()
-                    .map(|(rule_id, rule)| self.evaluate_one_rule(rule_id, rule, &inputs))
+                    .map(|(rule_id, rule)| self.evaluate_one_rule(rule_id, rule, inputs))
                     .collect()
             })
         };
 
-        let mut records: Vec<PerRuleRecord> = Vec::new();
+        let mut out = DispatchOutcome::default();
         for outcome in outcomes {
-            violations.extend(outcome.violations);
-            if let Some(id) = outcome.passed {
-                passed.push(id);
-            }
-            if let Some(row) = outcome.explain {
-                explain.push(row);
-            }
-            if let Some(rec) = outcome.record {
-                records.push(rec);
-            }
+            out.violations.extend(outcome.violations);
+            out.passed.extend(outcome.passed);
+            out.explain.extend(outcome.explain);
+            out.records.extend(outcome.record);
         }
+        out
+    }
 
-        // P2-6: a corrupt or unreadable baseline used to fall through
-        // `unwrap_or_default()` silently — operators got unrelated
-        // suppression behavior with no diagnostic. Now: `NotFound` stays
-        // silent (the common first-run state), any other load failure
-        // surfaces a one-line warning to stderr and we proceed with an
-        // empty baseline so the check still runs.
+    /// Drop violations already recorded in the baseline. A corrupt or
+    /// unreadable baseline warns and is treated as empty so the check still
+    /// runs; a missing baseline (the common first-run state) is silent.
+    /// `content` lets the baseline compare each stored `line_sha256` against
+    /// the current line text.
+    fn apply_baseline(&self, violations: &mut Vec<Violation>, content: &str) {
         let baseline_path = self.config_dir.join(".hector/baseline.json");
         let baseline = match crate::baseline::Baseline::load(&baseline_path) {
             Ok(b) => b,
@@ -1278,91 +1206,157 @@ impl HectorEngine {
                 crate::baseline::Baseline::default()
             }
         };
-        // E1: pass the post-edit file content so the baseline can compare
-        // each stored `line_sha256` against the current line text. A
-        // missing checksum (legacy v1 entry) falls back to the pre-E1
-        // tuple-only match — see `Baseline::contains_with_content`.
-        violations.retain(|v| !baseline.contains_with_content(v, Some(&content)));
+        violations.retain(|v| !baseline.contains_with_content(v, Some(content)));
+    }
 
-        // fix(3): pre-expand deferred rule contexts BEFORE the verdict is
-        // finalised. Failures become __internal violations → InternalError
-        // verdict under B7, matching the direct-API path. __internal
-        // violations are never in a baseline (rule_id "==__internal" won't
-        // match any operator-authored fingerprint), so the retain above
-        // has no effect on them.
-        //
-        // `evaluator_input` is computed here, before `deferred_rules` is
-        // moved into `build_deferred_envelope`, to avoid a borrow-after-move
-        // (the expansion tuples borrow `&DeferredRule` for `RuleRef::id`).
-        let deferred_evaluator_input: Option<String>;
-        {
-            let deferred_expansion = self.expand_deferred_contexts(&deferred_rules, &path, &diff);
-            push_expansion_failures_into_violations(
-                &deferred_expansion.failures,
-                &path,
-                &mut violations,
-            );
-            let sentinel = crate::llm::prompt::Sentinel::new_random();
-            // Guard on successes (not `deferred_rules`) so an all-failures
-            // case yields None rather than `Some("")` — the resulting
-            // verdict is InternalError and the envelope is suppressed
-            // either way, but the intent reads correctly.
-            deferred_evaluator_input = if deferred_expansion.successes.is_empty() {
-                None
-            } else {
-                Some(crate::llm::prompt::build_evaluator_input(
-                    &deferred_expansion.successes,
-                    &sentinel,
-                ))
+    /// Pre-expand the deferred rules' evaluation contexts and build the
+    /// evaluator-input string the in-session subagent and the direct-API
+    /// path both consume — keeping the evidence byte-identical between them.
+    ///
+    /// Expansion failures are pushed onto `violations` as `__internal`
+    /// entries (yielding an `InternalError` verdict, matching the direct-API
+    /// path) rather than silently dropped. Returns `None` when no context
+    /// expanded, so an all-failures run reads as "no input" rather than an
+    /// empty string.
+    fn build_deferred_evaluator_input(
+        &self,
+        deferred_rules: &[crate::verdict_deferred::DeferredRule],
+        path: &Path,
+        diff: &str,
+        violations: &mut Vec<Violation>,
+    ) -> Option<String> {
+        let expansion = self.expand_deferred_contexts(deferred_rules, path, diff);
+        push_expansion_failures_into_violations(&expansion.failures, path, violations);
+        if expansion.successes.is_empty() {
+            return None;
+        }
+        let sentinel = crate::llm::prompt::Sentinel::new_random();
+        Some(crate::llm::prompt::build_evaluator_input(
+            &expansion.successes,
+            &sentinel,
+        ))
+    }
+
+    /// When a deterministic block fires during an `emit_semantic_payload`
+    /// run, the CLI suppresses the deferred envelope and prints only the
+    /// block verdict — which would erase the deferred rules. Surface them on
+    /// `verdict.deferred_rules` so the operator still sees what their policy
+    /// would have evaluated. No-op unless the verdict is a block with
+    /// deferred rules present.
+    fn surface_deferred_on_block(
+        &self,
+        verdict: &mut Verdict,
+        deferred_rules: &[crate::verdict_deferred::DeferredRule],
+    ) {
+        if !matches!(verdict.status, Status::Block) || deferred_rules.is_empty() {
+            return;
+        }
+        verdict.deferred_rules = deferred_rules
+            .iter()
+            .filter_map(|d| {
+                self.config_rule(&d.id)
+                    .map(|r| crate::verdict::DeferredRuleRef {
+                        rule_id: d.id.clone(),
+                        severity: match r.severity {
+                            crate::config::Severity::Error => crate::verdict::Severity::Error,
+                            crate::config::Severity::Warning => crate::verdict::Severity::Warning,
+                        },
+                        reason: "suppressed by deterministic block".to_string(),
+                    })
+            })
+            .collect();
+    }
+
+    /// Central orchestration: normalize the input, short-circuit skipped
+    /// files, partition rules, dispatch the deterministic ones, filter the
+    /// baseline, build the deferred envelope, and log telemetry.
+    fn check_inner(&self, input: CheckInput, collect_explain: bool) -> Result<CheckReport> {
+        use crate::disable::DisableMap;
+        let start = Instant::now();
+
+        let (path, content, diff, content_authoritative) =
+            match self.resolve_check_input(input, start) {
+                InputResolution::Resolved {
+                    path,
+                    content,
+                    diff,
+                    content_authoritative,
+                } => (path, content, diff, content_authoritative),
+                InputResolution::Rejected(verdict) => {
+                    return Ok(CheckReport {
+                        verdict,
+                        explain: vec![],
+                        deferred: None,
+                    });
+                }
             };
+
+        if self.skip.matches(&path) {
+            let verdict = Self::skip_verdict(start);
+            self.append_check_log(
+                &path.display().to_string(),
+                verdict.status,
+                verdict.elapsed_ms,
+                vec![],
+            );
+            return Ok(CheckReport {
+                verdict,
+                explain: Vec::new(),
+                deferred: None,
+            });
         }
 
-        let mut verdict =
-            Verdict::from_violations(violations, passed, start.elapsed().as_millis() as u64);
-        // R6 (2026-05-23): when a deterministic block fires alongside an
-        // `--emit-semantic-payload` run, the deferred semantic/session
-        // rules would otherwise vanish — the CLI suppresses the envelope
-        // and emits only the block verdict. Surface them on the verdict
-        // itself so the user (and the Claude Code interpreter skill) can
-        // see what their policy would have evaluated.
-        if matches!(verdict.status, Status::Block) && !deferred_rules.is_empty() {
-            verdict.deferred_rules = deferred_rules
-                .iter()
-                .filter_map(|d| {
-                    self.config_rule(&d.id)
-                        .map(|r| crate::verdict::DeferredRuleRef {
-                            rule_id: d.id.clone(),
-                            severity: match r.severity {
-                                crate::config::Severity::Error => crate::verdict::Severity::Error,
-                                crate::config::Severity::Warning => {
-                                    crate::verdict::Severity::Warning
-                                }
-                            },
-                            reason: "suppressed by deterministic block".to_string(),
-                        })
-                })
-                .collect();
-        }
-        // P2-21: same rationale as the skip-path append above.
-        if let Err(e) = crate::telemetry::append(
-            &self.config_dir.join(".hector/log.jsonl"),
-            &LogEntry::Check {
-                ts: chrono::Utc::now().to_rfc3339(),
-                file: path.display().to_string(),
-                status: verdict.status,
-                elapsed_ms: verdict.elapsed_ms,
-                rules: records,
+        let disable_map = DisableMap::from_source(&content);
+        let match_path = relativize(&path, &self.config_dir);
+        let inputs = CheckInputs {
+            match_path: &match_path,
+            path: &path,
+            // Authoritative content passes through verbatim (empty proposed
+            // content is still a valid target). Non-authoritative empty
+            // content collapses to `None` so engines emit `__internal`
+            // rather than passing on a missed read.
+            content: if content_authoritative || !content.is_empty() {
+                Some(content.as_str())
+            } else {
+                None
             },
-        ) {
-            eprintln!("hector: telemetry append failed: {e:#}");
-        }
-        let deferred = self.build_deferred_envelope(
-            deferred_rules,
-            &path,
-            &diff,
-            &verdict,
-            deferred_evaluator_input,
+            diff: &diff,
+            disable_map: &disable_map,
+            collect_explain,
+        };
+
+        let RulePartition {
+            selected,
+            deferred,
+            mut explain,
+        } = self.partition_rules(&match_path, collect_explain);
+
+        let mut dispatch = self.dispatch_selected(&selected, &inputs);
+        explain.append(&mut dispatch.explain);
+
+        self.apply_baseline(&mut dispatch.violations, &content);
+
+        // Computed before `deferred` is consumed by `build_deferred_envelope`
+        // — the expansion tuples borrow each `DeferredRule`.
+        let evaluator_input =
+            self.build_deferred_evaluator_input(&deferred, &path, &diff, &mut dispatch.violations);
+
+        let mut verdict = Verdict::from_violations(
+            dispatch.violations,
+            dispatch.passed,
+            start.elapsed().as_millis() as u64,
         );
+        self.surface_deferred_on_block(&mut verdict, &deferred);
+
+        self.append_check_log(
+            &path.display().to_string(),
+            verdict.status,
+            verdict.elapsed_ms,
+            dispatch.records,
+        );
+
+        let deferred =
+            self.build_deferred_envelope(deferred, &path, &diff, &verdict, evaluator_input);
         Ok(CheckReport {
             verdict,
             explain,
@@ -1370,20 +1364,12 @@ impl HectorEngine {
         })
     }
 
-    /// H1 / B4 / B5 / C5: assemble the `DeferredVerdict` envelope from
-    /// the rules that were short-circuited by `should_defer`. Returns
-    /// `None` when the list is empty so the CLI can branch on a single
-    /// `Option`. Lives outside `check_inner` to keep that function's
-    /// cognitive complexity below the workspace cap.
-    ///
-    /// - B4 (2026-05-25): sweeps warn-severity deterministic violations
-    ///   off the verdict and onto `payload.warnings`. The CLI suppresses
-    ///   verdict output when it emits a deferred envelope, so before B4
-    ///   these violations vanished from stdout.
-    /// - B5: threads `expand_context` per rule so a rule authoring
-    ///   `context: file` sees the full file in `evaluator_input` (the
-    ///   subagent and direct-API routes now read the same prompt).
-    /// - C5: rolls a fresh random sentinel for each envelope.
+    /// Assemble the `DeferredVerdict` envelope from the rules
+    /// `should_defer` short-circuited; `None` when there are none. The
+    /// envelope sweeps warn-severity violations onto `payload.warnings`
+    /// (the CLI suppresses the verdict JSON when it emits an envelope),
+    /// threads `expand_context` per rule so the subagent and direct-API
+    /// routes read the same prompt, and rolls a fresh sentinel each time.
     fn build_deferred_envelope(
         &self,
         deferred_rules: Vec<crate::verdict_deferred::DeferredRule>,
@@ -1395,32 +1381,25 @@ impl HectorEngine {
         if deferred_rules.is_empty() {
             return None;
         }
-        // Suppress the envelope on terminal verdict states. The CLI does
-        // this too (check.rs gates on Block | InternalError), but pinning
-        // it at the runner level means library callers see the same
-        // contract: no envelope when the verdict already says "stop."
-        // Block: R6 surfaces deferred rules on `Verdict.deferred_rules`.
-        // InternalError: an engine-level failure short-circuits the LLM
-        // dispatch the envelope was built to enable.
+        // Suppress the envelope on terminal verdict states. The CLI gates on
+        // this too, but pinning it here means library callers get the same
+        // contract: no envelope once the verdict says "stop." On Block, the
+        // deferred rules are surfaced on `verdict.deferred_rules` instead; on
+        // InternalError, an engine failure has short-circuited the dispatch
+        // the envelope exists to enable.
         if matches!(verdict.status, Status::Block | Status::InternalError) {
             return None;
         }
         let evaluator_input = evaluator_input.unwrap_or_default();
 
-        // R5: thread the optional evaluator_model override from the
-        // loaded `llm:` block into the payload. Only the subagent
-        // provider reads this; other providers never construct a
-        // deferred envelope so the value would be meaningless anyway.
+        // Thread the optional evaluator_model override from the loaded `llm:`
+        // block into the payload. Only the subagent provider reads it.
         let evaluator_model = self
             .config
             .llm
             .as_ref()
             .and_then(|l| l.evaluator_model.clone());
 
-        // B4: sweep warn-severity deterministic violations onto the
-        // envelope so the operator (and the in-session subagent) sees
-        // them. Block-severity violations stay on `verdict.violations`;
-        // the CLI suppresses the deferred envelope in that case anyway.
         let warnings = build_deferred_warnings(verdict);
 
         Some(crate::verdict_deferred::DeferredVerdict {
@@ -1441,20 +1420,18 @@ impl HectorEngine {
         })
     }
 
-    /// B5 / fix(3): for each deferred rule, call `engine::context::expand_context`
-    /// directly — the same function used by `render_semantic_prompts` —
-    /// so the deferred envelope's `evaluator_input` and the direct-API
-    /// prompt produce byte-identical evidence for the same `(rule, input)`.
+    /// Expand each deferred rule's context via the same
+    /// `engine::context::expand_context` that `render_semantic_prompts` uses,
+    /// so the envelope's `evaluator_input` and the direct-API prompt produce
+    /// byte-identical evidence for the same `(rule, input)`.
     ///
-    /// Unlike the old `collect_deferred_rule_tuples`, expansion errors are
-    /// NOT silently dropped. They are returned in `failures` so the caller
-    /// can thread them into violations as `__internal` entries before the
-    /// verdict is finalised. This matches the direct-API path (B7 / exit 3).
+    /// Expansion errors are returned in `failures` (not dropped) so the
+    /// caller can thread them into violations as `__internal` entries before
+    /// the verdict is finalised, matching the direct-API path.
     ///
-    /// The lifetime constraint is "borrows from `deferred_rules` and
-    /// `self` for the same duration `'a`" — `RuleRef::id` points into
-    /// the `DeferredRule` slice, and `RuleRef::rule` points into the
-    /// config map. Both must outlive the returned tuples.
+    /// The `'a` constraint ties the returned tuples to `deferred_rules` and
+    /// `self`: `RuleRef::id` borrows the `DeferredRule` slice and
+    /// `RuleRef::rule` borrows the config map.
     fn expand_deferred_contexts<'a>(
         &'a self,
         deferred_rules: &'a [crate::verdict_deferred::DeferredRule],
@@ -1493,14 +1470,10 @@ impl HectorEngine {
         }
     }
 
-    /// C4: render the LLM prompts that *would* be sent for every in-scope
-    /// semantic rule, without dispatching anything. Used by
-    /// `hector check --print-prompt` to debug prompt construction without
-    /// burning API calls.
-    ///
-    /// Honors `CheckOptions.rules` (the `--rule` filter) and the per-rule
-    /// scope matcher. Skips rules whose engine is not `semantic`. Returns
-    /// an empty vec if no semantic rule is in scope.
+    /// Render the prompts that *would* be sent for every in-scope semantic
+    /// rule, without dispatching — `hector check --print-prompt` uses this to
+    /// debug prompt construction without burning API calls. Honors the
+    /// `--rule` filter and per-rule scope; non-semantic rules are skipped.
     pub fn render_semantic_prompts(&self, input: CheckInput) -> Result<Vec<RenderedPrompt>> {
         let (path, diff) = match input {
             CheckInput::File { path, .. } => (path, String::new()),
@@ -1515,7 +1488,7 @@ impl HectorEngine {
             if rule.engine != EngineKind::Semantic {
                 continue;
             }
-            // D4: use the load-time cached matcher — no GlobSet rebuild per call.
+            // Use the load-time cached matcher — no GlobSet rebuild per call.
             if !self.rule_matches_path(rule_id, &match_path) {
                 continue;
             }
@@ -1584,10 +1557,8 @@ impl HectorEngine {
         Some(reason_str)
     }
 
-    /// D1: split the per-rule arms of `check_session` out so the loop
-    /// body stays under the cognitive-complexity cap. Pushes per-rule
-    /// outcomes into the shared accumulators and emits a
-    /// `SemanticVerdict` for each rule that actually reached the LLM.
+    /// Fold one session rule's outcome into the shared accumulators and emit
+    /// a `SemanticVerdict` for each rule that reached the LLM.
     fn absorb_session_outcome(
         &self,
         rule_id: &str,
@@ -1623,7 +1594,7 @@ impl HectorEngine {
                     reason: None,
                 });
             }
-            // P1-1: session-engine runtime errors are Engine::Internal.
+            // Session-engine runtime errors are Engine::Internal.
             Err(e) => {
                 acc.violations.push(crate::verdict::Violation {
                     rule_id: format!("{rule_id}__internal"),
@@ -1662,18 +1633,16 @@ impl HectorEngine {
             if rule.engine != crate::config::EngineKind::Session {
                 continue;
             }
-            // P2-17: per-edit scope filtering. The session engine
-            // aggregates `state.edits` into one LLM prompt; without
-            // filtering, a rule scoped to `src/auth/**` would fire on
-            // sessions whose every edit lives under `src/billing/`. We
-            // use `rule_matches_path` (same as `check_inner`) so that
-            // absolute adapter paths are relativized before matching —
-            // B2: pathed scopes like `src/auth/**` were silently never
-            // firing when edits carried absolute paths.
+            // Per-edit scope filtering. The session engine aggregates
+            // `state.edits` into one LLM prompt; without filtering, a rule
+            // scoped to `src/auth/**` would fire on a session whose every edit
+            // lives under `src/billing/`. `rule_matches_path` (as in
+            // `check_inner`) relativizes absolute adapter paths before
+            // matching, so pathed scopes fire even when edits carry absolute
+            // paths.
             let filtered_edits: Vec<crate::session_state::EditRecord> = state
                 .edits
                 .iter()
-                // D4: rule_id is in scope from self.config.rules.iter() above.
                 .filter(|e| self.rule_matches_path(rule_id, std::path::Path::new(&e.file)))
                 .cloned()
                 .collect();
@@ -1711,7 +1680,7 @@ impl HectorEngine {
             passed,
             start.elapsed().as_millis() as u64,
         );
-        // P2-21: same rationale as the per-file append above.
+        // Best-effort, same as the per-file append above.
         if let Err(e) = crate::telemetry::append(
             &self.config_dir.join(".hector/log.jsonl"),
             &LogEntry::Check {
@@ -1727,7 +1696,7 @@ impl HectorEngine {
         Ok(verdict)
     }
 
-    /// B3: session-stop path for the Claude Code subagent provider.
+    /// Session-stop path for the Claude Code subagent provider.
     ///
     /// When `options.emit_semantic_payload` is true AND at least one
     /// `engine: session` rule is in scope for at least one edit, this
@@ -1746,8 +1715,8 @@ impl HectorEngine {
     ) -> Result<CheckReport> {
         use crate::engine::session::framed_aggregate;
 
-        // B3: if emit_semantic_payload is set, collect in-scope session
-        // rules into a deferred envelope instead of requiring an LlmClient.
+        // In deferred mode, collect in-scope session rules into an envelope
+        // instead of requiring an LlmClient.
         if self.options.emit_semantic_payload {
             let start = Instant::now();
             let mut deferred_rules: Vec<crate::verdict_deferred::DeferredRule> = Vec::new();
@@ -1786,12 +1755,11 @@ impl HectorEngine {
                 // below is what the subagent actually evaluates with.
                 let aggregate_diff = framed_aggregate(state);
 
-                // Build the per-rule evaluator input. Each session rule
-                // sees only the edits matching its own scope — same
-                // contract as the LLM path (check_session at ~1592-1614
-                // builds a scoped_state per rule before calling
-                // framed_aggregate). The "direct-API and subagent see the
-                // same evidence" invariant requires this per-rule scoping.
+                // Build the per-rule evaluator input. Each session rule sees
+                // only the edits matching its own scope — the same per-rule
+                // scoping `check_session` applies before calling
+                // `framed_aggregate`, which the "direct-API and subagent see
+                // the same evidence" invariant requires.
                 let sentinel = crate::llm::prompt::Sentinel::new_random();
                 let evaluator_tuples: Vec<(
                     crate::llm::prompt::RuleRef<'_>,

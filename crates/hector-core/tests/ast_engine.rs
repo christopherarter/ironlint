@@ -67,9 +67,9 @@ fn ast_engine_no_match_no_violation() {
 
 #[test]
 fn ast_violation_populates_column_and_context() {
-    // P1-3: AST violations must populate `column` and `context` (the verdict
-    // shape defines both; AST has the data via `start_pos().column()` and we
-    // can synthesize a ±N-line window around the match).
+    // AST violations must populate `column` and `context`: the verdict shape
+    // defines both, AST has the column via `start_pos().column()`, and we
+    // synthesize a ±N-line window around the match for context.
     let rule = Rule {
         description: "x".into(),
         engine: EngineKind::Ast,
@@ -169,10 +169,8 @@ fn ast_engine_errors_when_content_missing() {
     assert!(format!("{err:#}").contains("content"));
 }
 
-// Regression: P1-11. The trait used to return `Option<Violation>`, so the
-// AST engine could only ever surface the first match — every other hit in
-// the same file was silently dropped. Now `RuleEngine::run` returns
-// `Vec<Violation>` and AST must emit one entry per matched node.
+// Regression: the AST engine must emit one violation per matched node, not
+// just the first. `RuleEngine::run` returns `Vec<Violation>`.
 #[test]
 fn ast_returns_every_match_not_just_first() {
     let rule = Rule {

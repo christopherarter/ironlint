@@ -61,7 +61,7 @@ pub enum Command {
         /// without dispatching to the LLM. Debug-only.
         #[arg(long = "print-prompt")]
         print_prompt: bool,
-        /// H1: instead of dispatching `engine: semantic` and
+        /// Instead of dispatching `engine: semantic` and
         /// `engine: session` rules to the configured LLM, collect them
         /// into a `DeferredVerdict` JSON envelope for an in-session
         /// Claude Code subagent to evaluate. Adapter-internal.
@@ -71,9 +71,9 @@ pub enum Command {
             conflicts_with = "print_prompt"
         )]
         emit_semantic_payload: bool,
-        /// C4: allow checking files whose canonical path falls outside
-        /// the directory containing the config file. Disabled by default
-        /// to prevent wrappers from inadvertently running policy against
+        /// Allow checking files whose canonical path falls outside the
+        /// directory containing the config file. Disabled by default to
+        /// prevent wrappers from inadvertently running policy against
         /// arbitrary host files.
         #[arg(long, default_value_t = false)]
         allow_external_paths: bool,

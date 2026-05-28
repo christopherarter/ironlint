@@ -18,7 +18,7 @@ fn write_trusted_cfg(dir: &std::path::Path, body: &str) -> std::path::PathBuf {
     cfg
 }
 
-/// P2-12: a Block verdict from `hector check --session` must NOT clear
+/// A Block verdict from `hector check --session` must NOT clear
 /// `.hector/session.json` — the user needs the session preserved to
 /// re-inspect the offending edits. Only Pass and Warn explicitly
 /// acknowledge a session and clear it.

@@ -1,13 +1,11 @@
-//! B4 + B5 + C5: deferred envelope v3.
+//! Deferred envelope v3 invariants:
 //!
-//! - B4: warn-severity deterministic violations must travel on
-//!   `DeferredPayload.warnings` (they vanished from the CLI's deferred
-//!   branch previously).
-//! - B5: `build_deferred_envelope` must honor each rule's `context:`
-//!   declaration so the subagent route sees the same prompt as the
-//!   direct-API route (no silent prompt drift).
-//! - C5: sentinel delimiters must be per-call random so attacker
-//!   content cannot forge them.
+//! - Warn-severity deterministic violations must travel on
+//!   `DeferredPayload.warnings`, not be dropped from the deferred branch.
+//! - `build_deferred_envelope` must honor each rule's `context:` declaration
+//!   so the subagent route sees the same prompt as the direct-API route.
+//! - Sentinel delimiters must be per-call random so attacker content cannot
+//!   forge them.
 
 use hector_core::runner::{CheckInput, CheckOptions, HectorEngine};
 use std::collections::HashSet;

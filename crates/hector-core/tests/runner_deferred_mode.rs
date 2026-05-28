@@ -1,6 +1,6 @@
-//! H1 — runner-level test that `emit_semantic_payload: true` causes
-//! `Semantic` and `Session` rules to be collected into the deferred
-//! envelope rather than dispatched.
+//! Runner-level test that `emit_semantic_payload: true` causes `Semantic`
+//! and `Session` rules to be collected into the deferred envelope rather
+//! than dispatched.
 
 use hector_core::runner::{CheckInput, CheckOptions, HectorEngine};
 use std::collections::HashSet;
@@ -125,11 +125,11 @@ fn deferred_mode_envelope_carries_diff_in_diff_input() {
 
 #[test]
 fn deferred_mode_surfaces_deferred_rules_on_blocked_verdict() {
-    // R6 (2026-05-23): when a deterministic script rule blocks AND a
-    // semantic rule is in scope, the deferred rule used to vanish from
-    // the verdict — the user couldn't tell whether their semantic rule
-    // was even configured. Now the deterministic Verdict carries
-    // `deferred_rules: [...]` so the interpreter skill can surface them.
+    // When a deterministic script rule blocks AND a semantic rule is in
+    // scope, the deferred rule must still appear in the verdict — otherwise
+    // the user can't tell whether their semantic rule was even configured.
+    // The deterministic Verdict carries `deferred_rules: [...]` so the
+    // interpreter skill can surface them.
     let tmp = tempdir().unwrap();
     let cfg_yaml = r#"
 schema_version: 2
@@ -200,7 +200,7 @@ rules:
         "script violation must appear in verdict; got {:?}",
         report.verdict.violations
     );
-    // R6 payoff: deferred semantic rule is surfaced on the verdict itself.
+    // The deferred semantic rule is surfaced on the verdict itself.
     let deferred = &report.verdict.deferred_rules;
     assert_eq!(
         deferred.len(),

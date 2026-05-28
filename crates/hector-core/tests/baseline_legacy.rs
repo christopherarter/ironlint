@@ -1,6 +1,6 @@
-//! Pin the v1 on-disk shape: a baseline written by pre-E1 hector must
-//! continue to load and suppress matching violations during the grace
-//! period.
+//! Pin the v1 on-disk shape: a baseline written by an older hector (no
+//! line-content checksum) must still load and suppress matching violations
+//! during the grace period.
 
 use hector_core::baseline::Baseline;
 use hector_core::verdict::{Engine, Severity, Violation};

@@ -160,7 +160,7 @@ fn semantic_verdict_without_file_omits_field() {
     );
 }
 
-// --- D1: typed telemetry --------------------------------------------------
+// --- typed telemetry ------------------------------------------------------
 
 #[test]
 fn session_init_round_trips() {
@@ -215,7 +215,7 @@ fn check_round_trips_with_per_rule_records() {
 
 #[test]
 fn check_with_zero_rules_round_trips_and_marks_a_skipped_file() {
-    // A2 skip-pattern fold: file was checked, no rule ran.
+    // Skip-pattern fold: file was checked, no rule ran.
     let entry = LogEntry::Check {
         ts: "2026-05-13T12:00:02Z".into(),
         file: "Cargo.lock".into(),
@@ -275,7 +275,7 @@ fn semantic_skipped_round_trips() {
     assert_eq!(back, entry);
 }
 
-// --- D1: insta snapshots, one per variant ---------------------------------
+// --- insta snapshots, one per variant -------------------------------------
 
 use insta::assert_json_snapshot;
 
@@ -352,7 +352,7 @@ fn snapshot_semantic_skipped() {
 
 #[test]
 fn snake_case_field_names_match_spec() {
-    // Spec §D1 says fields are snake_case. Pin against accidental rename.
+    // Telemetry fields are snake_case per spec. Pin against accidental rename.
     let entry = LogEntry::SessionInit {
         ts: "t".into(),
         hector_version: "x".into(),

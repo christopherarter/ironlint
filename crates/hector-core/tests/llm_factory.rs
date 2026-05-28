@@ -157,8 +157,8 @@ async fn hector_engine_load_auto_wires_llm_from_config() {
     );
 }
 
-// ---- P1-5: parse_verdicts must error on unknown status, not silently emit
-// a violation. Status matching is case-insensitive so models that emit
+// parse_verdicts must error on an unknown status, not silently emit a
+// violation. Status matching is case-insensitive so models that emit
 // "Pass" / "PASS" / "Violation" still parse.
 
 #[test]

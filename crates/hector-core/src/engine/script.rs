@@ -22,9 +22,9 @@ impl RuleEngine for ScriptEngine {
 
 /// Run a single script rule and return every violation it produced.
 ///
-/// `output: passthrough` (default since R4, 2026-05-23) emits one violation
-/// with the verbatim stdout+stderr in `message` and `line: None` — matches
-/// bully and keeps pretty-printed linter frames intact.
+/// `output: passthrough` (the default) emits one violation with the verbatim
+/// stdout+stderr in `message` and `line: None` — matches bully and keeps
+/// pretty-printed linter frames intact.
 /// `output: parsed` opts into [`output::parse`], which extracts structured
 /// records (`file:line:col: msg`, `grep -n`, JSON) and emits one `Violation`
 /// per record. Either way, an exit code of 0 still means "no violations."
@@ -58,10 +58,10 @@ pub fn run_script_rule(
     };
     Ok(match rule.output {
         OutputMode::Parsed => {
-            // Parsed mode preserves the historical "stderr if non-empty else
-            // stdout" preference — canonical lint output (clippy, ruff,
-            // eslint) lives on a single channel, and the parser is
-            // line-oriented; mixing both streams would interleave noise.
+            // Parsed mode prefers stderr when non-empty, else stdout —
+            // canonical lint output (clippy, ruff, eslint) lives on a single
+            // channel, and the parser is line-oriented; mixing both streams
+            // would interleave noise.
             let raw = if outcome.stderr.trim().is_empty() {
                 outcome.stdout.as_str()
             } else {
@@ -85,7 +85,7 @@ pub fn run_script_rule(
     })
 }
 
-/// E2 parsed mode: one [`Violation`] per [`ParsedRecord`]. The empty-records
+/// Parsed mode: one [`Violation`] per [`ParsedRecord`]. The empty-records
 /// branch only fires when the script exited non-zero with no output at all on
 /// the chosen stream — `output::parse` always returns ≥1 record for any
 /// non-blank input via the fallback. We fabricate a description-only
@@ -138,7 +138,7 @@ fn record_to_violation(
     }
 }
 
-/// E2 passthrough mode (bully parity): one violation, the combined
+/// Passthrough mode (bully parity): one violation, the combined
 /// stdout+stderr in `message`, `line: None`, `column: None`.
 ///
 /// The two streams are joined with a single newline, with empty/whitespace

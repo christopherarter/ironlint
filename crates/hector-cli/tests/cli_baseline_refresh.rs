@@ -1,5 +1,5 @@
-//! E1 acceptance: `hector baseline refresh` re-hashes every entry to
-//! match current file content.
+//! `hector baseline refresh` re-hashes every entry to match current file
+//! content.
 
 use assert_cmd::Command;
 use std::fs;

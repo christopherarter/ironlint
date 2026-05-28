@@ -1,12 +1,12 @@
 //! Script-output parser.
 //!
-//! Bully parity (E2): script rules that emit canonical
+//! Recovers structure from script rules that emit canonical
 //! `file:line:col: msg` output (ruff, eslint --format compact, clippy
-//! --message-format short, …) had their structure thrown away — the whole
-//! stderr landed verbatim in `Violation.message` with `line: None,
-//! column: None`. Worse, `grep -nE 'pattern' {file}` produced violations
-//! like `{ "line": null, "message": "14:matched-line" }`, where `14:` is
-//! the line number polluting the message.
+//! --message-format short, …). Without it the whole stream lands verbatim in
+//! `Violation.message` with `line: None, column: None`, and shapes like
+//! `grep -nE 'pattern' {file}` produce violations like
+//! `{ "line": null, "message": "14:matched-line" }` where the `14:` line
+//! number pollutes the message.
 //!
 //! [`parse`] takes the chosen output stream (stdout *or* stderr — the
 //! script engine still picks "stderr if non-empty else stdout") and

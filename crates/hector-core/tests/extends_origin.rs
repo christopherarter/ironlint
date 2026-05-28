@@ -1,7 +1,6 @@
-//! C3 — origin tracking on the post-extends merge. The walker must
-//! attribute every rule to the file it was defined in, with local
-//! definitions winning on collision (matching `resolve`'s existing
-//! merge semantics).
+//! Origin tracking on the post-extends merge. The walker must attribute
+//! every rule to the file it was defined in, with local definitions winning
+//! on collision (matching `resolve`'s merge semantics).
 
 use hector_core::config::extends::resolve_with_origin;
 use std::path::PathBuf;

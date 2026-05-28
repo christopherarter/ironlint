@@ -181,7 +181,7 @@ pub fn verify(input: &str) -> Result<()> {
 /// Update or insert the `trust:` block in the YAML source with a fresh fingerprint.
 ///
 /// Performs a string-level edit so comments, key order, and scalar style in the
-/// rest of the file are preserved verbatim (P2-7). The fingerprint itself is
+/// rest of the file are preserved verbatim. The fingerprint itself is
 /// computed via [`fingerprint`], which canonicalizes the YAML semantically and
 /// is unaffected by comments or formatting.
 ///

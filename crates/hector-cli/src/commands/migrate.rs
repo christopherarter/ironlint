@@ -18,7 +18,7 @@ pub fn run(dir: &Path, clean: bool) -> Result<i32> {
     let raw =
         std::fs::read_to_string(&bully).with_context(|| format!("reading {}", bully.display()))?;
 
-    // P2-8: parse-then-set instead of a naive string replace, which would also
+    // Parse-then-set instead of a naive string replace, which would also
     // rewrite `schema_version: 1` inside comments and string values. Comments
     // are lost by the serde round-trip; that's an explicit one-shot tradeoff
     // for migration (and we tell the user below).

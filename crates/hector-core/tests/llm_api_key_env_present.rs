@@ -1,5 +1,5 @@
-//! C1 — narrow public probe so `hector doctor` can report API-key presence
-//! using the same emptiness rule the runner uses internally.
+//! Narrow public probe so `hector doctor` can report API-key presence using
+//! the same emptiness rule the runner uses internally.
 
 use hector_core::llm::api_key_env_present;
 

@@ -16,10 +16,9 @@ static LEGACY_WARNING_EMITTED: OnceLock<()> = OnceLock::new();
 
 /// Per-entry baseline metadata.
 ///
-/// v3 (A1, 2026-05-25): tracks an optional `body_sha256` alongside the
-/// existing `line_sha256` so file-level (`line: None`) violations
-/// participate in content-aware matching. Without this, passthrough
-/// script output — the default since R4 — turned baseline into a
+/// An optional `body_sha256` sits alongside `line_sha256` so file-level
+/// (`line: None`) violations participate in content-aware matching. Without
+/// it, passthrough script output — the default — turns baseline into a
 /// permanent per-file disable.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EntryMeta {
@@ -31,17 +30,14 @@ pub struct EntryMeta {
 
 /// On-disk baseline.
 ///
-/// **v3 (A1, 2026-05-25):** `entries` values become `EntryMeta` with
-/// optional `line_sha256` and `body_sha256`. File-level violations now
-/// store a normalized body hash; replay requires both fingerprint AND
-/// body match.
+/// `entries` values are [`EntryMeta`] with optional `line_sha256` and
+/// `body_sha256`; file-level violations store a normalized body hash and
+/// replay requires both fingerprint AND body match.
 ///
-/// **v2 (E1, pre-A1):** entries mapped to `Option<String>` (line
-/// checksum). Loaded with a one-time grace-period read: missing
-/// `body_sha256` means "match on key+line only" — preserves prior
-/// behavior until the user runs `hector baseline refresh`.
-///
-/// **v1 (pre-E1):** flat fingerprint set. One-time deprecation warning.
+/// Older on-disk formats load with a grace period: v2 (`Option<String>` line
+/// checksum) matches on key+line only when `body_sha256` is missing; v1 (flat
+/// fingerprint set) fires a one-time deprecation warning. Both upgrade on the
+/// next `hector baseline refresh`.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Baseline {
     pub entries: BTreeMap<String, EntryMeta>,
@@ -122,14 +118,11 @@ impl Baseline {
 
     /// Persist the baseline atomically.
     ///
-    /// P2-5: the previous implementation used `std::fs::write` which
-    /// `open(O_TRUNC) → write → close`s the target. A crash between
-    /// truncate and the final write left a half-written or empty file
-    /// that future loads couldn't parse. We now serialize to a sibling
-    /// temp file under the same parent directory, `fsync` the bytes,
-    /// and then `rename` onto the target — POSIX guarantees the rename
-    /// is atomic on the same filesystem, so readers either see the full
-    /// old file or the full new file, never a torn one.
+    /// Serialize to a sibling temp file under the same parent directory,
+    /// `fsync` the bytes, then `rename` onto the target — POSIX guarantees the
+    /// rename is atomic on the same filesystem, so a crash mid-write never
+    /// leaves a torn file: readers see either the full old file or the full
+    /// new one.
     pub fn save(&self, path: &Path) -> Result<()> {
         use std::io::Write;
         let parent = path.parent().unwrap_or_else(|| Path::new("."));
@@ -164,13 +157,11 @@ impl Baseline {
 
     /// Stable identity of a violation for baseline membership.
     ///
-    /// P1-4: the previous `"{rule_id}::{file}::{line}"` format collided
-    /// when `::` appeared in either the rule_id or the file path
-    /// (e.g. `rule_id="a::b" file="c"` vs `rule_id="a" file="b::c"`).
-    /// JSON encoding of the tuple is unambiguous for every input and
-    /// also preserves the `Option<u32>` discriminant on `line`, so
-    /// `line: None` and `line: Some(0)` no longer collapse to the same
-    /// fingerprint.
+    /// JSON-encodes the `(rule_id, file, line)` tuple. A `::`-delimited string
+    /// would collide when `::` appears in the rule_id or file path
+    /// (`rule_id="a::b" file="c"` vs `rule_id="a" file="b::c"`); the JSON
+    /// encoding is unambiguous and preserves the `Option<u32>` discriminant on
+    /// `line`, so `line: None` and `line: Some(0)` stay distinct.
     pub fn fingerprint(v: &Violation) -> String {
         // Serializing a 3-tuple of primitives cannot fail; an `Err` here
         // would indicate a serde_json bug. Fall back to the legacy
@@ -181,7 +172,7 @@ impl Baseline {
 
     /// SHA-256 of `line.trim_end()`. `trim_end` strips trailing `\r`,
     /// spaces and tabs so the checksum survives CRLF translation and
-    /// editor whitespace normalization. Spec §E1 step 2 verbatim.
+    /// editor whitespace normalization.
     pub fn line_checksum(line: &str) -> String {
         let mut h = Sha256::new();
         h.update(line.trim_end().as_bytes());

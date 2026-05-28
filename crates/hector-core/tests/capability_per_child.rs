@@ -1,12 +1,10 @@
-//! B6 regression: `clone(2)`-per-child capability isolation. Pre-fix,
-//! the first `network: false` rule unshared `CLONE_NEWNET` on the parent
-//! process, blocking every subsequent rule from the network.
+//! Regression: `clone(2)`-per-child capability isolation. A `network: false`
+//! rule must unshare `CLONE_NEWNET` only for its own child, never on the
+//! parent process where it would block every subsequent rule from the network.
 //!
-//! These tests are Linux-only because the bug and its fix are
-//! Linux-only — macOS capability enforcement is best-effort and
-//! doesn't manipulate namespaces at all. On non-Linux platforms the
-//! file is `cfg`-gated out entirely so the crate still compiles and
-//! `cargo check` succeeds.
+//! Linux-only: macOS capability enforcement is best-effort and doesn't
+//! manipulate namespaces, so the file is `cfg`-gated out entirely on
+//! non-Linux platforms and the crate still compiles there.
 
 #![cfg(target_os = "linux")]
 
@@ -17,8 +15,8 @@ use std::path::Path;
 #[test]
 fn network_true_rule_keeps_network_after_network_false_rule_runs_first() {
     let cwd = Path::new(".");
-    // Run a network-off rule first — pre-B6 fix, this unshared the parent
-    // process and left every subsequent rule stuck inside the empty netns.
+    // Run a network-off rule first; it must not unshare the parent process
+    // and leave every subsequent rule stuck inside the empty netns.
     let _ = run_with_capabilities(
         "true",
         cwd,

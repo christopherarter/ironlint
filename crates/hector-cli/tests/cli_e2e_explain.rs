@@ -1,4 +1,4 @@
-//! C2 — CLI integration tests for `hector explain <file>`.
+//! CLI integration tests for `hector explain <file>`.
 
 use assert_cmd::Command;
 use tempfile::tempdir;

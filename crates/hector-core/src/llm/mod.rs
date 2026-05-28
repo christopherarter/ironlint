@@ -43,22 +43,18 @@ pub trait LlmClient: Send + Sync {
 ///
 /// Errors when the provider name is unknown.
 pub fn build_from_config(cfg: &LlmConfig) -> Result<Option<Box<dyn LlmClient>>> {
-    // H1 short-circuit: the subagent path neither needs nor reads
-    // api_key_env. Returning early before `read_api_key` avoids the
-    // "env var unset" stderr warning that would otherwise fire for
-    // a user who copy-pasted an Anthropic config and only switched
-    // `provider:`.
-    //
-    // R2 (2026-05-23): also warn-once if the user supplied an explicit
-    // `model:` value here — it's never read for this provider, and
-    // surfacing that fact at load time saves a confused "why isn't my
-    // model setting taking effect?" investigation.
+    // The subagent path neither needs nor reads api_key_env. Returning early
+    // before `read_api_key` avoids the "env var unset" stderr warning that
+    // would otherwise fire for a user who copy-pasted an Anthropic config and
+    // only switched `provider:`. Warn-once if they also supplied an explicit
+    // `model:` — it's never read for this provider, and saying so at load time
+    // heads off a "why isn't my model setting taking effect?" investigation.
     if cfg.provider == "claude-code-subagent" {
         warn_subagent_model_ignored(cfg.model.as_deref());
         return Ok(None);
     }
-    // R2: direct-API providers still require `model:`. The error names
-    // the provider so the diagnostic points at the right config field.
+    // Direct-API providers still require `model:`. The error names the
+    // provider so the diagnostic points at the right config field.
     let model = cfg.model.as_deref().ok_or_else(|| {
         anyhow!(
             "llm.model is required for provider `{}` (optional only for `claude-code-subagent`)",
@@ -96,11 +92,10 @@ pub fn build_from_config(cfg: &LlmConfig) -> Result<Option<Box<dyn LlmClient>>> 
             Ok(Some(Box::new(OpenAICompatClient::new(key, model, base))))
         }
         "claude-code-subagent" => {
-            // H1 follow-up: handled by the early-return above so that
-            // `read_api_key` never runs for this provider (no spurious
-            // "env var unset" warning). This arm is kept for match
-            // exhaustiveness signalling and so the bail arm's error
-            // message stays accurate.
+            // Handled by the early-return above so `read_api_key` never runs
+            // for this provider (no spurious "env var unset" warning). Kept
+            // for match exhaustiveness and so the bail arm's error message
+            // stays accurate.
             unreachable!("handled by the early-return above");
         }
         other => {
@@ -109,7 +104,7 @@ pub fn build_from_config(cfg: &LlmConfig) -> Result<Option<Box<dyn LlmClient>>> 
     }
 }
 
-/// R2: one-time per-process stderr warning when a user supplies
+/// One-time per-process stderr warning when a user supplies
 /// `llm.model:` under `provider: claude-code-subagent`. The subagent
 /// uses whatever model the parent Claude Code session is running, so
 /// the value is silently ignored — surfacing that fact saves debugging.
@@ -133,7 +128,7 @@ fn warn_subagent_model_ignored(model: Option<&str>) {
     );
 }
 
-/// C1: side-effect-free probe used by `hector doctor`.
+/// Side-effect-free probe used by `hector doctor`.
 ///
 /// Reports whether the configured `api_key_env` env var is set to a
 /// non-empty value, matching `read_api_key`'s emptiness rule (treats
@@ -197,9 +192,9 @@ static BEARER_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)bearer\s+[A-Za-z0-9_.\-]+").unwrap());
 
 /// Mask common secret shapes (sk-/pk-/api- prefixed keys, `Bearer <token>`)
-/// inside an arbitrary string. Used to scrub LLM-endpoint error bodies before
-/// they bubble up through `anyhow` (P2-15): a debug proxy or misconfigured
-/// server can echo the caller's API key back in the response.
+/// inside an arbitrary string. Scrubs LLM-endpoint error bodies before they
+/// bubble up through `anyhow`: a debug proxy or misconfigured server can echo
+/// the caller's API key back in the response.
 pub(crate) fn redact_secrets(s: &str) -> String {
     let first = SECRET_KEY_RE.replace_all(s, "[REDACTED]");
     let second = BEARER_RE.replace_all(&first, "[REDACTED]");

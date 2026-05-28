@@ -72,10 +72,9 @@ fn session_record_appends_when_file_exists() {
 
 #[test]
 fn session_record_concurrent_writers_do_not_clobber() {
-    // P2-1 regression: previously `record` did a non-atomic read-modify-write,
-    // so two concurrent writers would each load the same baseline and one
-    // would clobber the other. With flock around load+save, all 16 records
-    // must end up in the final session.json.
+    // `record` takes a flock around load+save, so two concurrent writers
+    // can't each load the same baseline and clobber one another: all 16
+    // records must end up in the final session.json.
     let dir = tempdir().unwrap();
     let dir_path = dir.path().to_path_buf();
     let file_path = dir_path.join("a.txt");

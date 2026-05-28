@@ -25,11 +25,10 @@ fn rejects_unknown_writes_policy_via_parser() {
 #[cfg(target_os = "linux")]
 #[test]
 fn capability_run_succeeds_for_unprivileged_user() {
-    // Regression for P0-8: pre-fix, unshare(CLONE_NEWNET) without CLONE_NEWUSER
-    // returned EPERM for unprivileged callers, which made `Command::output()`
-    // error and every script rule produced an `__internal` Block verdict.
-    // Post-fix: the parent probes unshare in advance; on EPERM it falls back
-    // to best-effort with a one-time stderr warning, so the command still runs.
+    // Regression: an unprivileged caller must still be able to run script
+    // rules. unshare(CLONE_NEWNET) without CLONE_NEWUSER returns EPERM for
+    // unprivileged callers, so the parent probes unshare in advance and, on
+    // EPERM, falls back to best-effort with a one-time stderr warning.
     let caps = Capabilities {
         network: false,
         writes: WritesPolicy::CwdOnly,
@@ -42,11 +41,11 @@ fn capability_run_succeeds_for_unprivileged_user() {
 
 #[test]
 fn capability_run_kills_runaway_command() {
-    // Regression for P1-12: a script rule like `sleep 30` previously wedged
-    // the entire `check` invocation because `Command::output()` blocks until
-    // the child exits. The capability runner now spawns the child with piped
-    // stdio and enforces a wall-clock timeout via `wait_timeout`, returning a
-    // hector-prefixed stderr and exit code 124 (matches GNU `timeout`).
+    // Regression: a runaway script rule like `sleep 30` must not wedge the
+    // whole `check` invocation. The capability runner spawns the child with
+    // piped stdio and enforces a wall-clock timeout via `wait_timeout`,
+    // returning a hector-prefixed stderr and exit code 124 (matches GNU
+    // `timeout`).
     //
     // Use unrestricted caps so the Linux unshare path doesn't take its
     // fallback branch — the timeout logic lives in the spawn helper that

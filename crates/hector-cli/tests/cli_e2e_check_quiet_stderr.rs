@@ -1,14 +1,8 @@
-//! R7: routine `hector check` invocations must stay quiet on stderr.
+//! Routine `hector check` invocations must stay quiet on stderr.
 //!
-//! Pre-R7 the macOS capability sandbox emitted a per-process
-//! "capability enforcement is best-effort on this platform" advisory on
-//! every script-rule run. Even with the per-process dedup landed in
-//! `f47ef82`, every direct `hector check` invocation (and each of the
-//! ~3 hector processes the Claude Code adapter hook spawns per edit)
-//! restarted the dedup, so the warning still surfaced.
-//!
-//! The advisory is moved to `hector doctor` (the diagnostic surface).
-//! Routine `check` must not write it to stderr.
+//! The macOS capability sandbox's "capability enforcement is best-effort on
+//! this platform" advisory belongs on `hector doctor` (the diagnostic
+//! surface), not on every script-rule run. Routine `check` must not write it.
 
 use assert_cmd::Command;
 use std::fs;
@@ -20,11 +14,11 @@ fn check_stays_quiet_on_stderr_for_passing_script_rule() {
     let project = dir.path();
 
     let cfg = project.join(".hector.yml");
-    // Default Capabilities (network: false, writes: none) — the exact
-    // shape that triggered the macOS advisory pre-R7. Backslash-newline
-    // string continuation would strip leading indent and silently
-    // produce a top-level YAML map with zero rules (no script runs →
-    // no warning even pre-fix). Use a plain literal so indent survives.
+    // Default Capabilities (network: false, writes: none) — the shape that
+    // triggers the macOS advisory. Backslash-newline string continuation
+    // would strip leading indent and silently produce a top-level YAML map
+    // with zero rules (no script runs → no warning). Use a plain literal so
+    // indent survives.
     fs::write(
         &cfg,
         "schema_version: 2\nrules:\n  ok:\n    description: \"always passes\"\n    engine: script\n    scope: [\"*.txt\"]\n    severity: error\n    script: \"exit 0\"\n",

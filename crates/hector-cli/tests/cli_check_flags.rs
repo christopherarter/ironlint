@@ -1,4 +1,4 @@
-//! C4 — CLI integration tests for `--rule`, `--explain`, `--print-prompt`.
+//! CLI integration tests for `--rule`, `--explain`, `--print-prompt`.
 
 use assert_cmd::Command;
 use tempfile::tempdir;
@@ -148,8 +148,8 @@ fn print_prompt_renders_and_exits_zero() {
         stdout.contains("avoid unwrap"),
         "missing rule description in prompt: {stdout}"
     );
-    // C5 (2026-05-25): sentinel tags are now per-call random; assert
-    // the prefix `<UE-` is present rather than the old literal tag.
+    // Sentinel tags are per-call random; assert the `<UE-` prefix is present
+    // rather than a fixed literal tag.
     assert!(
         stdout.contains("<UE-"),
         "missing UE sentinel open tag in prompt: {stdout}"
@@ -159,9 +159,9 @@ fn print_prompt_renders_and_exits_zero() {
 
 #[test]
 fn print_prompt_does_not_call_llm_endpoint() {
-    // Acceptance criterion §C4: --print-prompt short-circuits before the
-    // HTTP call. Bind a TcpListener as a stand-in LLM endpoint; the test
-    // fails if the binary opens *any* connection to it.
+    // --print-prompt must short-circuit before the HTTP call. Bind a
+    // TcpListener as a stand-in LLM endpoint; the test fails if the binary
+    // opens *any* connection to it.
     use std::net::TcpListener;
     use std::sync::mpsc;
     use std::time::Duration;
@@ -219,9 +219,8 @@ fn print_prompt_does_not_call_llm_endpoint() {
 }
 
 // ---------------------------------------------------------------------------
-// Coverage-targeted tests for `commands/check.rs` branches. The plan flagged
-// these as likely <90% region offenders post-C4; each test exercises one
-// arm of the CLI logic not reached by the happy-path tests above.
+// Tests for `commands/check.rs` branches. Each exercises one arm of the CLI
+// logic not reached by the happy-path tests above.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -372,7 +371,7 @@ fn explain_renders_skipped_and_engine_variants() {
     // Drives the `print_explain` Skipped arm and the `semantic`/`ast`
     // engine-name match arms by setting up two rules:
     //  * an `ast` rule that misses, producing a `Pass` row tagged `ast`;
-    //  * a `semantic` rule with a no-evidence diff, triggering A3's
+    //  * a `semantic` rule with a no-evidence diff, triggering the
     //    pre-filter `Skipped { reason }` row tagged `semantic`.
     let dir = tempdir().unwrap();
     let cfg = write_trusted(

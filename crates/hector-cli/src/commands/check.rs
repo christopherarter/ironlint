@@ -6,10 +6,7 @@ use std::collections::HashSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-// `run` is the single entry point dispatched from `main` — its argument
-// list mirrors the clap variant. Refactoring the flag bools into a
-// flags struct would scatter the call-site without simplifying the
-// branching here, so the lint is suppressed locally.
+// The signature mirrors the clap subcommand variant one-to-one.
 #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
 pub fn run(
     file: Option<PathBuf>,
@@ -24,13 +21,12 @@ pub fn run(
     emit_semantic_payload: bool,
     allow_external_paths: bool,
 ) -> Result<i32> {
-    // D5: load the engine exactly once. Build with the non-rule options so
-    // the engine is fully configured, then validate --rule against the loaded
-    // config's known ids and store the validated set in-place. This avoids
-    // the previous double-load (probe + real) which paid trust-verify +
-    // extends DFS + YAML parse twice on every invocation.
+    // Load once: build with the non-rule options, then validate `--rule`
+    // against the loaded config and store the validated set in place, rather
+    // than paying trust-verify + extends DFS + YAML parse for a separate
+    // probe load.
     let options = CheckOptions {
-        rules: HashSet::new(), // populated below after --rule validation
+        rules: HashSet::new(),
         explain,
         emit_semantic_payload,
         allow_external_paths,
@@ -45,128 +41,22 @@ pub fn run(
     if let Some(code) = validate_rule_filter(&engine, &rules) {
         return Ok(code);
     }
-    let rule_set: HashSet<String> = rules.into_iter().collect();
-    engine.set_rule_filter(rule_set);
+    engine.set_rule_filter(rules.into_iter().collect());
 
     if print_prompt {
         return run_print_prompt(&engine, file, diff, content);
     }
-
     if session {
-        let dir = config
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or(std::path::Path::new("."));
-        let state_path = dir.join(".hector/session.json");
-        let state = hector_core::session_state::SessionState::load(&state_path)?;
-        // B3: route through check_session_with_options so the subagent
-        // provider path emits a deferred envelope instead of requiring an
-        // LlmClient. When `emit_semantic_payload` is false (direct-API
-        // mode) this delegates to check_session unchanged.
-        let report = engine.check_session_with_options(&state)?;
-        if let Some(d) = &report.deferred {
-            // Session-level deferred envelope — emit as JSON on stdout so
-            // the Claude Code stop hook can wrap it in additionalContext,
-            // then exit 0 (the subagent decides the final verdict).
-            emit_deferred(d, format)?;
-            // Do not clear session.json on a deferred response; the
-            // subagent may need to re-evaluate if the operator re-runs.
-            return Ok(0);
-        }
-        emit(&report.verdict, format)?;
-        if should_clear_session(report.verdict.status) {
-            hector_core::session_state::SessionState::clear(&state_path)?;
-        }
-        return Ok(exit_code(&report.verdict));
+        return run_session(&engine, config, format);
     }
 
     match (file, diff) {
-        (Some(f), None) => {
-            // `--content` short-circuits the disk read for PreToolUse-style
-            // adapters that need to gate on proposed (pre-write) content.
-            // Clap enforces `requires = "file"` and the conflicts_with on
-            // diff/session, so reaching this branch with `content.is_some()`
-            // is always well-formed.
-            let content = match content {
-                Some(c) => resolve_content_value(c)?,
-                None => std::fs::read_to_string(&f)
-                    .with_context(|| format!("failed to read {}", f.display()))?,
-            };
-            let report = engine.check_with_explain(CheckInput::File { path: f, content })?;
-            if explain {
-                print_explain(&report.explain);
-            }
-            if let Some(d) = &report.deferred {
-                // Defense in depth: the runner already gates envelope
-                // construction on Block / InternalError (runner.rs's
-                // build_deferred_envelope returns None in those cases),
-                // so this branch is unreachable today — kept as a
-                // belt-and-braces check so future runner changes can't
-                // silently leak an envelope alongside a terminal verdict.
-                if matches!(report.verdict.status, Status::Block | Status::InternalError) {
-                    emit(&report.verdict, format)?;
-                    return Ok(exit_code(&report.verdict));
-                }
-                emit_deferred(d, format)?;
-                return Ok(0);
-            }
-            emit(&report.verdict, format)?;
-            Ok(exit_code(&report.verdict))
-        }
+        (Some(f), None) => run_file(&engine, f, content, format, explain),
         (None, Some(_)) if emit_semantic_payload => {
             eprintln!("ERROR: --emit-semantic-payload is not supported with --diff yet (multi-file envelope aggregation is a follow-up)");
             Ok(1)
         }
-        (None, Some(d)) => {
-            let unified_diff = std::fs::read_to_string(&d)?;
-            let changed = hector_core::diff::parser::parse_unified(&unified_diff)?;
-            // C3: a diff containing only deletions has no files to evaluate —
-            // deleted files cannot be read from disk, and no rule can fire on
-            // a file that no longer exists. An empty diff (no entries at all)
-            // is still an error; a diff with only deletions is a clean Pass.
-            let has_non_deleted = changed
-                .iter()
-                .any(|f| f.op != hector_core::diff::ChangeOp::Deleted);
-            if changed.is_empty() {
-                eprintln!("ERROR: no changed files in diff");
-                return Ok(1);
-            }
-            if !has_non_deleted {
-                // Pure-deletion diff: no rules to run, verdict is Pass, exit 0.
-                let verdict = Verdict::from_violations(vec![], vec![], 0);
-                emit(&verdict, format)?;
-                return Ok(0);
-            }
-            let mut aggregated_violations = Vec::new();
-            let mut aggregated_passed = Vec::new();
-            let mut aggregated_explain: Vec<RuleExplain> = Vec::new();
-            let mut elapsed_ms: u64 = 0;
-            for f in changed {
-                // C3: skip deleted files — they no longer exist on disk, so
-                // reading them would fail, and no policy applies to removed
-                // content. Skipping here also prevents the B1 read-failure
-                // warning from firing on every deletion in a diff.
-                if f.op == hector_core::diff::ChangeOp::Deleted {
-                    continue;
-                }
-                let per_file_diff = build_single_file_diff(&unified_diff, &f.path);
-                let r = engine.check_with_explain(CheckInput::Diff {
-                    file: f.path,
-                    unified_diff: per_file_diff,
-                })?;
-                elapsed_ms = elapsed_ms.saturating_add(r.verdict.elapsed_ms);
-                aggregated_violations.extend(r.verdict.violations);
-                aggregated_passed.extend(r.verdict.passed_checks);
-                aggregated_explain.extend(r.explain);
-            }
-            let verdict =
-                Verdict::from_violations(aggregated_violations, aggregated_passed, elapsed_ms);
-            if explain {
-                print_explain(&aggregated_explain);
-            }
-            emit(&verdict, format)?;
-            Ok(exit_code(&verdict))
-        }
+        (None, Some(d)) => run_diff(&engine, &d, format, explain),
         _ => {
             eprintln!("ERROR: provide exactly one of --file or --diff");
             Ok(1)
@@ -174,8 +64,117 @@ pub fn run(
     }
 }
 
-/// C4: refuse `--rule <unknown>` at the CLI boundary so callers see a
-/// clear error before any rule runs.
+/// Stop-hook path: evaluate the recorded session. A deferred envelope is
+/// emitted as JSON and exits 0 (the subagent decides the verdict), leaving
+/// `session.json` intact for a possible re-run; otherwise the verdict is
+/// emitted and the session cleared on Pass/Warn.
+fn run_session(engine: &HectorEngine, config: &Path, format: OutputFormat) -> Result<i32> {
+    let dir = config
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let state_path = dir.join(".hector/session.json");
+    let state = hector_core::session_state::SessionState::load(&state_path)?;
+    let report = engine.check_session_with_options(&state)?;
+    if let Some(d) = &report.deferred {
+        emit_deferred(d, format)?;
+        return Ok(0);
+    }
+    emit(&report.verdict, format)?;
+    if should_clear_session(report.verdict.status) {
+        hector_core::session_state::SessionState::clear(&state_path)?;
+    }
+    Ok(exit_code(&report.verdict))
+}
+
+/// Check a single file. `--content` overrides the disk read so PreToolUse
+/// adapters can gate on proposed pre-write content; clap guarantees
+/// `--content` implies `--file`.
+fn run_file(
+    engine: &HectorEngine,
+    file: PathBuf,
+    content: Option<String>,
+    format: OutputFormat,
+    explain: bool,
+) -> Result<i32> {
+    let content = match content {
+        Some(c) => resolve_content_value(c)?,
+        None => std::fs::read_to_string(&file)
+            .with_context(|| format!("failed to read {}", file.display()))?,
+    };
+    let report = engine.check_with_explain(CheckInput::File {
+        path: file,
+        content,
+    })?;
+    if explain {
+        print_explain(&report.explain);
+    }
+    if let Some(d) = &report.deferred {
+        // The runner never builds an envelope alongside a terminal verdict;
+        // re-check here so a future runner change can't silently leak one.
+        if matches!(report.verdict.status, Status::Block | Status::InternalError) {
+            emit(&report.verdict, format)?;
+            return Ok(exit_code(&report.verdict));
+        }
+        emit_deferred(d, format)?;
+        return Ok(0);
+    }
+    emit(&report.verdict, format)?;
+    Ok(exit_code(&report.verdict))
+}
+
+/// Check every changed file in a unified diff and aggregate the verdicts.
+/// An empty diff is an error; a pure-deletion diff is a clean Pass (deleted
+/// files can't be read and no rule fires on absent content).
+fn run_diff(
+    engine: &HectorEngine,
+    diff: &Path,
+    format: OutputFormat,
+    explain: bool,
+) -> Result<i32> {
+    let unified_diff = std::fs::read_to_string(diff)?;
+    let changed = hector_core::diff::parser::parse_unified(&unified_diff)?;
+    if changed.is_empty() {
+        eprintln!("ERROR: no changed files in diff");
+        return Ok(1);
+    }
+    let has_non_deleted = changed
+        .iter()
+        .any(|f| f.op != hector_core::diff::ChangeOp::Deleted);
+    if !has_non_deleted {
+        let verdict = Verdict::from_violations(vec![], vec![], 0);
+        emit(&verdict, format)?;
+        return Ok(0);
+    }
+
+    let mut aggregated_violations = Vec::new();
+    let mut aggregated_passed = Vec::new();
+    let mut aggregated_explain: Vec<RuleExplain> = Vec::new();
+    let mut elapsed_ms: u64 = 0;
+    for f in changed {
+        if f.op == hector_core::diff::ChangeOp::Deleted {
+            continue;
+        }
+        let per_file_diff = build_single_file_diff(&unified_diff, &f.path);
+        let r = engine.check_with_explain(CheckInput::Diff {
+            file: f.path,
+            unified_diff: per_file_diff,
+        })?;
+        elapsed_ms = elapsed_ms.saturating_add(r.verdict.elapsed_ms);
+        aggregated_violations.extend(r.verdict.violations);
+        aggregated_passed.extend(r.verdict.passed_checks);
+        aggregated_explain.extend(r.explain);
+    }
+    let verdict = Verdict::from_violations(aggregated_violations, aggregated_passed, elapsed_ms);
+    if explain {
+        print_explain(&aggregated_explain);
+    }
+    emit(&verdict, format)?;
+    Ok(exit_code(&verdict))
+}
+
+/// Refuse `--rule <unknown>` at the CLI boundary so callers see a clear
+/// error before any rule runs.
 fn validate_rule_filter(engine: &HectorEngine, rules: &[String]) -> Option<i32> {
     if rules.is_empty() {
         return None;
@@ -194,8 +193,7 @@ fn validate_rule_filter(engine: &HectorEngine, rules: &[String]) -> Option<i32> 
     }
 }
 
-/// C4: render the `--explain` rows to stderr so stdout (JSON) is
-/// uncorrupted.
+/// Render the `--explain` rows to stderr so stdout (JSON) stays clean.
 fn print_explain(rows: &[RuleExplain]) {
     for row in rows {
         let outcome = match &row.outcome {
@@ -214,9 +212,8 @@ fn print_explain(rows: &[RuleExplain]) {
     }
 }
 
-/// C4: short-circuit before any engine dispatch. Render the (system, user)
-/// prompt for every in-scope semantic rule and exit 0. No HTTP request
-/// reaches the configured LLM endpoint.
+/// Render the (system, user) prompt for every in-scope semantic rule and
+/// exit 0 — no engine dispatch, so no HTTP request reaches the LLM.
 fn run_print_prompt(
     engine: &HectorEngine,
     file: Option<PathBuf>,
@@ -225,10 +222,8 @@ fn run_print_prompt(
 ) -> Result<i32> {
     let input = match (file, diff) {
         (Some(f), None) => {
-            // Symmetric with `run`: `--content` overrides the disk read so
-            // operators can preview semantic prompts against proposed
-            // content before it lands. Clap already enforced the
-            // `requires = "file"` constraint.
+            // `--content` overrides the disk read so operators can preview
+            // prompts against proposed content before it lands on disk.
             let content = match content {
                 Some(c) => resolve_content_value(c)?,
                 None => std::fs::read_to_string(&f)
@@ -278,9 +273,8 @@ fn exit_code(v: &Verdict) -> i32 {
     }
 }
 
-/// P2-12: only clear the session file on Pass/Warn so a Block or
-/// InternalError verdict leaves `.hector/session.json` intact for
-/// re-inspection.
+/// Clear the session file only on Pass/Warn, so a Block or InternalError
+/// verdict leaves `.hector/session.json` intact for re-inspection.
 fn should_clear_session(status: Status) -> bool {
     matches!(status, Status::Pass | Status::Warn)
 }
@@ -334,8 +328,8 @@ fn emit(v: &Verdict, format: OutputFormat) -> Result<()> {
 
 /// Extract the path from a `+++ b/<path>[\t<timestamp>]` header line.
 ///
-/// A2: POSIX `diff -u` appends `\t<timestamp>` after the path. Split at the
-/// first tab and discard the timestamp segment before comparing paths.
+/// POSIX `diff -u` appends `\t<timestamp>` after the path; split at the
+/// first tab and discard the timestamp before comparing paths.
 fn header_path(line: &str) -> Option<&str> {
     line.strip_prefix("+++ b/").map(|p| {
         p.split('\t')
@@ -366,9 +360,9 @@ fn minus_header_path(line: &str) -> Option<&str> {
 /// include the preceding `--- a/...` line so the slice is a syntactically
 /// well-formed diff in its own right.
 ///
-/// C2: only include the preceding `--- a/` line when its path matches the
-/// target. On mismatch (e.g. a foreign `--- a/<other>` bleeds in from the
-/// previous file), omit it — `parse_unified` tolerates absent `---` headers.
+/// The preceding `--- a/` line is included only when its path matches the
+/// target; a foreign header from the previous file is omitted (and
+/// `parse_unified` tolerates an absent `---` header).
 fn build_single_file_diff(full: &str, file: &Path) -> String {
     let target = file.display().to_string();
     // `split_inclusive` preserves line terminators so we can round-trip the
@@ -385,7 +379,7 @@ fn build_single_file_diff(full: &str, file: &Path) -> String {
     };
 
     // Include the preceding `--- a/...` header only when its parsed path
-    // matches the target (C2). A foreign header from the previous file would
+    // matches the target; a foreign header from the previous file would
     // otherwise corrupt this slice.
     let header_idx =
         if plus_idx > 0 && minus_header_path(lines[plus_idx - 1]).is_some_and(|p| p == target) {
@@ -473,12 +467,8 @@ mod tests {
         assert_eq!(slice, "");
     }
 
-    /// C2 regression: `build_single_file_diff` must not include a foreign
-    /// `--- a/<other>` header in the slice when it doesn't match the target.
-    ///
-    /// Pre-fix: the preceding line is included unconditionally if it starts
-    /// with `--- `, so `--- a/src/a.rs` bleeds into the slice for `src/b.rs`.
-    /// Post-fix: the header is only included when its path matches the target.
+    /// `build_single_file_diff` must not include a foreign `--- a/<other>`
+    /// header in the slice when it doesn't match the target file.
     #[test]
     fn slice_drops_mismatched_minus_header() {
         let diff = "--- a/src/a.rs\n+++ b/src/b.rs\n@@ -1,1 +1,1 @@\n-old\n+new\n";
@@ -498,16 +488,12 @@ mod tests {
         assert_eq!(files[0].path, PathBuf::from("src/b.rs"));
     }
 
-    // P2-12: session.json must persist across a Block verdict so the user
-    // can re-inspect the offending session. Only Pass/Warn acknowledge it.
-
     #[test]
     fn should_clear_session_on_pass_and_warn_only() {
         assert!(should_clear_session(Status::Pass));
         assert!(should_clear_session(Status::Warn));
         assert!(!should_clear_session(Status::Block));
-        // B7: InternalError must not clear session — the edit is unresolved
-        // and session context should be preserved for re-inspection.
+        // InternalError leaves the edit unresolved — keep the session.
         assert!(!should_clear_session(Status::InternalError));
     }
 }

@@ -25,10 +25,9 @@ fn parses_two_files() {
     assert_eq!(files[1].path.to_str().unwrap(), "src/bar.rs");
 }
 
-// D2 / D1=A: ChangedFile carries path + op; no line-number tracking.
-// Construct one directly to confirm the struct shape and that the parser
-// yields equivalent values. Both files in DIFF have `--- a/` + `+++ b/`
-// headers, so they are classified as Modified.
+// ChangedFile carries path + op; no line-number tracking. Confirm the parser
+// yields the expected struct values. Both files in DIFF have `--- a/` +
+// `+++ b/` headers, so they are classified as Modified.
 #[test]
 fn parse_unified_returns_only_path() {
     use hector_core::diff::parser::{ChangeOp, ChangedFile};
@@ -52,7 +51,7 @@ fn parse_unified_returns_only_path() {
     );
 }
 
-// Regression: P0-4 — diff parser must reject path traversal in `+++ b/` headers.
+// Regression: the diff parser must reject path traversal in `+++ b/` headers.
 // A malicious diff with `+++ b/../../../etc/passwd` would otherwise hand a path
 // outside the workspace to the semantic context-reader or script engines.
 #[test]
@@ -67,7 +66,7 @@ fn parse_unified_rejects_path_traversal() {
     );
 }
 
-// Regression: P0-4 — absolute paths leak through `+++ b//etc/passwd` because
+// Regression: absolute paths leak through `+++ b//etc/passwd` because
 // stripping the `+++ b/` prefix leaves `/etc/passwd`. Reject any leading `/`.
 #[test]
 fn parse_unified_rejects_absolute_path() {
@@ -90,8 +89,8 @@ fn parse_unified_rejects_empty_path() {
     );
 }
 
-// Regression: P2-10 — CRLF diffs left a trailing `\r` on the parsed path,
-// which silently mis-matched globs (e.g. `src/**/*.py` vs `myfile.py\r`).
+// Regression: CRLF diffs must not leave a trailing `\r` on the parsed path,
+// which would mis-match globs (e.g. `src/**/*.py` vs `myfile.py\r`).
 #[test]
 fn parse_unified_trims_crlf_from_path() {
     let diff = "--- a/foo\r\n+++ b/myfile.py\r\n@@ -0,0 +1 @@\n+x\n";
@@ -104,8 +103,8 @@ fn parse_unified_trims_crlf_from_path() {
     );
 }
 
-/// A2 regression: POSIX `diff -u` headers include `\t<timestamp>` after
-/// the path. The parser must strip that and yield a clean PathBuf.
+/// POSIX `diff -u` headers include `\t<timestamp>` after the path. The parser
+/// must strip that and yield a clean PathBuf.
 #[test]
 fn parse_unified_strips_tab_timestamp_from_path() {
     let input = "--- a/myfile.py\t2026-05-24 14:30:00 +0000\n\
@@ -118,7 +117,7 @@ fn parse_unified_strips_tab_timestamp_from_path() {
     assert_eq!(files[0].path, std::path::PathBuf::from("myfile.py"));
 }
 
-/// A2: paths without timestamps (the git case) must still parse.
+/// Paths without timestamps (the git case) must still parse.
 #[test]
 fn parse_unified_handles_path_without_timestamp() {
     let input = "--- a/x.rs\n+++ b/x.rs\n@@ -1,1 +1,2 @@\n a\n+b\n";
@@ -127,7 +126,7 @@ fn parse_unified_handles_path_without_timestamp() {
     assert_eq!(files[0].path, std::path::PathBuf::from("x.rs"));
 }
 
-/// A2: CRLF-terminated lines still strip cleanly when combined with a timestamp.
+/// CRLF-terminated lines still strip cleanly when combined with a timestamp.
 #[test]
 fn parse_unified_handles_crlf_with_timestamp() {
     let input = "--- a/x.rs\t2026-05-24 14:30:00 +0000\r\n\
@@ -138,9 +137,9 @@ fn parse_unified_handles_crlf_with_timestamp() {
     assert_eq!(files[0].path, std::path::PathBuf::from("x.rs"));
 }
 
-// C3: ChangeOp classification ------------------------------------------------
+// ChangeOp classification ----------------------------------------------------
 
-/// C3: `--- /dev/null` + `+++ b/<path>` is an addition.
+/// `--- /dev/null` + `+++ b/<path>` is an addition.
 #[test]
 fn parse_unified_recognizes_addition() {
     use hector_core::diff::parser::ChangeOp;
@@ -151,7 +150,7 @@ fn parse_unified_recognizes_addition() {
     assert_eq!(files[0].op, ChangeOp::Added);
 }
 
-/// C3: `--- a/<path>` + `+++ b/<path>` is a modification.
+/// `--- a/<path>` + `+++ b/<path>` is a modification.
 #[test]
 fn parse_unified_recognizes_modification() {
     use hector_core::diff::parser::ChangeOp;
@@ -162,8 +161,8 @@ fn parse_unified_recognizes_modification() {
     assert_eq!(files[0].op, ChangeOp::Modified);
 }
 
-/// C3: `--- a/<path>` + `+++ /dev/null` is a deletion. The parser must
-/// recognise it and not silently drop the entry as it did before this fix.
+/// `--- a/<path>` + `+++ /dev/null` is a deletion. The parser must recognise
+/// it and emit a `ChangedFile`, not drop the entry.
 #[test]
 fn parse_unified_recognizes_deletion() {
     use hector_core::diff::parser::ChangeOp;
@@ -178,12 +177,11 @@ fn parse_unified_recognizes_deletion() {
     assert_eq!(files[0].op, ChangeOp::Deleted);
 }
 
-/// C3 follow-up: deletion paths must also be validated. Pre-fix, the
-/// `--- a/<path>` segment for a deletion diff bypassed P0-4 validation
-/// because validate_path was only called on the `+++ b/` arm. The
-/// runner's skip-Deleted-before-I/O guard masked the gap, but the
-/// unvalidated path would still surface in the public ChangedFile struct
-/// and into any future telemetry path.
+/// Regression: deletion paths must also be path-validated. The `--- a/<path>`
+/// segment of a deletion diff must run through `validate_path`, not just the
+/// `+++ b/` arm — otherwise an unvalidated traversal path surfaces in the
+/// public `ChangedFile` struct even though the runner skips deletions before
+/// I/O.
 #[test]
 fn parse_unified_rejects_traversal_in_deletion_minus_path() {
     use hector_core::diff::parser::parse_unified;

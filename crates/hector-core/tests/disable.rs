@@ -64,12 +64,10 @@ fn file_level_disable_silences_script_violation_without_line() {
     assert!(!map.is_disabled_file_wide("other-rule"));
 }
 
-// Regression: P2-4 — namespaced rule IDs commonly contain `/`
-// (e.g. `python/no-print`). The directive parser used to treat `/` as an
-// unconditional terminator (intended to handle CSS/JS block-comment
-// closers), which silently truncated the id to `python` and dropped the
-// rest. `/` is now a terminator only when followed by `/` or `*` (the
-// actual line/block-comment patterns).
+// Regression: namespaced rule IDs commonly contain `/` (e.g.
+// `python/no-print`), so the directive parser must not treat a bare `/` as a
+// terminator and truncate the id to `python`. `/` terminates only when
+// followed by `/` or `*` — the actual line/block-comment patterns.
 #[test]
 fn allows_slash_inside_rule_id() {
     let src = "foo(); // hector-disable: python/no-print reason: legacy script\n";
@@ -82,9 +80,9 @@ fn allows_slash_inside_rule_id() {
     assert!(!map.is_disabled(1, "no-print"));
 }
 
-// P2-4: a trailing block-comment closer (` */`) still terminates the
-// directive — the slash there really is the start of `*/`. Verify both
-// the comma list AND the namespaced id survive.
+// A trailing block-comment closer (` */`) must still terminate the
+// directive — the slash there really is the start of `*/`. Both the comma
+// list and the namespaced id must survive.
 #[test]
 fn block_comment_closer_terminates_namespaced_ids() {
     let src = "x(); /* hector-disable: ns/a, ns/b reason: x */\n";
@@ -94,10 +92,9 @@ fn block_comment_closer_terminates_namespaced_ids() {
     assert!(!map.is_disabled(1, "ns/a*"));
 }
 
-// P2-4: line-comment opener inside the rest of the line. Once we hit a
-// `//` we stop scanning rule ids. (Realistically the `hector-disable:`
-// itself is *after* the leading `//`, so this case primarily protects
-// against a second `//` later in the same line.)
+// A line-comment opener inside the rest of the line stops rule-id scanning:
+// once we hit a `//` we stop. (The `hector-disable:` itself follows the
+// leading `//`, so this mainly guards against a second `//` later on.)
 #[test]
 fn line_comment_opener_terminates_directive() {
     let src = "x(); /* hector-disable: ns/a //trailing chatter */\n";

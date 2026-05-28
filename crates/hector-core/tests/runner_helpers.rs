@@ -2,10 +2,9 @@ use hector_core::runner::{CheckOptions, HectorEngine};
 use std::path::PathBuf;
 use tempfile::tempdir;
 
-/// C4: an absolute path that doesn't exist on disk fails canonicalize, so
-/// resolve_input_path returns Ok(resolved) via the early-return branch —
-/// preserving the original absolute path for diff-mode callers that
-/// reference files not yet on disk.
+/// An absolute path that doesn't exist on disk fails canonicalize, so
+/// resolve_input_path returns the original absolute path unchanged —
+/// diff-mode callers may reference files not yet on disk.
 #[test]
 fn resolve_input_path_returns_absolute_unchanged_when_not_on_disk() {
     let tmp = tempdir().unwrap();
@@ -17,9 +16,8 @@ fn resolve_input_path_returns_absolute_unchanged_when_not_on_disk() {
     assert_eq!(resolved, abs);
 }
 
-/// C4: a relative path is joined onto config_dir. Since the joined path
-/// doesn't exist on disk here, canonicalize fails and we get the raw joined
-/// path back via the early-return branch.
+/// A relative path is joined onto config_dir. The joined path doesn't exist
+/// on disk here, so canonicalize fails and we get the raw joined path back.
 #[test]
 fn resolve_input_path_joins_relative_onto_config_dir() {
     let tmp = tempdir().unwrap();
@@ -30,7 +28,7 @@ fn resolve_input_path_joins_relative_onto_config_dir() {
     assert_eq!(resolved, tmp.path().join("src/lib.rs"));
 }
 
-/// C4: a file that exists inside config_dir is accepted (no error).
+/// A file that exists inside config_dir is accepted (no error).
 #[test]
 fn resolve_input_path_accepts_file_inside_config_dir() {
     let tmp = tempdir().unwrap();
@@ -44,7 +42,7 @@ fn resolve_input_path_accepts_file_inside_config_dir() {
     assert_eq!(resolved, inside.canonicalize().unwrap());
 }
 
-/// C4: a file that exists outside config_dir is rejected by default.
+/// A file that exists outside config_dir is rejected by default.
 #[test]
 fn resolve_input_path_rejects_external_path_by_default() {
     let tmp = tempdir().unwrap();
@@ -63,7 +61,7 @@ fn resolve_input_path_rejects_external_path_by_default() {
     );
 }
 
-/// C4: with allow_external_paths=true, a file outside config_dir is accepted.
+/// With allow_external_paths=true, a file outside config_dir is accepted.
 #[test]
 fn resolve_input_path_allows_external_path_when_opted_in() {
     let tmp = tempdir().unwrap();
@@ -83,10 +81,9 @@ fn resolve_input_path_allows_external_path_when_opted_in() {
     assert_eq!(resolved, external.canonicalize().unwrap());
 }
 
-/// D4: regression sentinel — rule_matches_path must not rebuild a GlobSet on
+/// Performance regression: rule_matches_path must not rebuild a GlobSet on
 /// every call. 10,000 matches against a single cached ScopeMatcher must
-/// complete well under 100 ms on any laptop; if the matcher is rebuilt per
-/// call the test will consistently exceed this threshold.
+/// complete well under 100 ms; rebuilding per call blows past that threshold.
 #[test]
 fn rule_matches_path_does_not_rebuild_matcher() {
     let tmp = tempfile::tempdir().unwrap();
