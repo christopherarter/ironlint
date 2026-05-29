@@ -42,9 +42,12 @@ fn write_trusted(dir: &std::path::Path, body: &str) -> std::path::PathBuf {
 }
 
 /// A single `script` rule (schema v2) that blocks any file containing the
-/// token `FORBIDDEN`. The command reads the file from disk via `{file}`, which
-/// is exactly the shape that exposes the disk-vs-content divergence: a correct
-/// implementation must feed the proposed `--content` to the tool instead.
+/// token `FORBIDDEN`. The command reads from stdin (no `{file}` argument), so
+/// it inspects whatever bytes the engine pipes to the subprocess — the proposed
+/// `--content` in Option A. `{file}` is intentionally absent: with no file
+/// argument, grep reads stdin, which is where the script engine pipes the
+/// proposed content. This is the correct stdin-form rule shape for pre-write
+/// gating.
 fn no_forbidden_config() -> &'static str {
     "schema_version: 2\n\
      rules:\n  \
@@ -54,7 +57,7 @@ fn no_forbidden_config() -> &'static str {
          scope: [\"**/*.txt\"]\n    \
          severity: error\n    \
          output: passthrough\n    \
-         script: \"! grep -q FORBIDDEN {file}\"\n"
+         script: \"! grep -q FORBIDDEN\"\n"
 }
 
 /// Proposed content is checked, not disk (block case).

@@ -1,5 +1,5 @@
 use crate::config::{OutputMode, Rule};
-use crate::engine::capability::run_with_capabilities_env;
+use crate::engine::capability::run_with_capabilities_stdin;
 use crate::engine::output::{self, ParsedRecord};
 use crate::engine::{RuleContext, RuleEngine};
 use crate::verdict::{Engine, Severity, Violation};
@@ -15,6 +15,7 @@ impl RuleEngine for ScriptEngine {
             ctx.rule,
             ctx.file,
             ctx.diff.unwrap_or(""),
+            ctx.content,
             ctx.cwd,
         )
     }
@@ -33,6 +34,7 @@ pub fn run_script_rule(
     rule: &Rule,
     file: &Path,
     _diff: &str,
+    content: Option<&str>,
     cwd: &Path,
 ) -> Result<Vec<Violation>> {
     let script = rule
@@ -47,8 +49,19 @@ pub fn run_script_rule(
     let substituted = script.replace("{file}", "\"$HECTOR_FILE\"");
     let caps = rule.capabilities.clone().unwrap_or_default();
     let file_str = file.display().to_string();
-    let outcome =
-        run_with_capabilities_env(&substituted, cwd, &caps, &[("HECTOR_FILE", &file_str)])?;
+    // Offer the proposed content on the command's stdin. A stdin-form command
+    // (`biome check --stdin-file-path={file}`, `ruff check --stdin-filename {file} -`,
+    // `grep -q PATTERN` with no file argument) checks the proposed edit; a
+    // path-only `{file}` command ignores the bytes and reads disk (the writer
+    // tolerates the resulting EPIPE). `HECTOR_FILE` always holds the real
+    // on-disk path so tools can use it as an extension/config hint.
+    let outcome = run_with_capabilities_stdin(
+        &substituted,
+        cwd,
+        &caps,
+        &[("HECTOR_FILE", &file_str)],
+        content.map(str::as_bytes),
+    )?;
     if outcome.exit_code == 0 {
         return Ok(Vec::new());
     }

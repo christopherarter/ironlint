@@ -27,7 +27,7 @@ fn passing_script_produces_no_violation() {
     let file = dir.path().join("ok.txt");
     std::fs::write(&file, "clean\n").unwrap();
     let rule = make_rule("grep -nE 'forbidden' {file} && exit 1 || exit 0");
-    let res = run_script_rule("ok-rule", &rule, &file, "", dir.path()).expect("run");
+    let res = run_script_rule("ok-rule", &rule, &file, "", None, dir.path()).expect("run");
     assert!(res.is_empty(), "no violation expected, got {res:?}");
 }
 
@@ -37,7 +37,7 @@ fn failing_script_produces_violation() {
     let file = dir.path().join("bad.txt");
     std::fs::write(&file, "forbidden\n").unwrap();
     let rule = make_rule("grep -nE 'forbidden' {file} && exit 1 || exit 0");
-    let res = run_script_rule("no-forbidden", &rule, &file, "", dir.path()).expect("run");
+    let res = run_script_rule("no-forbidden", &rule, &file, "", None, dir.path()).expect("run");
     assert_eq!(res.len(), 1, "expected exactly one violation, got {res:?}");
     let v = &res[0];
     assert_eq!(v.rule_id, "no-forbidden");
@@ -75,7 +75,7 @@ fn script_engine_quotes_file_path_with_shell_metacharacters() {
         fix_hint: None,
         output: OutputMode::default(),
     };
-    let _ = run_script_rule("evil", &rule, &evil, "", cwd);
+    let _ = run_script_rule("evil", &rule, &evil, "", None, cwd);
     assert!(
         !cwd.join("PWNED").exists(),
         "shell injection succeeded — PWNED marker was created"

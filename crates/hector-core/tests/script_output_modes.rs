@@ -37,7 +37,7 @@ fn parsed_mode_extracts_line_from_grep_n_output() {
         "grep -nE \"console\\.log\\(\" {file} && exit 1 || exit 0",
         OutputMode::Parsed,
     );
-    let vs = run_script_rule("no-console-log", &rule, &file, "", dir.path()).expect("run");
+    let vs = run_script_rule("no-console-log", &rule, &file, "", None, dir.path()).expect("run");
     assert_eq!(vs.len(), 1, "expected one violation, got {vs:?}");
     let v = &vs[0];
     assert_eq!(
@@ -70,7 +70,7 @@ fn passthrough_mode_is_the_default_when_field_omitted() {
     // A `42:beta` line has grep-n shape but, under the passthrough default,
     // must land verbatim rather than being parsed into line + message.
     let rule = make_rule("printf '42:beta\\n' && exit 1", OutputMode::default());
-    let vs = run_script_rule("default-mode", &rule, &file, "", dir.path()).expect("run");
+    let vs = run_script_rule("default-mode", &rule, &file, "", None, dir.path()).expect("run");
     assert_eq!(vs.len(), 1, "expected one violation, got {vs:?}");
     assert_eq!(
         vs[0].line, None,
@@ -97,7 +97,7 @@ fn passthrough_mode_keeps_full_stream_in_message() {
         "printf 'something opaque\\nhappened on line 99\\n' >&2 && exit 1",
         OutputMode::Passthrough,
     );
-    let vs = run_script_rule("custom-formatter", &rule, &file, "", dir.path()).expect("run");
+    let vs = run_script_rule("custom-formatter", &rule, &file, "", None, dir.path()).expect("run");
     assert_eq!(vs.len(), 1);
     let v = &vs[0];
     assert_eq!(v.line, None, "passthrough must not extract structure");
@@ -125,7 +125,7 @@ fn parsed_mode_canonical_line_col_extracts_both() {
         "printf 'src/foo.ts:14:5: missing semicolon\\n' && exit 1",
         OutputMode::Parsed,
     );
-    let vs = run_script_rule("canonical", &rule, &file, "", dir.path()).expect("run");
+    let vs = run_script_rule("canonical", &rule, &file, "", None, dir.path()).expect("run");
     assert_eq!(vs.len(), 1);
     assert_eq!(vs[0].file, "src/foo.ts");
     assert_eq!(vs[0].line, Some(14));
@@ -147,7 +147,7 @@ fn passthrough_mode_concatenates_stdout_and_stderr() {
         "printf 'out\\n' && printf 'err\\n' >&2 && exit 1",
         OutputMode::Passthrough,
     );
-    let vs = run_script_rule("combined", &rule, &file, "", dir.path()).expect("run");
+    let vs = run_script_rule("combined", &rule, &file, "", None, dir.path()).expect("run");
     assert_eq!(vs.len(), 1);
     let msg = &vs[0].message;
     assert!(
@@ -171,7 +171,7 @@ fn parsed_mode_emits_one_violation_per_canonical_line() {
         "printf 'src/a.rs:1:1: first\\nsrc/b.rs:2:2: second\\n' && exit 1",
         OutputMode::Parsed,
     );
-    let vs = run_script_rule("multi", &rule, &file, "", dir.path()).expect("run");
+    let vs = run_script_rule("multi", &rule, &file, "", None, dir.path()).expect("run");
     assert_eq!(vs.len(), 2);
     assert_eq!(vs[0].line, Some(1));
     assert_eq!(vs[1].line, Some(2));
