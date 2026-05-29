@@ -89,7 +89,7 @@ fn emit_rust_rules(out: &mut String, workspace: Option<&Workspace>, linters: Lin
     }
     let _ = writeln!(
         out,
-        "  no-unwrap-in-src:\n    description: \"Avoid .unwrap() in non-test source. Use ? or expect with context.\"\n    engine: script\n    scope: [{scopes}]\n    severity: warning\n    script: \"grep -nE '\\\\.unwrap\\\\(\\\\)' {{file}}; case $? in 0) exit 1;; 1) exit 0;; *) exit $?;; esac\""
+        "  no-unwrap-in-src:\n    description: \"Avoid .unwrap() in non-test source. Use ? or expect with context.\"\n    engine: script\n    scope: [{scopes}]\n    severity: warning\n    script: \"grep -nE '\\\\.unwrap\\\\(\\\\)'; case $? in 0) exit 1;; 1) exit 0;; *) exit $?;; esac\""
     );
     out.push('\n');
 }
@@ -114,7 +114,7 @@ fn emit_node_rules(
             "File must pass biome check.",
             &scopes,
             &format!(
-                "{} biome check --no-errors-on-unmatched {{file}}",
+                "{} biome check --stdin-file-path={{file}}",
                 runner.exec_prefix()
             ),
         );
@@ -125,14 +125,14 @@ fn emit_node_rules(
             "File must pass eslint.",
             &scopes,
             &format!(
-                "{} eslint --no-error-on-unmatched-pattern {{file}}",
+                "{} eslint --stdin --stdin-filename {{file}}",
                 runner.exec_prefix()
             ),
         );
     } else {
         let _ = writeln!(
             out,
-            "  no-console-log:\n    description: \"No console.log in committed source.\"\n    engine: script\n    scope: [{scopes}]\n    severity: error\n    script: \"grep -nE 'console\\\\.log\\\\(' {{file}}; case $? in 0) exit 1;; 1) exit 0;; *) exit $?;; esac\""
+            "  no-console-log:\n    description: \"No console.log in committed source.\"\n    engine: script\n    scope: [{scopes}]\n    severity: error\n    script: \"grep -nE 'console\\\\.log\\\\('; case $? in 0) exit 1;; 1) exit 0;; *) exit $?;; esac\""
         );
         out.push('\n');
     }
@@ -147,7 +147,7 @@ fn emit_python_rules(out: &mut String, _workspace: Option<&Workspace>, linters: 
     }
     let _ = writeln!(
         out,
-        "  ruff-check:\n    description: \"Code must pass ruff check.\"\n    engine: script\n    scope: [\"**/*.py\"]\n    severity: error\n    script: \"ruff check --quiet {{file}}\""
+        "  ruff-check:\n    description: \"Code must pass ruff check.\"\n    engine: script\n    scope: [\"**/*.py\"]\n    severity: error\n    script: \"ruff check --quiet --stdin-filename {{file}} -\""
     );
     out.push('\n');
 }
@@ -155,7 +155,7 @@ fn emit_python_rules(out: &mut String, _workspace: Option<&Workspace>, linters: 
 fn emit_generic_rules(out: &mut String) {
     let _ = writeln!(
         out,
-        "  no-fixme:\n    description: \"Don't commit FIXME markers.\"\n    engine: script\n    scope: [\"*\"]\n    severity: warning\n    script: \"grep -nE 'FIXME' {{file}}; case $? in 0) exit 1;; 1) exit 0;; *) exit $?;; esac\""
+        "  no-fixme:\n    description: \"Don't commit FIXME markers.\"\n    engine: script\n    scope: [\"*\"]\n    severity: warning\n    script: \"grep -nE 'FIXME'; case $? in 0) exit 1;; 1) exit 0;; *) exit $?;; esac\""
     );
     out.push('\n');
 }
@@ -270,6 +270,83 @@ mod tests {
             kind,
             packages: pkgs.iter().map(|s| (*s).to_owned()).collect(),
         }
+    }
+
+    #[test]
+    fn scaffolded_biome_rule_uses_stdin_form() {
+        // build_config with biome=true (Node stack) must emit the stdin form so
+        // pre-write gating works: the command reads from stdin, not disk.
+        let linters = LinterSet {
+            biome: true,
+            ..Default::default()
+        };
+        let yaml = build_config(Stack::Node, None, linters, JsRunner::Npx);
+        assert!(
+            yaml.contains("--stdin-file-path"),
+            "biome rule must use --stdin-file-path so pre-write gating works:\n{yaml}"
+        );
+        assert!(
+            !yaml.contains("--no-errors-on-unmatched"),
+            "old disk-reading form must be gone:\n{yaml}"
+        );
+    }
+
+    #[test]
+    fn scaffolded_eslint_rule_uses_stdin_form() {
+        let linters = LinterSet {
+            eslint: true,
+            ..Default::default()
+        };
+        let yaml = build_config(Stack::Node, None, linters, JsRunner::Npx);
+        assert!(
+            yaml.contains("--stdin"),
+            "eslint rule must use --stdin so pre-write gating works:\n{yaml}"
+        );
+        assert!(
+            !yaml.contains("--no-error-on-unmatched-pattern"),
+            "old disk-reading form must be gone:\n{yaml}"
+        );
+    }
+
+    #[test]
+    fn scaffolded_ruff_rule_uses_stdin_form() {
+        let linters = LinterSet {
+            ruff: true,
+            ..Default::default()
+        };
+        let yaml = build_config(Stack::Python, None, linters, JsRunner::Npx);
+        assert!(
+            yaml.contains("--stdin-filename"),
+            "ruff rule must use --stdin-filename so pre-write gating works:\n{yaml}"
+        );
+        // The trailing '-' makes ruff read stdin; check for it after the flag.
+        // Note: {{file}} in the writeln! template becomes {file} in the output.
+        assert!(
+            yaml.contains("--stdin-filename {file} -"),
+            "ruff rule must have trailing '-' to read stdin:\n{yaml}"
+        );
+    }
+
+    #[test]
+    fn scaffolded_grep_rules_read_stdin_not_file() {
+        // Rust no-unwrap: grep reads stdin (no {file} arg)
+        let yaml_rust = build_config(Stack::Rust, None, LinterSet::default(), JsRunner::Npx);
+        assert!(
+            !yaml_rust.contains("grep -nE '\\.unwrap\\(\\)' {file}"),
+            "no-unwrap grep must not pass {{file}} as arg (reads stdin instead):\n{yaml_rust}"
+        );
+        // Node no-console-log: grep reads stdin
+        let yaml_node = build_config(Stack::Node, None, LinterSet::default(), JsRunner::Npx);
+        assert!(
+            !yaml_node.contains("console\\\\.log\\\\(' {file}"),
+            "no-console-log grep must not pass {{file}} as arg:\n{yaml_node}"
+        );
+        // Generic no-fixme: grep reads stdin
+        let yaml_generic = build_config(Stack::Unknown, None, LinterSet::default(), JsRunner::Npx);
+        assert!(
+            !yaml_generic.contains("'FIXME' {file}"),
+            "no-fixme grep must not pass {{file}} as arg:\n{yaml_generic}"
+        );
     }
 
     #[test]
