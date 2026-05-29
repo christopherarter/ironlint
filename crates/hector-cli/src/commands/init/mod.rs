@@ -299,8 +299,8 @@ mod tests {
         };
         let yaml = build_config(Stack::Node, None, linters, JsRunner::Npx);
         assert!(
-            yaml.contains("--stdin"),
-            "eslint rule must use --stdin so pre-write gating works:\n{yaml}"
+            yaml.contains("eslint --stdin --stdin-filename"),
+            "eslint rule must use bare --stdin flag (not just --stdin-filename) so pre-write gating works:\n{yaml}"
         );
         assert!(
             !yaml.contains("--no-error-on-unmatched-pattern"),

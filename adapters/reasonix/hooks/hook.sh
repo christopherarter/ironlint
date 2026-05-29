@@ -148,6 +148,7 @@ sys.stdout.write(content.replace(search, replace, 1))
         # python success via &&) preserves them. Strip the sentinel to recover
         # byte-exact content including any trailing newline.
         PROPOSED=${PROPOSED%X}
+        # printf '%s' avoids the extra \n that `echo` would append after the value.
         printf '%s' "${PROPOSED}" | run_hector "${FILE}"
         ;;
       *)
