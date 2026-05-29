@@ -275,3 +275,157 @@ fn broken_trust_gate_fails_open() {
         "fail-open should log a diagnostic; stderr: {err}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Golden tests: byte-exact content fidelity (Task 4)
+//
+// These use a *stub* `hector` that copies its stdin to a capture file and
+// exits 0, rather than the real binary. This lets us assert that the hook
+// pipes exactly the bytes we expect — no trailing-newline inflation (jq -r)
+// and no trailing-newline stripping ($()).
+// ---------------------------------------------------------------------------
+
+/// Build a temporary stub `hector` binary (a bash script) that copies its
+/// stdin to `capture_path` and exits 0. Returns the `bin/` directory that
+/// should be prepended to PATH.
+fn stub_hector_dir(tmp: &std::path::Path, capture_path: &std::path::Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = tmp.join("stub_bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let stub = bin.join("hector");
+    std::fs::write(
+        &stub,
+        format!(
+            "#!/usr/bin/env bash\ncat > \"{capture}\"\nexit 0\n",
+            capture = capture_path.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    bin
+}
+
+/// Run the hook with the stub `hector` on PATH (instead of the real binary).
+/// Returns `(exit_code, stdout, stderr)`.
+fn run_hook_stub(
+    project: &Path,
+    stub_bin: &Path,
+    event: &serde_json::Value,
+) -> (i32, String, String) {
+    let path_env = format!(
+        "{}:{}",
+        stub_bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let mut child = std::process::Command::new("bash")
+        .arg(reasonix_hook())
+        .arg("pre-tool-use")
+        .current_dir(project)
+        .env("PATH", path_env)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn reasonix hook.sh with stub hector");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(event.to_string().as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    (
+        out.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+#[test]
+fn write_file_pipes_byte_exact_content_including_trailing_newline() {
+    // A write_file payload whose `content` ends in a single trailing newline
+    // must arrive at `hector` stdin with exactly that newline — not two (the
+    // `jq -r` bug appends an extra \n).
+    let dir = tempdir().unwrap();
+    let project = dir.path();
+    // Minimal trusted config so the hook doesn't early-exit on missing config.
+    let cfg = project.join(".hector.yml");
+    std::fs::write(&cfg, "schema_version: 2\nrules: {}\n").unwrap();
+    AssertCommand::cargo_bin("hector")
+        .unwrap()
+        .args(["trust", "--config", cfg.to_str().unwrap()])
+        .assert()
+        .success();
+
+    let capture = project.join("captured_stdin");
+    let stub_bin = stub_hector_dir(project, &capture);
+
+    let expected = "export const x = 1;\n"; // trailing \n must be preserved exactly
+    let event = json!({
+        "event": "PreToolUse",
+        "cwd": project.to_str().unwrap(),
+        "toolName": "write_file",
+        "toolArgs": { "path": "src/x.ts", "content": expected },
+    });
+
+    let (code, _out, err) = run_hook_stub(project, &stub_bin, &event);
+    assert_eq!(code, 0, "stub hector exits 0; err: {err}");
+
+    let captured = std::fs::read(&capture).unwrap();
+    assert_eq!(
+        captured,
+        expected.as_bytes(),
+        "hook must pipe byte-exact content: got {:?}, want {:?}",
+        String::from_utf8_lossy(&captured),
+        expected,
+    );
+}
+
+#[test]
+fn edit_file_pipes_byte_exact_content_including_trailing_newline() {
+    // An edit_file whose search/replace produces content ending in \n must
+    // arrive at `hector` stdin with exactly that trailing newline — not zero
+    // (the $() command-substitution bug strips trailing newlines).
+    let dir = tempdir().unwrap();
+    let project = dir.path();
+    std::fs::create_dir_all(project.join("src")).unwrap();
+    let cfg = project.join(".hector.yml");
+    std::fs::write(&cfg, "schema_version: 2\nrules: {}\n").unwrap();
+    AssertCommand::cargo_bin("hector")
+        .unwrap()
+        .args(["trust", "--config", cfg.to_str().unwrap()])
+        .assert()
+        .success();
+
+    // Seed the file on disk: "fn old() {}\n"
+    // After substitution: "fn new() {}\n"  — trailing newline must survive.
+    let disk_content = "fn old() {}\n";
+    std::fs::write(project.join("src/app.rs"), disk_content).unwrap();
+    let expected_proposed = "fn new() {}\n";
+
+    let capture = project.join("captured_stdin");
+    let stub_bin = stub_hector_dir(project, &capture);
+
+    let event = json!({
+        "event": "PreToolUse",
+        "cwd": project.to_str().unwrap(),
+        "toolName": "edit_file",
+        "toolArgs": {
+            "path": "src/app.rs",
+            "search": "fn old()",
+            "replace": "fn new()"
+        },
+    });
+
+    let (code, _out, err) = run_hook_stub(project, &stub_bin, &event);
+    assert_eq!(code, 0, "stub hector exits 0; err: {err}");
+
+    let captured = std::fs::read(&capture).unwrap();
+    assert_eq!(
+        captured,
+        expected_proposed.as_bytes(),
+        "hook must pipe byte-exact proposed content: got {:?}, want {:?}",
+        String::from_utf8_lossy(&captured),
+        expected_proposed,
+    );
+}

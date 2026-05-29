@@ -103,7 +103,9 @@ case "${MODE}" in
     case "${TOOL}" in
       write_file)
         # toolArgs.content IS the post-edit content — no synthesis needed.
-        echo "${EVENT}" | jq -r '.toolArgs.content // ""' | run_hector "${FILE}"
+        # jq -j (raw, no trailing newline) preserves the exact bytes from the
+        # JSON string: jq -r would append an extra \n after the value.
+        echo "${EVENT}" | jq -j '.toolArgs.content // ""' | run_hector "${FILE}"
         ;;
       edit_file)
         # Synthesize post-edit content by applying the unique substitution
@@ -140,7 +142,12 @@ if count != 1:
     )
     sys.exit(2)
 sys.stdout.write(content.replace(search, replace, 1))
-' ) || exit 2
+' && printf 'X'
+        ) || exit 2
+        # $(...) strips trailing newlines; the sentinel 'X' (appended only on
+        # python success via &&) preserves them. Strip the sentinel to recover
+        # byte-exact content including any trailing newline.
+        PROPOSED=${PROPOSED%X}
         printf '%s' "${PROPOSED}" | run_hector "${FILE}"
         ;;
       *)
