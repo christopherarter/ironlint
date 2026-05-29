@@ -2,6 +2,7 @@
 
 **Date:** 2026-05-29
 **Status:** Investigation brief — written to hand to independent max-effort agents for a fresh look. The "Recommended direction" near the end is *current thinking*, not a decision. Pressure-test it; try to break it; propose better.
+**Resolved** — implemented on branch `feat/script-engine-prewrite-stdin` per plan `docs/superpowers/plans/2026-05-29-script-engine-prewrite-content.md`.
 **Owner:** dynamik-dev (Chris)
 **Relates to / amends:** [`specs/2026-05-25-reasonix-adapter.md`](./2026-05-25-reasonix-adapter.md) §5A "known limitation", [`adapters/reasonix/README.md`](../adapters/reasonix/README.md) "Limitation: engine: script rules"
 

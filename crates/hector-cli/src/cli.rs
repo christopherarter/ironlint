@@ -31,12 +31,15 @@ pub enum Command {
         /// Requires `--file` so scope matching, baseline matching, and
         /// AST language detection all key off the real project path.
         ///
-        /// Limitation: `engine: script` rules invoke an external command
-        /// against the on-disk file via `{file}`/`HECTOR_FILE`, so they
-        /// see the *current* disk content, not the proposed content.
-        /// AST, semantic, and `hector-disable:` directives all read from
-        /// `--content` correctly. See spec
-        /// `specs/2026-05-25-reasonix-adapter.md` §5.
+        /// `engine: script` rules receive this content on the command's
+        /// **stdin**. Write your tool's stdin form so it gates the proposed
+        /// edit pre-write — e.g. `biome check --stdin-file-path={file}`,
+        /// `ruff check --stdin-filename {file} -`, `eslint --stdin
+        /// --stdin-filename {file}`. A path-only command (`biome check
+        /// {file}`) still reads the on-disk file. Whole-program tools (tsc,
+        /// cargo, test runners) can't gate a single proposed file — run those
+        /// post-write / in CI. AST, semantic, and `hector-disable:` directives
+        /// already read `--content`.
         #[arg(
             long,
             value_name = "STRING_OR_DASH",

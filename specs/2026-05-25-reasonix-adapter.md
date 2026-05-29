@@ -116,7 +116,7 @@ Why this is the right shape:
 1. **Authoritative empty content** — `evaluate_one_rule` was collapsing empty content onto `None` for the AST engine, which surfaced as an `__internal` violation. Empty *proposed* content (a `write_file` creating an empty file) is now distinguished from empty *disk-read* content (a read failure) via a `content_authoritative` track in `check_inner`.
 2. **`relativize` through the parent** — non-existent paths (the `write_file` case) used to fall back to the literal `PathBuf`, which on macOS's `/var → /private/var` symlink layout meant the scope-matching `strip_prefix` failed and rules were silently out of scope. `canonicalize_through_parent` walks up to the deepest existing ancestor and rebuilds a canonical path.
 
-The script engine's `{file}` / `HECTOR_FILE` substitution still points at the on-disk path — script rules under `--content` read pre-edit content. Documented as a known limitation in `hector check --help` and in [`adapters/reasonix/README.md`](../adapters/reasonix/README.md).
+The script engine's `{file}` / `HECTOR_FILE` substitution still points at the on-disk path — **however, proposed content is now offered on the command's stdin**. A rule written in stdin form (`biome check --stdin-file-path={file}`) gates the proposed edit correctly; a path-only command (`biome check {file}`) still reads disk. The residual boundary is per-tool (stdin-capable single-file tools gate pre-write; whole-program tools belong post-write/CI), not per-harness. **Limitation resolved** by [`specs/2026-05-29-script-engine-prewrite-content.md`](./2026-05-29-script-engine-prewrite-content.md) and the implementation on branch `feat/script-engine-prewrite-stdin`.
 
 ### B. Adapter writes a tempfile, calls `--file`
 

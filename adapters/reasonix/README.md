@@ -37,9 +37,19 @@ The hook is a silent no-op in any project that lacks `.hector.yml`, so installin
 
 Per-edit content reaches hector via stdin (`--content -`), keeping argv free of large payloads. The `--file` path is the real on-disk path so scope globs, baseline matching, and AST language detection all key off the project's actual layout — not a tempfile.
 
-### Limitation: `engine: script` rules
+### `engine: script` rules and pre-write gating
 
-`engine: script` rules invoke an external command against the *on-disk* file via `{file}` / `HECTOR_FILE`. Under PreToolUse, that file is the **pre-edit** version (or doesn't exist yet for `write_file`). AST, semantic, and `hector-disable:` directives all read the proposed content correctly; only script rules see stale content. Author script rules with this in mind or restrict them to PostToolUse-style flows.
+`engine: script` rules receive the proposed content on the command's **stdin**. Write the tool's stdin form in `.hector.yml` and the rule gates the proposed edit before it lands on disk — e.g.:
+
+```yaml
+script: "biome check --stdin-file-path={file}"
+script: "ruff check --stdin-filename {file} -"
+script: "eslint --stdin --stdin-filename {file}"
+```
+
+`{file}` is a path/extension hint (for config lookup and language detection); the content comes from stdin. A path-only command (`biome check {file}`) still reads the on-disk file and is silently wrong under PreToolUse.
+
+**Per-tool boundary (not per-harness):** stdin-capable single-file tools (biome, eslint, ruff, prettier, shellcheck, …) can gate pre-write. Whole-program tools — tsc, cargo, test runners, anything that needs the full project tree — cannot gate a single proposed file meaningfully; run those post-write or in CI. This boundary is a property of the tool, not of this adapter or Reasonix.
 
 ### Limitation: `bash` tool shell-out
 
