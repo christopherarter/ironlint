@@ -48,13 +48,29 @@ pub fn run_with_capabilities_env(
     caps: &Capabilities,
     env: &[(&str, &str)],
 ) -> Result<ExecOutcome> {
+    run_with_capabilities_stdin(cmd, cwd, caps, env, None)
+}
+
+/// Same as [`run_with_capabilities_env`], plus optional bytes piped to stdin.
+///
+/// `Some(bytes)` is the proposed-content path the script engine uses for
+/// pre-write gating: the command's stdin carries the bytes to check, while a
+/// path/extension *hint* stays available via env (`HECTOR_FILE`/`{file}`).
+/// `None` preserves the historical behavior (child inherits the parent's fd 0).
+pub fn run_with_capabilities_stdin(
+    cmd: &str,
+    cwd: &Path,
+    caps: &Capabilities,
+    env: &[(&str, &str)],
+    stdin: Option<&[u8]>,
+) -> Result<ExecOutcome> {
     #[cfg(target_os = "linux")]
     {
-        run_linux(cmd, cwd, caps, env)
+        run_linux(cmd, cwd, caps, env, stdin)
     }
     #[cfg(not(target_os = "linux"))]
     {
-        run_best_effort_macos(cmd, cwd, caps, env)
+        run_best_effort_macos(cmd, cwd, caps, env, stdin)
     }
 }
 
@@ -389,13 +405,14 @@ fn run_best_effort_macos(
     cwd: &Path,
     _caps: &Capabilities,
     env: &[(&str, &str)],
+    stdin: Option<&[u8]>,
 ) -> Result<ExecOutcome> {
     // No eprintln here. The platform-best-effort story is surfaced by
     // `hector doctor` (see `platform_capability_status` and
     // `commands::doctor::check_capabilities`), not by every `check`
     // invocation: a per-process AtomicBool dedup still leaks to users because
     // the Claude Code adapter hook spawns ~3 hector processes per edit.
-    spawn_with_timeout(cmd, cwd, env)
+    spawn_with_timeout(cmd, cwd, env, stdin)
 }
 
 /// Platform-level capability story, exposed for the `hector doctor`
@@ -442,6 +459,25 @@ fn join_reader(handle: std::thread::JoinHandle<String>) -> String {
     handle.join().unwrap_or_default()
 }
 
+/// Feed `bytes` to a child's stdin on a dedicated thread, then close the pipe
+/// (by dropping `writer`) to deliver EOF. Runs concurrently with the
+/// stdout/stderr readers, so a child that streams output while reading stdin
+/// cannot deadlock us.
+///
+/// A `BrokenPipe` write error is expected and swallowed: a rule whose command
+/// ignores stdin (e.g. `grep PATTERN {file}`) closes the read-end early. This
+/// relies on Rust's default `SIGPIPE` disposition (`SIG_IGN`) — the write
+/// returns `BrokenPipe` rather than terminating the process with a signal.
+fn spawn_stdin_writer<W: std::io::Write + Send + 'static>(
+    mut writer: W,
+    bytes: Vec<u8>,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let _ = writer.write_all(&bytes);
+        // `writer` drops here → the pipe write-end closes → child sees EOF.
+    })
+}
+
 /// Spawn `sh -c <cmd>` in `cwd` with `env` overrides, enforcing both a
 /// wall-clock timeout and a per-stream output cap.
 ///
@@ -449,7 +485,12 @@ fn join_reader(handle: std::thread::JoinHandle<String>) -> String {
 /// fast path (and the EPERM fallback for `clone(2)`); on macOS it's the
 /// only path. Centralising the spawn keeps the timeout + bounded-read
 /// invariant in exactly one place across both targets.
-fn spawn_with_timeout(cmd: &str, cwd: &Path, env: &[(&str, &str)]) -> Result<ExecOutcome> {
+fn spawn_with_timeout(
+    cmd: &str,
+    cwd: &Path,
+    env: &[(&str, &str)],
+    stdin: Option<&[u8]>,
+) -> Result<ExecOutcome> {
     let mut command = Command::new("sh");
     command
         .arg("-c")
@@ -457,10 +498,23 @@ fn spawn_with_timeout(cmd: &str, cwd: &Path, env: &[(&str, &str)]) -> Result<Exe
         .current_dir(cwd)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // Only pipe stdin when there's content to feed; otherwise leave the default
+    // (inherit parent fd 0) so content-less calls behave exactly as before.
+    if stdin.is_some() {
+        command.stdin(Stdio::piped());
+    }
     for (k, v) in env {
         command.env(k, v);
     }
     let mut child = command.spawn().context("spawning script subprocess")?;
+
+    // Feed proposed content on stdin from a dedicated thread (see
+    // spawn_stdin_writer). `take()` moves the handle into the thread, which
+    // drops it after writing to deliver EOF.
+    let stdin_writer = match (stdin, child.stdin.take()) {
+        (Some(bytes), Some(si)) => Some(spawn_stdin_writer(si, bytes.to_vec())),
+        _ => None,
+    };
 
     // Drain both streams on dedicated threads BEFORE waiting, so a child that
     // writes past the pipe buffer never blocks on write(2). Each reader is
@@ -474,16 +528,14 @@ fn spawn_with_timeout(cmd: &str, cwd: &Path, env: &[(&str, &str)]) -> Result<Exe
 
     let Some(status) = status else {
         // Timeout fired. Kill and reap the direct child, then DETACH the reader
-        // threads rather than joining them: if the script backgrounded a
-        // process that inherited the pipe write-end, the read never hits EOF and
-        // a join would hang us past the very deadline this timeout enforces.
-        // Captured output is discarded on timeout anyway. The detached readers
-        // unblock when the surviving writer closes the fd, or when this process
-        // exits.
+        // and writer threads rather than joining them: if the script
+        // backgrounded a process that inherited a pipe fd, a join would hang us
+        // past the very deadline this timeout enforces.
         let _ = child.kill();
         let _ = child.wait();
         drop(stdout_reader);
         drop(stderr_reader);
+        drop(stdin_writer);
         return Ok(ExecOutcome {
             stdout: String::new(),
             stderr: format!("hector: script killed after {TIMEOUT:?} timeout"),
@@ -493,6 +545,9 @@ fn spawn_with_timeout(cmd: &str, cwd: &Path, env: &[(&str, &str)]) -> Result<Exe
 
     let stdout = stdout_reader.map(join_reader).unwrap_or_default();
     let stderr = stderr_reader.map(join_reader).unwrap_or_default();
+    // Detach the writer; its write result never affects the verdict, and the
+    // child has exited so a blocked write has already unblocked via EPIPE.
+    drop(stdin_writer);
 
     Ok(ExecOutcome {
         stdout,

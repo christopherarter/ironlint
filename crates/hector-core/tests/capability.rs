@@ -4,6 +4,7 @@ use hector_core::engine::capability::run_with_capabilities;
 // test below; importing it unconditionally trips `-D unused-imports` on macOS.
 #[cfg(target_os = "linux")]
 use hector_core::engine::capability::run_with_capabilities_env;
+use hector_core::engine::capability::run_with_capabilities_stdin;
 use std::path::PathBuf;
 
 #[test]
@@ -200,6 +201,63 @@ fn captures_large_output_on_clone_path() {
         "took {:?}",
         start.elapsed()
     );
+}
+
+#[test]
+fn pipes_stdin_content_to_command() {
+    // `cat` echoes whatever it reads from stdin. With the new stdin parameter,
+    // the proposed content must reach the child.
+    let caps = Capabilities {
+        network: true, // keep on the fast path (no clone) so this runs anywhere
+        writes: WritesPolicy::None,
+    };
+    let out = run_with_capabilities_stdin(
+        "cat",
+        std::path::Path::new("."),
+        &caps,
+        &[],
+        Some(b"hello stdin"),
+    )
+    .expect("run");
+    assert_eq!(out.stdout, "hello stdin");
+    assert_eq!(out.exit_code, 0);
+}
+
+#[test]
+fn ignored_stdin_does_not_hang_or_error() {
+    // A command that never reads stdin must still complete cleanly. The writer
+    // swallows BrokenPipe; a payload larger than the OS pipe buffer (64 KiB)
+    // proves the writer thread can't deadlock the wait.
+    let caps = Capabilities {
+        network: true,
+        writes: WritesPolicy::None,
+    };
+    let big = "x".repeat(256 * 1024);
+    let out = run_with_capabilities_stdin(
+        "echo done",
+        std::path::Path::new("."),
+        &caps,
+        &[],
+        Some(big.as_bytes()),
+    )
+    .expect("run");
+    assert_eq!(out.stdout.trim(), "done");
+    assert_eq!(out.exit_code, 0);
+}
+
+#[test]
+fn none_stdin_preserves_legacy_behavior() {
+    // No stdin supplied → child inherits parent fd 0 as before; a plain command
+    // still runs.
+    let caps = Capabilities {
+        network: true,
+        writes: WritesPolicy::None,
+    };
+    let out =
+        run_with_capabilities_stdin("echo legacy", std::path::Path::new("."), &caps, &[], None)
+            .expect("run");
+    assert_eq!(out.stdout.trim(), "legacy");
+    assert_eq!(out.exit_code, 0);
 }
 
 #[cfg(target_os = "linux")]
