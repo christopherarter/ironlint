@@ -4,7 +4,7 @@ Policy-enforcement pipeline for AI coding agents. Rust rewrite of [dynamik-dev/b
 
 ## Status
 
-0.2 (in progress). Engines: `script`, `ast`, `semantic` (Anthropic + OpenRouter + Ollama), `session`. CLI: `check`, `trust`, `validate`, `init`, `migrate`, `baseline`, `session record`, `doctor`. Claude Code + OpenCode adapters shipped. See [`docs/operating/diagnostics.md`](docs/operating/diagnostics.md) for the diagnostic schema.
+0.2 (in progress). Engines: `script`, `ast`, `semantic` (Anthropic + OpenRouter + Ollama), `session`. CLI: `check`, `trust`, `validate`, `init`, `migrate`, `baseline`, `session record`, `doctor`. Claude Code, OpenCode, Reasonix, and pi adapters shipped. See [`docs/operating/diagnostics.md`](docs/operating/diagnostics.md) for the diagnostic schema.
 
 ## Documentation
 
@@ -13,7 +13,9 @@ Full docs are in [`docs/`](docs/README.md) — start with [Getting started](docs
 ## Adapters
 
 - **Claude Code** — `adapters/claude-code/`. PostToolUse + Stop hooks, three skills. See [docs/adapters/claude-code.md](docs/adapters/claude-code.md).
-- **OpenCode** — `adapters/opencode/`. `tool.execute.after` + `event` (`session.created` / `session.idle`) plugin. See [docs/adapters/opencode.md](docs/adapters/opencode.md).
+- **OpenCode** — `adapters/opencode/`. `tool.execute.before` gates proposed edits, `tool.execute.after` records session state, and `event` handles `session.created` / `session.idle`. See [docs/adapters/opencode.md](docs/adapters/opencode.md).
+- **Reasonix** — `adapters/reasonix/`. PreToolUse hook for `write_file` / `edit_file`. See [adapters/reasonix/README.md](adapters/reasonix/README.md).
+- **pi** — `adapters/pi/`. Extension hooks for pre-write gating, session recording, and advisory end-of-turn checks. See [adapters/pi/README.md](adapters/pi/README.md).
 - *Aider, pre-commit, MCP — planned for 0.2/0.3.*
 
 ## Build

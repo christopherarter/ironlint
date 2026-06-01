@@ -8,17 +8,20 @@ flowchart LR
         Team["Team intent<br/>security, style, tests, architecture"]
         Config[".hector.yml<br/>rules, scope, severity, LLM provider"]
         Trust["Trust fingerprint<br/>reviewed config before rules run"]
+        Trusted["Trusted resolved config<br/>extends merged, fingerprint verified"]
         Baseline["Baseline and disables<br/>suppress known or approved findings"]
     end
 
     subgraph Agents["AI coding tools"]
         Claude["Claude Code"]
         OpenCode["OpenCode"]
-        Future["Other adapters<br/>Aider, pre-commit, MCP"]
+        Reasonix["Reasonix"]
+        Pi["pi"]
+        Future["Future and custom adapters<br/>Aider, pre-commit, MCP"]
     end
 
     subgraph AdapterLayer["Adapter layer"]
-        Hooks["Edit and session hooks<br/>capture file, diff, or session state"]
+        Hooks["Edit and session hooks<br/>capture proposed content, diff, or session state"]
         Contract["Stable command contract<br/>hector check --format json"]
     end
 
@@ -41,18 +44,21 @@ flowchart LR
     subgraph Outcome["Outcome"]
         Allow["Allow edit<br/>agent continues"]
         Warn["Warn<br/>surface policy feedback"]
-        Block["Block<br/>adapter rejects edit so the agent retries"]
+        Block["Block per-edit gates<br/>adapter rejects the edit so the agent retries"]
+        Advisory["Surface session findings<br/>hosts that cannot rewind still show what to fix"]
         Audit["Operate and improve<br/>review noisy, dead, or valuable rules"]
     end
 
     Team --> Config
     Config --> Trust
-    Config --> Contract
-    Trust --> Core
+    Trust --> Trusted
+    Trusted --> Core
     Baseline --> Filter
 
     Claude --> Hooks
     OpenCode --> Hooks
+    Reasonix --> Hooks
+    Pi --> Hooks
     Future --> Hooks
     Hooks --> Contract
     Contract --> CLI
@@ -71,6 +77,7 @@ flowchart LR
     Verdict --> Allow
     Verdict --> Warn
     Verdict --> Block
+    Verdict --> Advisory
     Telemetry --> Audit
     Audit --> Config
 ```
@@ -78,10 +85,10 @@ flowchart LR
 ## What this shows
 
 - **Policy lives with the code.** The `.hector.yml` travels with the repo, so every agent sees the same rules and severities.
-- **Adapters are thin.** Claude Code, OpenCode, and future adapters only capture edit events and consume Hector's verdict. Policy logic stays in `hector-core`.
+- **Adapters are thin.** Claude Code, OpenCode, Reasonix, pi, and future adapters capture host events and consume Hector's verdict. Policy logic stays in `hector-core`.
 - **Rules scale from cheap to smart.** Use shell checks and AST matching for deterministic policies, then semantic and session rules when the question needs judgment across a diff, file, repo, or full agent turn.
 - **Trust comes before power.** Script rules can execute commands, so Hector verifies the signed config before any rule runs.
-- **The verdict is machine-readable.** `pass`, `warn`, `block`, and `internal_error` map to stable exit codes that agents and CI can act on automatically.
+- **The verdict is machine-readable.** `pass`, `warn`, `block`, and `internal_error` map to stable exit codes that agents and CI can act on automatically. Per-edit gates can block immediately; post-turn session checks surface findings when a host cannot rewind a completed turn.
 - **The system improves over time.** Baselines and disables keep adoption practical; telemetry shows which rules are noisy, valuable, or dead.
 
 ## Mental model

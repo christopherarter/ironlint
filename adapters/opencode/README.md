@@ -1,10 +1,11 @@
 # Hector — OpenCode adapter
 
-OpenCode plugin integration for Hector. Mirrors the Claude Code adapter behaviour.
+OpenCode plugin integration for Hector. Mirrors the Claude Code adapter behaviour while using OpenCode's pre-edit hook for gating.
 
 | OpenCode hook | Action |
 |---------------|--------|
-| `tool.execute.after` (`edit` / `write`) | Record the edit in `.hector/session.json`, then run `hector check --file <path>`. Throw on block → OpenCode rejects the tool result and the agent retries. |
+| `tool.execute.before` (`edit` / `write`) | Shadow-write the proposed content, run `hector check --file <path>`, restore the original file, and throw on block so OpenCode cancels the tool call. |
+| `tool.execute.after` (`edit` / `write`) | Record the edit in `.hector/session.json` for session rules. |
 | `event` → `session.idle` | Run `hector check --session` over the accumulated changeset. Throw on block → surfaced to the user. |
 | `event` → `session.created` | Clear stale `.hector/session.json` from a prior aborted run. |
 
@@ -55,9 +56,10 @@ This fingerprints the config. The plugin no-ops silently in projects without `.h
 
 ## How it works
 
-The plugin is a small TypeScript module that consumes the `@opencode-ai/plugin` types. It registers exactly two hooks:
+The plugin is a small TypeScript module that consumes the `@opencode-ai/plugin` types. It registers three hooks:
 
-- **`tool.execute.after`** — fires after OpenCode's built-in `edit` / `write` tools finish writing to disk. The plugin invokes `hector check --file <path>` via Bun's `$` shell API. On exit code `2` (block), it throws an `Error` whose message is the JSON verdict — OpenCode surfaces this to the agent, which sees the rejection and retries.
+- **`tool.execute.before`** — fires before OpenCode's built-in `edit` / `write` tools write to disk. The plugin computes the proposed content, shadow-writes it to the target path, invokes `hector check --file <path>` via Bun's `$` shell API, then restores the original file. On exit code `2` (block), it throws an `Error` whose message is the JSON verdict, so OpenCode cancels the tool call before the edit lands.
+- **`tool.execute.after`** — fires after successful `edit` / `write` tools and records the edit into `.hector/session.json` for session rules. Recording is best-effort and never blocks the agent.
 - **`event`** — filtered on `event.type`. On `session.created`, the plugin clears `.hector/session.json`. On `session.idle`, it runs `hector check --session` to evaluate `session`-engine rules over the accumulated changeset.
 
 The `hector` binary is the only authoritative source of rule logic. The plugin is purely a translation layer; rule changes never touch the plugin.
@@ -69,8 +71,9 @@ The plugin honours the `hector` CLI exit-code contract from `commands/check.rs`:
 | Exit | Plugin behaviour |
 |------|------------------|
 | `0` (pass or warn) | Allow. |
-| `2` (block) | Throw — OpenCode rejects the tool result. |
-| `1` or other (internal) | Log to stderr, allow. Internal hector errors should not block the agent on unrelated work. |
+| `2` (block) | Throw — OpenCode cancels the tool call. |
+| `3` (engine internal error) | Fail-open by default; set `HECTOR_FAIL_CLOSED_ON_INTERNAL=1` to fail closed while the hook can still block. |
+| `1` / other (config error) | Log to stderr, allow. Config errors should not block the agent on unrelated work. |
 
 ## Known gaps at 0.1d
 
@@ -81,7 +84,7 @@ The plugin honours the `hector` CLI exit-code contract from `commands/check.rs`:
 ## Requirements
 
 - `hector` ≥ 0.1 on PATH.
-- OpenCode (any version that supports the plugin Hooks interface with `tool.execute.after` and `event`).
+- OpenCode (any version that supports the plugin Hooks interface with `tool.execute.before`, `tool.execute.after`, and `event`).
 
 ## Diagnostic
 

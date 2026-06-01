@@ -1,6 +1,6 @@
 # OpenCode adapter
 
-The OpenCode adapter runs your Hector rules every time OpenCode edits or writes a file. When an edit breaks a rule, the adapter rejects the tool result, OpenCode hands the agent the verdict, and the agent rewrites the change to comply. The gate runs on every edit without you calling `hector check` by hand.
+The OpenCode adapter runs your Hector rules every time OpenCode edits or writes a file. When an edit breaks a rule, the adapter cancels the tool call, OpenCode hands the agent the verdict, and the agent rewrites the change to comply. The gate runs on every edit without you calling `hector check` by hand.
 
 The adapter ships in this repo at `adapters/opencode/` as a TypeScript plugin.
 
@@ -47,13 +47,15 @@ rules:
     script: "grep -nE 'DEBUG' {file} && exit 1 || exit 0"
 ```
 
-Ask OpenCode to add a debug print to a file under `src/`. The moment the `edit` tool finishes writing, the adapter runs `hector check` against that file, the `no-debug` rule fires, and the adapter throws. OpenCode rejects the tool result and surfaces the verdict to the agent, which sees that it broke `no-debug` and rewrites without the marker. A clean edit lands normally and you see nothing.
+Ask OpenCode to add a debug print to a file under `src/`. Before the `edit` tool writes, the adapter checks the proposed content, the `no-debug` rule fires, and the adapter throws. OpenCode cancels the tool call and surfaces the verdict to the agent, which sees that it broke `no-debug` and rewrites without the marker. A clean edit lands normally and you see nothing.
 
 ## What runs, and when
 
-Every adapter follows the [same three-step lifecycle](README.md#what-every-adapter-does); OpenCode covers it with two hooks:
+Every adapter follows the [same lifecycle](README.md#what-adapters-do); OpenCode covers it with two tool hooks plus the session event hook:
 
-**After every edit.** When OpenCode's `edit` or `write` tool finishes writing to disk, the adapter records the change into `.hector/session.json`, then runs `hector check --file <path>`. A block throws, and OpenCode rejects the edit so the agent retries.
+**Before every edit.** When OpenCode's `edit` or `write` tool proposes a change, the adapter shadow-writes the proposed content, runs `hector check --file <path>`, then restores the pre-edit file before OpenCode executes the tool. A block throws, and OpenCode cancels the edit so the agent retries.
+
+**After every edit.** Once the `edit` or `write` tool succeeds, the adapter records the change into `.hector/session.json` for session rules. This is best-effort and never blocks the agent.
 
 **When the agent goes idle.** On `session.idle`, the adapter runs `hector check --session` to evaluate your `session`-engine rules across the whole turn. This check is advisory: `session.idle` fires after the agent's response is already out, so a violation cannot retract the turn. The adapter surfaces it so the agent fixes it on the next iteration. See [Checking a whole edit session](../writing-rules/whole-session-checks.md).
 
@@ -61,7 +63,7 @@ Every adapter follows the [same three-step lifecycle](README.md#what-every-adapt
 
 ## Judging semantic rules
 
-Rules on the `semantic` and `session` engines ask an LLM to judge a change. Under OpenCode, point `llm:` at an API-key-backed provider:
+Rules on the `semantic` and `session` engines ask an LLM to judge a change. Under OpenCode, point `llm:` at a provider Hector can call directly:
 
 ```yaml
 llm:
@@ -69,7 +71,7 @@ llm:
   model: claude-sonnet-4-6
 ```
 
-The adapter reads your key from the provider's environment variable (`ANTHROPIC_API_KEY` for Anthropic) at check time. The `claude-code-subagent` mode is specific to Claude Code and does not apply here. See [LLM providers](../configuring/llm-providers.md) and [Asking an LLM to judge a change](../writing-rules/asking-an-llm.md).
+API-backed providers read credentials from their environment variable (`ANTHROPIC_API_KEY` for Anthropic); local providers such as Ollama use their configured local endpoint. The `claude-code-subagent` mode is specific to Claude Code and does not apply here. See [LLM providers](../configuring/llm-providers.md) and [Asking an LLM to judge a change](../writing-rules/asking-an-llm.md).
 
 ## Installing across every project
 
@@ -117,7 +119,7 @@ If OpenCode edits a file and nothing happens, walk through these in order:
 
 ## How it works
 
-The plugin is a small TypeScript module that consumes the `@opencode-ai/plugin` types and registers two hooks — `tool.execute.after` (for `edit` / `write`) and `event` (for `session.idle` / `session.created`), as described above. It only shells out to the `hector` binary via Bun's `$` API and holds no policy logic of its own, so changing a rule never touches the plugin. It translates `hector check`'s exit codes into allow/reject per [the exit-code contract](README.md#the-exit-code-contract) — the one wrinkle is that the plugin *throws* to make OpenCode reject the tool result, where the Claude Code hook exits `2`.
+The plugin is a small TypeScript module that consumes the `@opencode-ai/plugin` types and registers three hooks: `tool.execute.before` for pre-edit gating, `tool.execute.after` for session recording, and `event` for `session.idle` / `session.created`. It only shells out to the `hector` binary via Bun's `$` API and holds no policy logic of its own, so changing a rule never touches the plugin. It translates `hector check`'s exit codes into allow/reject per [the exit-code contract](README.md#the-exit-code-contract) - the one wrinkle is that the plugin *throws* to make OpenCode cancel the tool call, where the Claude Code hook exits `2`.
 
 ## How it differs from the Claude Code adapter
 
@@ -126,7 +128,7 @@ The two adapters share the same contract: shell out to `hector`, gate edits on e
 | Aspect | Claude Code | OpenCode |
 |--------|-------------|----------|
 | Language | bash + `jq` | TypeScript on Bun |
-| Reject an edit | `PostToolUse` exit `2` | `tool.execute.after` throw |
+| Reject an edit | `PostToolUse` exit `2` | `tool.execute.before` throw |
 | End-of-turn check | `Stop` hook, can still block | `session.idle`, advisory only |
 | Subagent mode | supported (`claude-code-subagent`) | not applicable |
 | Skills | three shipped | not ported yet |

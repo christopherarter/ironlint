@@ -6,16 +6,19 @@ An adapter wires Hector into a coding agent so policy runs automatically on ever
 |---------|-------|----------|---------|
 | [Claude Code](claude-code.md) | Claude Code | bash + `jq` | `/plugin install` |
 | [OpenCode](opencode.md) | OpenCode | TypeScript | File drop or npm |
+| [Reasonix](../../adapters/reasonix/README.md) | DeepSeek-Reasonix | bash + `jq` + Python | Settings hook |
+| [pi](../../adapters/pi/README.md) | pi | TypeScript | Extension |
 
 *Aider, pre-commit, and MCP adapters are planned.*
 
-## What every adapter does
+## What adapters do
 
-The shape is the same across agents:
+The exact hook names and coverage differ, but the contract is the same across agents:
 
-1. **On each edit** (`PostToolUse` in Claude Code, `tool.execute.after` in OpenCode) — record the edit into `.hector/session.json`, then run `hector check --file <path>`. On a block, reject the edit so the agent retries.
-2. **On session start** — clear stale session state from a prior aborted run.
-3. **On stop / idle** — run `hector check --session` to evaluate `session` rules across the whole turn.
+1. **On each edit or proposed edit** — run `hector check` against the file or proposed content. On exit `2`, gating hooks reject the edit so the agent retries.
+2. **When session support is wired** — record edit results into `.hector/session.json` for cross-edit rules.
+3. **When the host exposes session start** — clear stale session state from a prior aborted run.
+4. **When the host exposes stop / idle / agent end** — run `hector check --session` to evaluate `session` rules across the whole turn. Some hosts can block this final response; others can only surface the finding for the next iteration.
 
 The adapter only shells out to the `hector` binary. It doesn't reimplement any policy logic.
 
@@ -27,7 +30,8 @@ Adapters translate [`hector check`'s exit codes](../operating/running-checks.md)
 |---------------|----------------|
 | `0` (pass / warn) | Allow the edit. |
 | `2` (block) | Reject the edit; the agent retries. |
-| `1` or `3` (config / internal error) | **Fail-open** — log and allow. An unrelated problem (an unset API key, a broken config) shouldn't block the agent's work. |
+| `1` (config error) | **Fail-open** — log and allow. An unrelated problem, like a broken config, shouldn't block the agent's work. |
+| `3` (internal error) | **Fail-open by default** — log and allow. Set `HECTOR_FAIL_CLOSED_ON_INTERNAL=1` to make internal errors block where the host lifecycle can still block. |
 
 The fail-open default on internal errors is deliberate: a rule that *couldn't run* is not a rule that *found a problem*. To make internal errors blocking instead — for a strict CI-style gate — set `HECTOR_FAIL_CLOSED_ON_INTERNAL=1`. See [Running checks](../operating/running-checks.md).
 
@@ -39,7 +43,7 @@ Every adapter needs:
 - a `.hector.yml` in the project root,
 - a trusted config (`hector trust`).
 
-If hooks aren't firing, run [`hector doctor`](../operating/diagnostics.md) — its `adapter` check confirms the wiring.
+If Claude Code hooks aren't firing, run [`hector doctor`](../operating/diagnostics.md) — its `adapter` check confirms Claude Code wiring. Other adapters document their own diagnostics in their adapter pages.
 
 ## Managing policy from inside the agent
 

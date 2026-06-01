@@ -29,6 +29,8 @@ The core of Hector. Pick an engine for the job, then write the rule.
 - [Adapters overview](adapters/README.md) — what an adapter is and the fail-open contract
 - [Claude Code](adapters/claude-code.md)
 - [OpenCode](adapters/opencode.md)
+- [Reasonix](../adapters/reasonix/README.md)
+- [pi](../adapters/pi/README.md)
 
 ## Running and inspecting
 

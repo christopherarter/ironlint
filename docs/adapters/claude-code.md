@@ -54,7 +54,7 @@ A clean edit, one that breaks no rule, lands normally and you see nothing at all
 
 ## What runs, and when
 
-Every adapter follows the [same three-step lifecycle](README.md#what-every-adapter-does); here is how Claude Code wires it:
+Every adapter follows the [same lifecycle](README.md#what-adapters-do); here is how Claude Code wires it:
 
 **After every edit.** When Claude finishes an `Edit` or `Write`, the adapter records the change into `.hector/session.json`, then runs `hector check --file <path>`. A block rejects the edit and Claude retries. This is the gate you saw above.
 
@@ -66,9 +66,9 @@ Every adapter follows the [same three-step lifecycle](README.md#what-every-adapt
 
 Some rules ask an LLM to judge a change rather than grep for a pattern: the `semantic` and `session` engines. How Hector makes that LLM call depends on how you pay for Claude. Pick the mode that matches your setup in your config's `llm:` block.
 
-### When you have an API key
+### When you use a direct provider
 
-This is the default. Point `llm:` at an API-key-backed provider:
+This is the default. Point `llm:` at a provider Hector can call directly:
 
 ```yaml
 llm:
@@ -76,7 +76,7 @@ llm:
   model: claude-sonnet-4-6
 ```
 
-The adapter calls the model directly on each edit, reading your key from the provider's environment variable (`ANTHROPIC_API_KEY` for Anthropic) at check time. This is the right fit for API users and for CI.
+The adapter calls the model directly on each edit. API-backed providers read credentials from their environment variable (`ANTHROPIC_API_KEY` for Anthropic); local providers such as Ollama use their configured local endpoint. This is the right fit for API users, local model users, and CI.
 
 ### When you're on a Claude subscription
 
