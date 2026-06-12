@@ -7,18 +7,15 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 // The signature mirrors the clap subcommand variant one-to-one.
-#[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     file: Option<PathBuf>,
     diff: Option<PathBuf>,
     content: Option<String>,
-    session: bool,
     format: OutputFormat,
     config: &Path,
     rules: Vec<String>,
     explain: bool,
-    print_prompt: bool,
-    emit_semantic_payload: bool,
     allow_external_paths: bool,
 ) -> Result<i32> {
     // Load once: build with the non-rule options, then validate `--rule`
@@ -28,7 +25,7 @@ pub fn run(
     let options = CheckOptions {
         rules: HashSet::new(),
         explain,
-        emit_semantic_payload,
+        emit_semantic_payload: false,
         allow_external_paths,
     };
     let mut engine = match HectorEngine::builder().with_options(options).load(config) {
@@ -43,44 +40,14 @@ pub fn run(
     }
     engine.set_rule_filter(rules.into_iter().collect());
 
-    if print_prompt {
-        return run_print_prompt(&engine, file, diff, content);
-    }
-    if session {
-        return run_session(&engine, config, format);
-    }
-
     match (file, diff) {
         (Some(f), None) => run_file(&engine, f, content, format, explain),
-        (None, Some(d)) => run_diff(&engine, &d, format, explain, emit_semantic_payload),
+        (None, Some(d)) => run_diff(&engine, &d, format, explain),
         _ => {
             eprintln!("ERROR: provide exactly one of --file or --diff");
             Ok(1)
         }
     }
-}
-
-/// Stop-hook path: evaluate the recorded session. A deferred envelope is
-/// emitted as JSON and exits 0 (the subagent decides the verdict), leaving
-/// `session.json` intact for a possible re-run; otherwise the verdict is
-/// emitted and the session cleared on Pass/Warn.
-fn run_session(engine: &HectorEngine, config: &Path, format: OutputFormat) -> Result<i32> {
-    let dir = config
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    let state_path = dir.join(".hector/session.json");
-    let state = hector_core::session_state::SessionState::load(&state_path)?;
-    let report = engine.check_session_with_options(&state)?;
-    if let Some(d) = &report.deferred {
-        emit_deferred(d, format)?;
-        return Ok(0);
-    }
-    emit(&report.verdict, format)?;
-    if should_clear_session(report.verdict.status) {
-        hector_core::session_state::SessionState::clear(&state_path)?;
-    }
-    Ok(exit_code(&report.verdict))
 }
 
 /// Check a single file. `--content` overrides the disk read so PreToolUse
@@ -105,16 +72,7 @@ fn run_file(
     if explain {
         print_explain(&report.explain);
     }
-    if let Some(d) = &report.deferred {
-        // The runner never builds an envelope alongside a terminal verdict;
-        // re-check here so a future runner change can't silently leak one.
-        if matches!(report.verdict.status, Status::Block | Status::InternalError) {
-            emit(&report.verdict, format)?;
-            return Ok(exit_code(&report.verdict));
-        }
-        emit_deferred(d, format)?;
-        return Ok(0);
-    }
+    let _ = &report.deferred;
     emit(&report.verdict, format)?;
     Ok(exit_code(&report.verdict))
 }
@@ -122,15 +80,11 @@ fn run_file(
 /// Check every changed file in a unified diff and aggregate the verdicts.
 /// An empty diff is an error; a pure-deletion diff is a clean Pass (deleted
 /// files can't be read and no rule fires on absent content).
-///
-/// With `emit_semantic_payload`, defer to [`run_diff_deferred`] to build a
-/// single deferred-semantic envelope instead of aggregating verdicts.
 fn run_diff(
     engine: &HectorEngine,
     diff: &Path,
     format: OutputFormat,
     explain: bool,
-    emit_semantic_payload: bool,
 ) -> Result<i32> {
     let unified_diff = std::fs::read_to_string(diff)?;
     let changed = hector_core::diff::parser::parse_unified(&unified_diff)?;
@@ -148,10 +102,6 @@ fn run_diff(
         let verdict = Verdict::from_violations(vec![], vec![], 0);
         emit(&verdict, format)?;
         return Ok(0);
-    }
-
-    if emit_semantic_payload {
-        return run_diff_deferred(engine, &unified_diff, &non_deleted, format, explain);
     }
 
     let mut aggregated_violations = Vec::new();
@@ -175,45 +125,6 @@ fn run_diff(
     }
     emit(&verdict, format)?;
     Ok(exit_code(&verdict))
-}
-
-/// `--emit-semantic-payload` over a diff: build one deferred-semantic
-/// envelope (the Claude Code PostToolUse gate path). The synthesized hook
-/// diff is always single-file, so only the single-file case is supported —
-/// merging multiple files' deferred rules into one envelope is a follow-up.
-///
-/// A deterministic terminal verdict (block / internal error) still wins over
-/// the envelope, mirroring [`run_file`].
-fn run_diff_deferred(
-    engine: &HectorEngine,
-    unified_diff: &str,
-    non_deleted: &[&hector_core::diff::ChangedFile],
-    format: OutputFormat,
-    explain: bool,
-) -> Result<i32> {
-    if non_deleted.len() > 1 {
-        eprintln!("ERROR: --emit-semantic-payload accepts a single-file diff only; multi-file envelope aggregation is a follow-up");
-        return Ok(1);
-    }
-    let f = non_deleted[0];
-    let per_file_diff = build_single_file_diff(unified_diff, &f.path);
-    let report = engine.check_with_explain(CheckInput::Diff {
-        file: f.path.clone(),
-        unified_diff: per_file_diff,
-    })?;
-    if explain {
-        print_explain(&report.explain);
-    }
-    if let Some(d) = &report.deferred {
-        if matches!(report.verdict.status, Status::Block | Status::InternalError) {
-            emit(&report.verdict, format)?;
-            return Ok(exit_code(&report.verdict));
-        }
-        emit_deferred(d, format)?;
-        return Ok(0);
-    }
-    emit(&report.verdict, format)?;
-    Ok(exit_code(&report.verdict))
 }
 
 /// Refuse `--rule <unknown>` at the CLI boundary so callers see a clear
@@ -255,57 +166,6 @@ fn print_explain(rows: &[RuleExplain]) {
     }
 }
 
-/// Render the (system, user) prompt for every in-scope semantic rule and
-/// exit 0 — no engine dispatch, so no HTTP request reaches the LLM.
-fn run_print_prompt(
-    engine: &HectorEngine,
-    file: Option<PathBuf>,
-    diff: Option<PathBuf>,
-    content: Option<String>,
-) -> Result<i32> {
-    let input = match (file, diff) {
-        (Some(f), None) => {
-            // `--content` overrides the disk read so operators can preview
-            // prompts against proposed content before it lands on disk.
-            let content = match content {
-                Some(c) => resolve_content_value(c)?,
-                None => std::fs::read_to_string(&f)
-                    .with_context(|| format!("failed to read {}", f.display()))?,
-            };
-            CheckInput::File { path: f, content }
-        }
-        (None, Some(d)) => {
-            let unified_diff = std::fs::read_to_string(&d)?;
-            let changed = hector_core::diff::parser::parse_unified(&unified_diff)?;
-            let Some(first) = changed.into_iter().next() else {
-                eprintln!("ERROR: no changed files in diff");
-                return Ok(1);
-            };
-            let per_file = build_single_file_diff(&unified_diff, &first.path);
-            CheckInput::Diff {
-                file: first.path,
-                unified_diff: per_file,
-            }
-        }
-        _ => {
-            eprintln!("ERROR: provide exactly one of --file or --diff");
-            return Ok(1);
-        }
-    };
-    let prompts = engine.render_semantic_prompts(input)?;
-    if prompts.is_empty() {
-        eprintln!("no semantic rule in scope; nothing to render");
-    }
-    for p in &prompts {
-        println!("# rule: {}", p.rule_id);
-        println!("## system");
-        println!("{}", p.system);
-        println!("## user");
-        println!("{}", p.user);
-    }
-    Ok(0)
-}
-
 fn exit_code(v: &Verdict) -> i32 {
     match v.status {
         Status::Block => 2,
@@ -314,27 +174,6 @@ fn exit_code(v: &Verdict) -> i32 {
         // (fail-open): unknown status values must never accidentally block.
         _ => 0,
     }
-}
-
-/// Clear the session file only on Pass/Warn, so a Block or InternalError
-/// verdict leaves `.hector/session.json` intact for re-inspection.
-fn should_clear_session(status: Status) -> bool {
-    matches!(status, Status::Pass | Status::Warn)
-}
-
-fn emit_deferred(
-    d: &hector_core::verdict_deferred::DeferredVerdict,
-    format: OutputFormat,
-) -> Result<()> {
-    match format {
-        OutputFormat::Json | OutputFormat::Human => {
-            // For deferred envelopes, JSON is always the wire format —
-            // the adapter parses it via `jq`. `--format human` falls back
-            // to JSON because the envelope is machine-only.
-            println!("{}", serde_json::to_string_pretty(d)?);
-        }
-    }
-    Ok(())
 }
 
 fn emit(v: &Verdict, format: OutputFormat) -> Result<()> {
@@ -529,14 +368,5 @@ mod tests {
             "mismatched --- header must not introduce a phantom file"
         );
         assert_eq!(files[0].path, PathBuf::from("src/b.rs"));
-    }
-
-    #[test]
-    fn should_clear_session_on_pass_and_warn_only() {
-        assert!(should_clear_session(Status::Pass));
-        assert!(should_clear_session(Status::Warn));
-        assert!(!should_clear_session(Status::Block));
-        // InternalError leaves the edit unresolved — keep the session.
-        assert!(!should_clear_session(Status::InternalError));
     }
 }

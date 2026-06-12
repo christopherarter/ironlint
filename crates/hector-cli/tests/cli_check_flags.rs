@@ -1,4 +1,4 @@
-//! CLI integration tests for `--rule`, `--explain`, `--print-prompt`.
+//! CLI integration tests for `--rule`, `--explain`.
 
 use assert_cmd::Command;
 use tempfile::tempdir;

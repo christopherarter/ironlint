@@ -38,18 +38,15 @@ pub enum Command {
         /// --stdin-filename {file}`. A path-only command (`biome check
         /// {file}`) still reads the on-disk file. Whole-program tools (tsc,
         /// cargo, test runners) can't gate a single proposed file — run those
-        /// post-write / in CI. AST, semantic, and `hector-disable:` directives
+        /// post-write / in CI. AST and `hector-disable:` directives
         /// already read `--content`.
         #[arg(
             long,
             value_name = "STRING_OR_DASH",
             requires = "file",
-            conflicts_with = "diff",
-            conflicts_with = "session"
+            conflicts_with = "diff"
         )]
         content: Option<String>,
-        #[arg(long)]
-        session: bool,
         #[arg(long, default_value = "human")]
         format: OutputFormat,
         #[arg(long, default_value = ".hector.yml")]
@@ -60,20 +57,6 @@ pub enum Command {
         /// After the verdict, print a per-rule outcome report to stderr.
         #[arg(long)]
         explain: bool,
-        /// For semantic rules in scope, render the prompt to stdout and exit 0
-        /// without dispatching to the LLM. Debug-only.
-        #[arg(long = "print-prompt")]
-        print_prompt: bool,
-        /// Instead of dispatching `engine: semantic` and
-        /// `engine: session` rules to the configured LLM, collect them
-        /// into a `DeferredVerdict` JSON envelope for an in-session
-        /// Claude Code subagent to evaluate. Adapter-internal.
-        #[arg(
-            long = "emit-semantic-payload",
-            conflicts_with = "session",
-            conflicts_with = "print_prompt"
-        )]
-        emit_semantic_payload: bool,
         /// Allow checking files whose canonical path falls outside the
         /// directory containing the config file. Disabled by default to
         /// prevent wrappers from inadvertently running policy against
@@ -120,11 +103,6 @@ pub enum Command {
         #[arg(long, global = true)]
         scan: Option<String>,
     },
-    /// Session-state management (used by Claude Code adapter hooks).
-    Session {
-        #[command(subcommand)]
-        action: SessionAction,
-    },
     /// Diagnose the local install, config, trust, engine availability, and adapter wiring.
     ///
     /// Read-only. Exits 0 if every check passes or only warns; exits 1 on any failure.
@@ -138,8 +116,8 @@ pub enum Command {
         format: OutputFormat,
     },
     /// Show which rules are in scope for `<file>` and which skip-pattern
-    /// (if any) suppresses it. Read-only — no engine runs, no LLM is
-    /// called, no telemetry is written.
+    /// (if any) suppresses it. Read-only — no engine runs, no telemetry
+    /// is written.
     Explain {
         /// Path to inspect. Relative to cwd.
         file: PathBuf,
@@ -171,26 +149,6 @@ pub enum Command {
         #[arg(long, default_value = "tsv")]
         format: ShowFormat,
     },
-    /// Append one `semantic_verdict` record to `.hector/log.jsonl`.
-    ///
-    /// Adapter-internal: consumed by the Claude Code interpreter skill
-    /// after a subagent evaluates a deferred semantic rule. See
-    /// `docs/reference/record-verdict.md` for the wire-format contract.
-    RecordVerdict {
-        /// Rule id this verdict is for (single occurrence — one verdict per call).
-        #[arg(long = "rule")]
-        rule: String,
-        /// Verdict value: `pass` or `violation`. Other values rejected at parse time.
-        #[arg(long = "verdict", value_enum)]
-        verdict: crate::commands::record_verdict::VerdictValue,
-        /// Optional file path the verdict pertains to. When omitted, the
-        /// appended record has `file: null`.
-        #[arg(long = "file")]
-        file: Option<String>,
-        /// Directory containing `.hector/log.jsonl`. Defaults to cwd.
-        #[arg(long = "dir", default_value = ".")]
-        dir: PathBuf,
-    },
 }
 
 #[derive(Debug, Clone, Copy, Subcommand)]
@@ -199,26 +157,6 @@ pub enum BaselineAction {
     Record,
     /// Re-hash every baseline entry against current file content.
     Refresh,
-}
-
-#[derive(Debug, Subcommand)]
-pub enum SessionAction {
-    /// Append an edit record to .hector/session.json.
-    Record {
-        #[arg(long, default_value = ".")]
-        dir: PathBuf,
-        #[arg(long)]
-        file: PathBuf,
-        #[arg(long, allow_hyphen_values = true)]
-        diff: String,
-        #[arg(long)]
-        session_id: Option<String>,
-    },
-    /// Stamp a `session_init` record into the telemetry log.
-    Start {
-        #[arg(long, default_value = ".")]
-        dir: PathBuf,
-    },
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]

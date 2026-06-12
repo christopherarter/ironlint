@@ -146,8 +146,8 @@ fn doctor_passes_on_clean_v2_config() {
 }
 
 #[test]
-fn doctor_pass_engines_when_no_llm_rules() {
-    // Pure script config — no llm block, no semantic rules. Engines = pass.
+fn doctor_pass_engines_for_script_config() {
+    // Pure script config — engines row should be pass.
     let dir = tempdir().unwrap();
     let home = tempdir().unwrap();
     write_trusted(

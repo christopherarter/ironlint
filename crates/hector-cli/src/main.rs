@@ -14,25 +14,19 @@ fn main() -> Result<()> {
             file,
             diff,
             content,
-            session,
             format,
             config,
             rules,
             explain,
-            print_prompt,
-            emit_semantic_payload,
             allow_external_paths,
         } => commands::check::run(
             file,
             diff,
             content,
-            session,
             format,
             &config,
             rules,
             explain,
-            print_prompt,
-            emit_semantic_payload,
             allow_external_paths,
         )?,
         Command::Trust { config } => commands::trust::run(&config)?,
@@ -46,15 +40,6 @@ fn main() -> Result<()> {
         } => match action.unwrap_or(cli::BaselineAction::Record) {
             cli::BaselineAction::Record => commands::baseline::record(&config, scan)?,
             cli::BaselineAction::Refresh => commands::baseline::refresh(&config)?,
-        },
-        Command::Session { action } => match action {
-            cli::SessionAction::Record {
-                dir,
-                file,
-                diff,
-                session_id,
-            } => commands::session::record(&dir, &file, &diff, session_id)?,
-            cli::SessionAction::Start { dir } => commands::session::start(&dir)?,
         },
         Command::Doctor { dir, format } => commands::doctor::run(&dir, format)?,
         Command::Explain {
@@ -70,12 +55,6 @@ fn main() -> Result<()> {
         Command::ShowResolvedConfig { config, format } => {
             commands::show_resolved_config::run(&config, format)?
         }
-        Command::RecordVerdict {
-            rule,
-            verdict,
-            file,
-            dir,
-        } => commands::record_verdict::run(rule, verdict, file, &dir)?,
     };
     std::process::exit(code);
 }
