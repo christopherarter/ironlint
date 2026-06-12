@@ -56,3 +56,49 @@ fn path_control_characters_are_sanitized() {
     let diff = synthesize_unified(Path::new("src/\napp\t.ts"), None, "x\n");
     assert!(diff.starts_with("--- /dev/null\n+++ b/src/_app_.ts\n"));
 }
+
+#[test]
+fn existing_file_emptied_produces_removal_hunk() {
+    let diff = synthesize_unified(Path::new("src/app.ts"), Some("a\nb\n"), "");
+    assert!(
+        diff.contains("@@ -1,2 +0,0 @@"),
+        "unexpected hunk header: {diff}"
+    );
+    assert!(diff.contains("-a\n"), "missing removal of 'a': {diff}");
+    assert!(diff.contains("-b\n"), "missing removal of 'b': {diff}");
+}
+
+#[test]
+fn empty_existing_file_gains_content() {
+    let diff = synthesize_unified(Path::new("src/app.ts"), Some(""), "hello\n");
+    assert!(
+        diff.contains("@@ -0,0 +1 @@"),
+        "unexpected hunk header: {diff}"
+    );
+    assert!(
+        diff.contains("+hello\n"),
+        "missing addition of 'hello': {diff}"
+    );
+}
+
+#[test]
+fn dash_dash_dash_and_at_at_body_lines_are_escaped_correctly() {
+    // A removed line whose content is "-- a header" renders as "--- a header",
+    // which starts with "--- " and must be prefixed with '\'.
+    // An added line whose content is "@@ a hunk" renders as "+@@ a hunk",
+    // which starts with '+' (not "@@ ") so the "@@ " arm of
+    // looks_like_diff_header returns false and no escape is emitted.
+    let diff = synthesize_unified(
+        Path::new("src/app.ts"),
+        Some("-- a header\n"),
+        "@@ a hunk\n",
+    );
+    assert!(
+        diff.contains("\\--- a header\n"),
+        "expected '--- a header' line to be backslash-escaped: {diff}"
+    );
+    assert!(
+        diff.contains("+@@ a hunk\n"),
+        "expected '+@@ a hunk' line to be present unescaped: {diff}"
+    );
+}
