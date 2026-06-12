@@ -149,7 +149,9 @@ fn push_diff_line(out: &mut String, prefix: char, line: &str) {
 }
 
 fn looks_like_diff_header(line: &str) -> bool {
-    line.starts_with("--- ") || line.starts_with("+++ ") || line.starts_with("@@ ")
+    // No `@@ ` arm: every rendered line starts with `+`, `-`, or ` `, so a
+    // bare hunk header can never appear and the check would be dead code.
+    line.starts_with("--- ") || line.starts_with("+++ ")
 }
 
 fn diff_path(path: &Path) -> String {
