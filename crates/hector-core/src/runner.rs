@@ -945,12 +945,15 @@ impl HectorEngine {
     fn resolve_check_input(&self, input: CheckInput, start: Instant) -> InputResolution {
         match input {
             CheckInput::File { path, content } => match self.resolve_input_path(&path) {
-                Ok(resolved) => InputResolution::Resolved {
-                    path: resolved,
-                    content,
-                    diff: String::new(),
-                    content_authoritative: true,
-                },
+                Ok(resolved) => {
+                    let diff = self.synthesize_file_diff(&resolved, &content);
+                    InputResolution::Resolved {
+                        path: resolved,
+                        content,
+                        diff,
+                        content_authoritative: true,
+                    }
+                }
                 Err(e) => {
                     let v = Violation {
                         rule_id: "__internal".to_string(),
@@ -997,6 +1000,15 @@ impl HectorEngine {
                 }
             }
         }
+    }
+
+    /// Build diff evidence for a pre-write/file-content check by comparing
+    /// the caller-supplied content with the current on-disk file. If the file
+    /// does not exist yet, the proposed content is rendered as an addition.
+    fn synthesize_file_diff(&self, path: &Path, content: &str) -> String {
+        let old = std::fs::read_to_string(path).ok();
+        let match_path = relativize(path, &self.config_dir);
+        crate::diff::synthesize_unified(&match_path, old.as_deref(), content)
     }
 
     /// The clean `Pass` verdict emitted when a file matches a skip pattern.
@@ -1420,9 +1432,13 @@ impl HectorEngine {
     /// debug prompt construction without burning API calls. Honors the
     /// `--rule` filter and per-rule scope; non-semantic rules are skipped.
     pub fn render_semantic_prompts(&self, input: CheckInput) -> Result<Vec<RenderedPrompt>> {
-        let (path, diff) = match input {
-            CheckInput::File { path, .. } => (path, String::new()),
-            CheckInput::Diff { file, unified_diff } => (file, unified_diff),
+        let (path, diff, content) = match input {
+            CheckInput::File { path, content } => {
+                let resolved = self.resolve_input_path(&path)?;
+                let diff = self.synthesize_file_diff(&resolved, &content);
+                (resolved, diff, Some(content))
+            }
+            CheckInput::Diff { file, unified_diff } => (file, unified_diff, None),
         };
         let match_path = relativize(&path, &self.config_dir);
         let mut out = Vec::new();
@@ -1442,7 +1458,7 @@ impl HectorEngine {
                 scope,
                 if diff.is_empty() { None } else { Some(&diff) },
                 Some(&path),
-                None,
+                content.as_deref(),
                 &self.config_dir,
             )?;
             let (system, user) = crate::llm::prompt::build_prompt_split(
