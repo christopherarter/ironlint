@@ -9,6 +9,12 @@
 //! sleep durations. This version replaces semantic rules with script rules
 //! using `sleep` shell commands so no LlmClient is required. The contract
 //! under test — BTreeMap key order, not completion order — is identical.
+//!
+//! ALL `HECTOR_MAX_WORKERS` env-mutation tests live in this file. Because
+//! each integration-test file compiles to its own binary (separate process),
+//! mutations here cannot race with the timing test in `runner_parallel.rs`.
+//! The in-binary `env_mutex` + `with_env` helpers serialise the mutations
+//! against each other within this process.
 
 use hector_core::runner::{CheckInput, HectorEngine};
 use std::fs;
@@ -53,6 +59,46 @@ rules:
     )
 }
 
+/// Five script rules used to verify env-override paths with a richer rule set.
+fn write_five_rule_config(dir: &std::path::Path) -> std::path::PathBuf {
+    write_trusted(
+        dir,
+        r#"schema_version: 2
+rules:
+  rule-a:
+    description: "rule a"
+    engine: script
+    scope: ["**/*.rs"]
+    severity: warning
+    script: "exit 1"
+  rule-b:
+    description: "rule b"
+    engine: script
+    scope: ["**/*.rs"]
+    severity: warning
+    script: "exit 1"
+  rule-c:
+    description: "rule c"
+    engine: script
+    scope: ["**/*.rs"]
+    severity: warning
+    script: "exit 1"
+  rule-d:
+    description: "rule d"
+    engine: script
+    scope: ["**/*.rs"]
+    severity: warning
+    script: "exit 1"
+  rule-e:
+    description: "rule e"
+    engine: script
+    scope: ["**/*.rs"]
+    severity: warning
+    script: "exit 1"
+"#,
+    )
+}
+
 fn ordering_engine(cfg_dir: &std::path::Path) -> (HectorEngine, std::path::PathBuf) {
     let cfg = write_three_rule_config(cfg_dir);
     let file = cfg_dir.join("foo.rs");
@@ -60,6 +106,53 @@ fn ordering_engine(cfg_dir: &std::path::Path) -> (HectorEngine, std::path::PathB
     let engine = HectorEngine::load(&cfg).expect("load");
     (engine, file)
 }
+
+/// `std::env::set_var` is process-global; save/restore around the body and
+/// serialise in-process env mutations via a Mutex so the parallel test runner
+/// can't interleave them.
+fn env_mutex() -> &'static std::sync::Mutex<()> {
+    static M: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    M.get_or_init(|| std::sync::Mutex::new(()))
+}
+
+fn with_env<F: FnOnce()>(key: &str, value: Option<&str>, f: F) {
+    let _guard = env_mutex().lock().unwrap_or_else(|p| p.into_inner());
+    let prev = std::env::var(key).ok();
+    match value {
+        Some(v) => std::env::set_var(key, v),
+        None => std::env::remove_var(key),
+    }
+    f();
+    match prev {
+        Some(v) => std::env::set_var(key, v),
+        None => std::env::remove_var(key),
+    }
+}
+
+/// Helper: run the five-rule config under a given env value, return violation count.
+fn run_five_rules_under_env(env_value: Option<&str>) -> usize {
+    let dir = tempdir().unwrap();
+    let cfg = write_five_rule_config(dir.path());
+    let file = dir.path().join("foo.rs");
+    fs::write(&file, "fn main() {}\n").unwrap();
+    let engine = HectorEngine::load(&cfg).expect("load");
+    let content = fs::read_to_string(&file).unwrap();
+    let mut count = 0;
+    with_env("HECTOR_MAX_WORKERS", env_value, || {
+        let verdict = engine
+            .check(CheckInput::File {
+                path: file.clone(),
+                content: content.clone(),
+            })
+            .expect("check");
+        count = verdict.violations.len();
+    });
+    count
+}
+
+// ---------------------------------------------------------------------------
+// Ordering tests
+// ---------------------------------------------------------------------------
 
 #[test]
 fn violations_are_ordered_by_rule_id_not_completion_time() {
@@ -93,30 +186,9 @@ fn violations_are_ordered_by_rule_id_not_completion_time() {
     );
 }
 
-/// `std::env::set_var` is process-global; we don't want HECTOR_MAX_WORKERS
-/// to leak into peer tests. Save/restore around the body. The tests in this
-/// file are the only ones touching HECTOR_MAX_WORKERS, and cargo test
-/// runs each integration-test binary as a separate process (so other binaries
-/// can't observe it). The serialising `Mutex` protects against the
-/// in-binary parallel test runner.
-fn env_mutex() -> &'static std::sync::Mutex<()> {
-    static M: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
-    M.get_or_init(|| std::sync::Mutex::new(()))
-}
-
-fn with_env<F: FnOnce()>(key: &str, value: Option<&str>, f: F) {
-    let _guard = env_mutex().lock().unwrap_or_else(|p| p.into_inner());
-    let prev = std::env::var(key).ok();
-    match value {
-        Some(v) => std::env::set_var(key, v),
-        None => std::env::remove_var(key),
-    }
-    f();
-    match prev {
-        Some(v) => std::env::set_var(key, v),
-        None => std::env::remove_var(key),
-    }
-}
+// ---------------------------------------------------------------------------
+// HECTOR_MAX_WORKERS env-override tests
+// ---------------------------------------------------------------------------
 
 #[test]
 fn hector_max_workers_env_value_one_still_works() {
@@ -150,37 +222,90 @@ fn hector_max_workers_env_value_one_still_works() {
 }
 
 #[test]
-fn hector_max_workers_zero_value_clamps_to_one_not_deadlock() {
-    let dir = tempdir().unwrap();
-    let (engine, file) = ordering_engine(dir.path());
-    let content = fs::read_to_string(&file).unwrap();
-
-    with_env("HECTOR_MAX_WORKERS", Some("0"), || {
-        let verdict = engine
-            .check(CheckInput::File {
-                path: file.clone(),
-                content: content.clone(),
-            })
-            .expect("check");
-        // Three violations means the run completed (clamping worked).
-        assert_eq!(verdict.violations.len(), 3);
-    });
+fn hector_max_workers_numeric_env_completes_correctly() {
+    // HECTOR_MAX_WORKERS=2 limits to 2 threads but must still produce all 5
+    // violations (just serially queued through 2 workers).
+    let count = run_five_rules_under_env(Some("2"));
+    assert_eq!(count, 5, "expected 5 violations with HECTOR_MAX_WORKERS=2");
 }
 
 #[test]
-fn hector_max_workers_unparseable_falls_back() {
-    let dir = tempdir().unwrap();
-    let (engine, file) = ordering_engine(dir.path());
-    let content = fs::read_to_string(&file).unwrap();
+fn hector_max_workers_zero_clamps_to_one_not_deadlock() {
+    // HECTOR_MAX_WORKERS=0 is clamped to 1; must not panic and must produce
+    // all violations.
+    let count = run_five_rules_under_env(Some("0"));
+    assert_eq!(
+        count, 5,
+        "expected 5 violations with HECTOR_MAX_WORKERS=0 (clamped to 1)"
+    );
+}
 
-    with_env("HECTOR_MAX_WORKERS", Some("not-a-number"), || {
+#[test]
+fn hector_max_workers_unparseable_falls_back_to_default() {
+    // An unparseable value falls back to the default pool size; check still
+    // completes and produces all violations.
+    let count = run_five_rules_under_env(Some("not-a-number"));
+    assert_eq!(
+        count, 5,
+        "expected 5 violations with HECTOR_MAX_WORKERS=not-a-number (fallback)"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// execution.max_workers config-field test
+// ---------------------------------------------------------------------------
+
+#[test]
+fn execution_max_workers_config_field_is_honoured() {
+    // `execution: {max_workers: 1}` in the YAML limits to one thread.
+    // The check must still complete and return all violations.
+    //
+    // This test holds the env_mutex because execution_pool() reads
+    // HECTOR_MAX_WORKERS first (env takes precedence over config), so a
+    // concurrent env-mutating test in the same binary could shadow the config
+    // field and invalidate the assertion.
+    let dir = tempdir().unwrap();
+    let cfg = write_trusted(
+        dir.path(),
+        r#"schema_version: 2
+execution:
+  max_workers: 1
+rules:
+  rule-a:
+    description: "rule a"
+    engine: script
+    scope: ["**/*.rs"]
+    severity: warning
+    script: "exit 1"
+  rule-b:
+    description: "rule b"
+    engine: script
+    scope: ["**/*.rs"]
+    severity: warning
+    script: "exit 1"
+  rule-c:
+    description: "rule c"
+    engine: script
+    scope: ["**/*.rs"]
+    severity: warning
+    script: "exit 1"
+"#,
+    );
+    let file = dir.path().join("foo.rs");
+    fs::write(&file, "fn main() {}\n").unwrap();
+    let engine = HectorEngine::load(&cfg).expect("load");
+
+    with_env("HECTOR_MAX_WORKERS", None, || {
         let verdict = engine
             .check(CheckInput::File {
                 path: file.clone(),
-                content: content.clone(),
+                content: fs::read_to_string(&file).unwrap(),
             })
             .expect("check");
-        // Unparseable env value falls back to default; the run still completes.
-        assert_eq!(verdict.violations.len(), 3);
+        assert_eq!(
+            verdict.violations.len(),
+            3,
+            "expected 3 violations with execution.max_workers=1"
+        );
     });
 }
