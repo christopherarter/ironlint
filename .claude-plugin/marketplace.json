@@ -1,0 +1,22 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "hector-marketplace",
+  "owner": {
+    "name": "dynamik-dev"
+  },
+  "metadata": {
+    "description": "Hector — policy-enforcement pipeline for AI coding agents.",
+    "version": "0.2.0"
+  },
+  "plugins": [
+    {
+      "name": "hector",
+      "source": "./adapters/claude-code",
+      "description": "Policy-enforcement pipeline for AI coding agents. Hybrid script+ast+semantic+session rule engines, trust gate, capability sandbox. Claude Code adapter.",
+      "version": "0.2.0",
+      "homepage": "https://github.com/dynamik-dev/hector",
+      "category": "development",
+      "strict": true
+    }
+  ]
+}

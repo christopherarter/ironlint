@@ -48,7 +48,7 @@ rules:
     script: "grep -nE 'DEBUG' {file} && exit 1 || exit 0"
 ```
 
-Ask Claude to add a debug print to a file under `src/`. The instant Claude writes the edit, the adapter runs `hector check` against that file, the `no-debug` rule fires, and Claude Code rejects the edit. Claude reads the returned verdict, sees that it broke `no-debug`, and rewrites the change without the marker. The retry happens in the transcript while you watch; you never touched the keyboard.
+Ask Claude to add a debug print to a file under `src/`. The instant Claude writes the edit, the adapter runs `hector check` against that file, the `no-debug` rule fires, and Claude Code rejects the edit. Claude reads the returned block message — a plain-text summary naming the rule and the tool's own complaint — sees that it broke `no-debug`, and rewrites the change without the marker. The retry happens in the transcript while you watch; you never touched the keyboard.
 
 A clean edit, one that breaks no rule, lands normally and you see nothing at all. That silence is the adapter working.
 

@@ -71,7 +71,6 @@ section so adapters and consumers see them together. Skip to
   and subagent now produce byte-identical evidence modulo the C5
   per-call sentinel. Session rules also see per-rule scoped aggregates
   (only edits matching the rule's scope).
-
 ### Fixed
 - **A2 (diff parser)**: POSIX `diff -u` patches with `\t<timestamp>`
   headers now parse correctly. The previous parser only stripped `\r`,

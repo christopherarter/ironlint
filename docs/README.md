@@ -4,7 +4,7 @@ Hector is a policy-enforcement pipeline for AI coding agents. You write rules in
 
 New here? Start with [Getting started](getting-started.md) — you'll have a working rule gating real edits in a few minutes.
 
-Want the big picture first? See the [Architecture diagram](architecture.md).
+Want the big picture first? See the [Visual elevator pitch](visual-elevator-pitch.md), then the [Architecture diagram](architecture.md).
 
 ## Writing rules
 

@@ -8,7 +8,7 @@ Policy-enforcement pipeline for AI coding agents. Rust rewrite of [dynamik-dev/b
 
 ## Documentation
 
-Full docs are in [`docs/`](docs/README.md) — start with [Getting started](docs/getting-started.md) or the [Architecture diagram](docs/architecture.md).
+Full docs are in [`docs/`](docs/README.md) — start with [Getting started](docs/getting-started.md), the [Visual elevator pitch](docs/visual-elevator-pitch.md), or the [Architecture diagram](docs/architecture.md).
 
 ## Adapters
 
