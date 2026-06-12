@@ -52,3 +52,24 @@ fn validate_rejects_untrusted_extends_parent() {
         .failure()
         .code(1);
 }
+
+/// `validate` must surface the parse-time error for removed engines (semantic/session).
+#[test]
+fn validate_rejects_semantic_engine_with_curated_error() {
+    let dir = tempdir().unwrap();
+    let cfg = dir.path().join(".hector.yml");
+    let raw = "schema_version: 2\nrules:\n  judge-me:\n    description: \"llm rule\"\n    engine: semantic\n    scope: [\"**/*.ts\"]\n    severity: error\n";
+    let trusted = hector_core::trust::write_trust_block(raw).unwrap();
+    std::fs::write(&cfg, trusted).unwrap();
+    let out = Command::cargo_bin("hector")
+        .unwrap()
+        .args(["validate", "--config", cfg.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1), "semantic engine must exit 1");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("engine 'semantic' was removed"),
+        "stderr must carry curated error; got: {stderr}"
+    );
+}

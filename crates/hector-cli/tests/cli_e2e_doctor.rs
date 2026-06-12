@@ -146,37 +146,6 @@ fn doctor_passes_on_clean_v2_config() {
 }
 
 #[test]
-fn doctor_warns_when_semantic_rule_present_without_api_key() {
-    let dir = tempdir().unwrap();
-    let home = tempdir().unwrap();
-    write_trusted(
-        dir.path(),
-        "schema_version: 2\nllm:\n  provider: anthropic\n  model: claude\n  api_key_env: HECTOR_DOCTOR_TEST_NO_SUCH_KEY\nrules:\n  sem:\n    description: \"x\"\n    engine: semantic\n    scope: [\"**/*.rs\"]\n    severity: warning\n    context: file\n",
-    );
-    let out = Command::cargo_bin("hector")
-        .unwrap()
-        .env("HOME", home.path())
-        .env_remove("HECTOR_DOCTOR_TEST_NO_SUCH_KEY")
-        .args(["doctor", "--dir", dir.path().to_str().unwrap()])
-        .output()
-        .unwrap();
-    // Missing API key for a configured semantic rule is a `warn`, not a
-    // hard `fail` — the binary still works for non-LLM rules.
-    assert_eq!(
-        out.status.code(),
-        Some(0),
-        "missing-key warn must keep exit 0"
-    );
-    let s = String::from_utf8_lossy(&out.stdout);
-    assert!(s.contains("engines"), "expected `engines` row in: {s}");
-    assert!(s.contains("warn"), "expected a warn glyph in: {s}");
-    assert!(
-        s.contains("HECTOR_DOCTOR_TEST_NO_SUCH_KEY"),
-        "remediation must name the env var: {s}"
-    );
-}
-
-#[test]
 fn doctor_pass_engines_when_no_llm_rules() {
     // Pure script config — no llm block, no semantic rules. Engines = pass.
     let dir = tempdir().unwrap();

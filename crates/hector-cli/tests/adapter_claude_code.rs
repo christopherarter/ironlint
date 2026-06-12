@@ -207,148 +207,14 @@ fn break_trust(cfg: &Path) {
 // ===================================================================
 
 // The semantic rules use the DEFAULT context (`diff`) — no `context:` line.
-// The Claude Code PostToolUse hook synthesizes a diff and gates with it, so
-// the default-context deferred envelope builds correctly. (Before the hook
-// passed its synthesized diff — when it gated with `--file` — this errored
-// "context: diff but no diff provided"; pinning `context: file` was the
-// workaround.)
 const SUBAGENT_CONFIG: &str = "schema_version: 2\n\
-llm:\n  \
-provider: claude-code-subagent\n\
 rules:\n  \
 no-debug:\n    \
 description: \"no DEBUG markers in source\"\n    \
 engine: script\n    \
 scope: [\"*.txt\"]\n    \
 severity: error\n    \
-script: \"grep -nE 'DEBUG' {file} && exit 1 || exit 0\"\n  \
-prose-quality:\n    \
-description: \"files should read clearly\"\n    \
-engine: semantic\n    \
-scope: [\"*.txt\"]\n    \
-severity: warning\n  \
-no-todo-comment:\n    \
-description: \"no TODO comments left in committed content\"\n    \
-engine: semantic\n    \
-scope: [\"*.txt\"]\n    \
-severity: warning\n";
-
-/// Preamble the subagent-mode hook prepends to the deferred payload in
-/// `hookSpecificOutput.additionalContext`.
-const PREAMBLE: &str = "AGENTIC LINT SEMANTIC EVALUATION REQUIRED:";
-
-#[test]
-fn subagent_clean_file_emits_envelope() {
-    let dir = tempdir().unwrap();
-    write_trusted(dir.path(), SUBAGENT_CONFIG);
-    let file = dir.path().join("clean.txt");
-    std::fs::write(&file, "clean content\n").unwrap();
-    let (code, out, err) = run_hook(
-        dir.path(),
-        "post-tool-use",
-        &edit_event(file.to_str().unwrap(), "clean content"),
-    );
-    assert_eq!(code, 0, "subagent clean file → exit 0; stderr: {err}");
-    let env: Value = serde_json::from_str(out.trim()).expect("stdout is an envelope JSON");
-    assert_eq!(env["hookSpecificOutput"]["hookEventName"], "PostToolUse");
-    let ctx = env["hookSpecificOutput"]["additionalContext"]
-        .as_str()
-        .expect("additionalContext is a string");
-    assert!(ctx.starts_with(PREAMBLE), "missing preamble; got: {ctx}");
-    let payload: Value =
-        serde_json::from_str(ctx[PREAMBLE.len()..].trim()).expect("payload after preamble is JSON");
-    for field in ["file", "diff", "evaluate", "_evaluator_input"] {
-        assert!(
-            !payload[field].is_null(),
-            "payload missing `{field}`: {payload}"
-        );
-    }
-}
-
-#[test]
-fn subagent_deterministic_block_carries_deferred_rules() {
-    let dir = tempdir().unwrap();
-    write_trusted(dir.path(), SUBAGENT_CONFIG);
-    let file = dir.path().join("dirty.txt");
-    std::fs::write(&file, "this has DEBUG in it\n").unwrap();
-    let (code, out, err) = run_hook(
-        dir.path(),
-        "post-tool-use",
-        &edit_event(file.to_str().unwrap(), "this has DEBUG"),
-    );
-    assert_eq!(code, 2, "deterministic block → exit 2; stderr: {err}");
-    assert!(
-        out.trim().is_empty(),
-        "block must not emit on stdout: {out}"
-    );
-    let v: Value = serde_json::from_str(err.trim()).expect("stderr is verdict JSON");
-    assert_eq!(v["status"], "block");
-    let mut ids: Vec<&str> = v["deferred_rules"]
-        .as_array()
-        .expect("deferred_rules array")
-        .iter()
-        .map(|r| r["rule_id"].as_str().unwrap())
-        .collect();
-    ids.sort_unstable();
-    assert_eq!(
-        ids,
-        ["no-todo-comment", "prose-quality"],
-        "both deferred semantic rules must surface; verdict: {v}"
-    );
-    assert!(
-        v["deferred_rules"][0]["reason"]
-            .as_str()
-            .is_some_and(|s| !s.is_empty()),
-        "deferred_rules entries need a non-empty reason"
-    );
-}
-
-#[test]
-fn subagent_no_semantic_no_block_is_silent() {
-    // Out-of-scope file (*.md; rules are *.txt) → nothing fires.
-    let dir = tempdir().unwrap();
-    write_trusted(dir.path(), SUBAGENT_CONFIG);
-    let file = dir.path().join("other.md");
-    std::fs::write(&file, "no rules apply\n").unwrap();
-    let (code, out, _e) = run_hook(
-        dir.path(),
-        "post-tool-use",
-        &edit_event(file.to_str().unwrap(), "no rules apply"),
-    );
-    assert_eq!(code, 0);
-    assert!(out.trim().is_empty(), "no payload → empty stdout: {out}");
-}
-
-#[test]
-fn direct_api_mode_emits_no_envelope() {
-    let dir = tempdir().unwrap();
-    let cfg = "schema_version: 2\n\
-llm:\n  \
-provider: anthropic\n  \
-model: claude-3-5-sonnet-20241022\n\
-rules:\n  \
-no-debug:\n    \
-description: \"no DEBUG markers in source\"\n    \
-engine: script\n    \
-scope: [\"*.txt\"]\n    \
-severity: error\n    \
-script: \"exit 0\"\n";
-    write_trusted(dir.path(), cfg);
-    let file = dir.path().join("direct.txt");
-    std::fs::write(&file, "clean content\n").unwrap();
-    let (code, out, err) = run_hook(
-        dir.path(),
-        "post-tool-use",
-        &edit_event(file.to_str().unwrap(), "clean content"),
-    );
-    assert_eq!(code, 0, "direct-API clean → exit 0; stderr: {err}");
-    if let Ok(v) = serde_json::from_str::<Value>(out.trim()) {
-        assert!(
-            v["hookSpecificOutput"].is_null(),
-            "direct-API mode must not emit an envelope: {out}"
-        );
-    }
-}
+script: \"grep -nE 'DEBUG' {file} && exit 1 || exit 0\"\n";
 
 #[test]
 fn self_edit_of_policy_file_absolute_short_circuits() {

@@ -1,4 +1,4 @@
-use super::types::Config;
+use super::types::{Config, EngineKind};
 use anyhow::{anyhow, Context, Result};
 
 pub const SUPPORTED_SCHEMAS: &[u32] = &[1, 2];
@@ -11,6 +11,19 @@ pub fn parse_str(input: &str) -> Result<Config> {
             cfg.schema_version,
             SUPPORTED_SCHEMAS
         ));
+    }
+    for (id, rule) in &cfg.rules {
+        let removed = match rule.engine {
+            EngineKind::Semantic => Some("semantic"),
+            EngineKind::Session => Some("session"),
+            EngineKind::Script | EngineKind::Ast => None,
+        };
+        if let Some(kind) = removed {
+            return Err(anyhow!(
+                "rule '{id}': engine '{kind}' was removed in hector 0.2 — \
+                 delete this rule or rewrite it as a script or ast rule"
+            ));
+        }
     }
     Ok(cfg)
 }

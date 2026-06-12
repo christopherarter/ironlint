@@ -724,18 +724,6 @@ mod tests {
     }
 
     #[test]
-    fn engines_warn_when_semantic_rule_lacks_llm_block() {
-        let d = tempdir().unwrap();
-        let trusted = hector_core::trust::write_trust_block(
-            "schema_version: 2\nrules:\n  s:\n    description: \"x\"\n    engine: semantic\n    scope: [\"*\"]\n    severity: warning\n    context: file\n",
-        ).unwrap();
-        fs::write(d.path().join(".hector.yml"), trusted).unwrap();
-        let r = check_engines(&ctx_with(d.path()));
-        assert_eq!(r.status, Status::Warn);
-        assert!(r.remediation.unwrap().contains("llm"));
-    }
-
-    #[test]
     fn engines_pass_for_ollama_without_key() {
         let cfg = hector_core::config::LlmConfig {
             provider: "ollama".into(),
