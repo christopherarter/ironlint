@@ -6,6 +6,28 @@ Policy-enforcement pipeline for AI coding agents. Rust rewrite of [dynamik-dev/b
 
 0.2 (in progress). Engines: `script`, `ast`. CLI: `check`, `trust`, `validate`, `init`, `migrate`, `baseline`, `doctor`. Claude Code, OpenCode, Reasonix, and pi adapters shipped. See [`docs/operating/diagnostics.md`](docs/operating/diagnostics.md) for the diagnostic schema.
 
+## Install
+
+Prebuilt binaries for macOS (Apple Silicon and Intel), Linux (x86-64), and Windows (x86-64). The installer downloads the right binary, drops it in `~/.cargo/bin`, and puts it on your `PATH` — no Rust toolchain required:
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/christopherarter/hector/releases/latest/download/hector-cli-installer.sh | sh
+```
+
+Windows (PowerShell):
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/christopherarter/hector/releases/latest/download/hector-cli-installer.ps1 | iex"
+```
+
+Or build from source (needs a Rust toolchain):
+
+```sh
+cargo install --git https://github.com/christopherarter/hector hector-cli
+```
+
+Then run `hector --version`.
+
 ## Documentation
 
 Full docs are in [`docs/`](docs/README.md) — start with [Getting started](docs/getting-started.md), the [Visual elevator pitch](docs/visual-elevator-pitch.md), or the [Architecture diagram](docs/architecture.md).
@@ -13,9 +35,9 @@ Full docs are in [`docs/`](docs/README.md) — start with [Getting started](docs
 ## Adapters
 
 - **Claude Code** — `adapters/claude-code/`. PostToolUse hook, three skills. See [docs/adapters/claude-code.md](docs/adapters/claude-code.md).
-- **OpenCode** — `adapters/opencode/`. `tool.execute.before` gates proposed edits, `tool.execute.after` records session state, and `event` handles `session.created` / `session.idle`. See [docs/adapters/opencode.md](docs/adapters/opencode.md).
+- **OpenCode** — `adapters/opencode/`. `tool.execute.before` gates proposed edits against `hector check`. See [docs/adapters/opencode.md](docs/adapters/opencode.md).
 - **Reasonix** — `adapters/reasonix/`. PreToolUse hook for `write_file` / `edit_file`. See [adapters/reasonix/README.md](adapters/reasonix/README.md).
-- **pi** — `adapters/pi/`. Extension hooks for pre-write gating, session recording, and advisory end-of-turn checks. See [adapters/pi/README.md](adapters/pi/README.md).
+- **pi** — `adapters/pi/`. `tool_call` hook gates proposed edits before they're written. See [adapters/pi/README.md](adapters/pi/README.md).
 - *Aider, pre-commit, MCP — planned for 0.2/0.3.*
 
 ## Build
