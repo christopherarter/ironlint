@@ -65,9 +65,6 @@ fn merge_inherited(local: &mut Config, inherited: Config) {
     for (id, rule) in inherited.rules {
         local.rules.entry(id).or_insert(rule);
     }
-    if local.llm.is_none() {
-        local.llm = inherited.llm;
-    }
     // Skip entries are additive — the union of every config in the extends
     // chain is what fires. Order doesn't matter (globs are unordered set
     // semantics), so we just append (deduped).
@@ -165,9 +162,6 @@ fn merge_inherited_with_origin(
                 .or_insert_with(|| inherited_canonical.clone());
             slot.insert(rule);
         }
-    }
-    if local.llm.is_none() {
-        local.llm = inherited.llm;
     }
     for g in inherited.skip {
         if !local.skip.contains(&g) {

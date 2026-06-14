@@ -5,8 +5,6 @@ use std::collections::BTreeMap;
 pub struct Config {
     pub schema_version: u32,
     #[serde(default)]
-    pub llm: Option<LlmConfig>,
-    #[serde(default)]
     pub extends: Vec<String>,
     #[serde(default)]
     pub trust: Option<TrustBlock>,
@@ -32,31 +30,6 @@ pub struct ExecutionConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LlmConfig {
-    pub provider: String,
-    /// Required at load time for direct-API providers (`anthropic`,
-    /// `openrouter`, `ollama`); optional for `provider: claude-code-subagent`,
-    /// which never reads it — the in-session subagent uses the Claude Code
-    /// session's model. Validation lives in `runner::HectorEngine::load`, not
-    /// the serde derivation, so the missing-model error can name the provider
-    /// explicitly rather than surfacing a generic serde "missing field"
-    /// diagnostic.
-    #[serde(default)]
-    pub model: Option<String>,
-    #[serde(default)]
-    pub api_key_env: Option<String>,
-    #[serde(default)]
-    pub base_url: Option<String>,
-    /// Optional model id propagated through the deferred envelope so the
-    /// Claude Code skill can dispatch the `hector-evaluator` subagent under a
-    /// specific model (e.g. `haiku` for cheap policy checks). Free-form:
-    /// Claude Code's subagent dispatch validates the value at the right layer.
-    /// Ignored when `provider != claude-code-subagent`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub evaluator_model: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrustBlock {
     pub fingerprint: String,
 }
@@ -75,8 +48,6 @@ pub struct Rule {
     pub pattern: Option<String>,
     #[serde(default)]
     pub language: Option<String>,
-    #[serde(default)]
-    pub context: Option<ContextScope>,
     #[serde(default)]
     pub capabilities: Option<Capabilities>,
     #[serde(default)]
@@ -135,14 +106,6 @@ pub enum EngineKind {
 pub enum Severity {
     Error,
     Warning,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ContextScope {
-    Diff,
-    File,
-    Repo,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

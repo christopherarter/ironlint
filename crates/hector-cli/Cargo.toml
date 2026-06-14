@@ -27,8 +27,6 @@ fs4.workspace = true
 assert_cmd.workspace = true
 predicates.workspace = true
 tempfile.workspace = true
-wiremock.workspace = true
-tokio.workspace = true
 serde_json.workspace = true
 insta.workspace = true
 

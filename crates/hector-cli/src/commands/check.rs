@@ -25,7 +25,6 @@ pub fn run(
     let options = CheckOptions {
         rules: HashSet::new(),
         explain,
-        emit_semantic_payload: false,
         allow_external_paths,
     };
     let mut engine = match HectorEngine::builder().with_options(options).load(config) {
@@ -72,7 +71,6 @@ fn run_file(
     if explain {
         print_explain(&report.explain);
     }
-    let _ = &report.deferred;
     emit(&report.verdict, format)?;
     Ok(exit_code(&report.verdict))
 }
@@ -153,7 +151,6 @@ fn print_explain(rows: &[RuleExplain]) {
         let outcome = match &row.outcome {
             ExplainOutcome::Fire => "fire".to_string(),
             ExplainOutcome::Pass => "pass".to_string(),
-            ExplainOutcome::Dispatched => "dispatched".to_string(),
             ExplainOutcome::Skipped { reason } => format!("skipped {reason}"),
         };
         let engine_name = match row.engine {

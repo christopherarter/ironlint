@@ -19,61 +19,20 @@ fn engine_kind_to_verdict_engine(kind: EngineKind) -> crate::verdict::Engine {
     }
 }
 
-/// Whether a rule is collected into the deferred envelope instead of
-/// dispatched: true only when `emit_semantic_payload` is set and the engine
-/// is `Semantic` (`Script`/`Ast` always run).
-fn should_defer(engine: EngineKind, options: &CheckOptions) -> bool {
-    options.emit_semantic_payload && matches!(engine, EngineKind::Semantic)
-}
-
-/// Render a `Severity` as the bully-compatible string the deferred
-/// envelope's `severity` field carries.
-fn severity_string(s: crate::config::Severity) -> String {
-    match s {
-        crate::config::Severity::Error => "error".into(),
-        crate::config::Severity::Warning => "warning".into(),
+/// Dispatch a single rule to its engine.
+///
+/// The `Semantic`/`Session` arms are defensive: configs carrying those
+/// engines are rejected at parse time (`config::parser::parse_str`), so a
+/// value reaching here means a `Rule` was constructed directly, bypassing
+/// the loader. Erroring rather than silently passing keeps that bug loud.
+fn run_engine(engine: EngineKind, ctx: &RuleContext) -> Result<Vec<Violation>> {
+    match engine {
+        EngineKind::Script => crate::engine::script::ScriptEngine.run(ctx),
+        EngineKind::Ast => crate::engine::ast::AstEngine.run(ctx),
+        EngineKind::Semantic | EngineKind::Session => Err(anyhow::anyhow!(
+            "engine removed in hector 0.2; configs containing it are rejected at load"
+        )),
     }
-}
-
-/// Translate deferred-context expansion failures into `__internal`
-/// violations and append them to `violations`.
-fn push_expansion_failures_into_violations(
-    failures: &[(String, anyhow::Error)],
-    path: &Path,
-    violations: &mut Vec<Violation>,
-) {
-    for (rule_id, err) in failures {
-        violations.push(Violation {
-            rule_id: "__internal".to_string(),
-            severity: crate::verdict::Severity::Error,
-            engine: crate::verdict::Engine::Internal,
-            file: path.display().to_string(),
-            line: None,
-            column: None,
-            message: format!("deferred context expansion failed for rule `{rule_id}`: {err:#}"),
-            suggestion: None,
-            context: None,
-        });
-    }
-}
-
-/// Sweep warn-severity violations onto the deferred envelope. The CLI
-/// suppresses the standard verdict JSON when it emits an envelope, so
-/// without this they would never reach stdout.
-fn build_deferred_warnings(verdict: &Verdict) -> Vec<crate::verdict_deferred::DeferredWarning> {
-    verdict
-        .violations
-        .iter()
-        .filter(|v| v.severity == crate::verdict::Severity::Warning)
-        .map(|v| crate::verdict_deferred::DeferredWarning {
-            rule_id: v.rule_id.clone(),
-            engine: v.engine,
-            file: v.file.clone(),
-            line: v.line,
-            column: v.column,
-            message: v.message.clone(),
-        })
-        .collect()
 }
 
 /// Optional per-run knobs for `HectorEngine::check`. Plumbed via
@@ -87,10 +46,6 @@ pub struct CheckOptions {
     pub rules: HashSet<String>,
     /// If true, capture per-rule outcomes for the explain report.
     pub explain: bool,
-    /// When true, `semantic` rules are collected into
-    /// [`CheckReport::deferred`] for an in-session subagent rather than
-    /// dispatched.
-    pub emit_semantic_payload: bool,
     /// Allow checking files whose canonical path falls outside `config_dir`.
     /// Off by default so wrappers can't run policy against arbitrary host
     /// files.
@@ -112,8 +67,6 @@ pub enum ExplainOutcome {
     Fire,
     /// Deterministic engine returned a clean pass.
     Pass,
-    /// Semantic rule reached the LLM and the LLM returned `pass`.
-    Dispatched,
     /// Rule was short-circuited before engine dispatch (e.g. the diff
     /// pre-filter) or the engine returned an error.
     Skipped { reason: String },
@@ -124,20 +77,6 @@ pub enum ExplainOutcome {
 pub struct CheckReport {
     pub verdict: Verdict,
     pub explain: Vec<RuleExplain>,
-    /// Present when `emit_semantic_payload` was set and at least one
-    /// semantic rule survived scope/skip/diff-prefilter; `None`
-    /// otherwise. The CLI branches on this to emit a `DeferredVerdict` or a
-    /// standard `Verdict`.
-    pub deferred: Option<crate::verdict_deferred::DeferredVerdict>,
-}
-
-/// One rendered semantic prompt. `system` + `user` mirror Anthropic's
-/// `/v1/messages` split; OpenAI-compat providers concatenate them.
-#[derive(Debug, Clone)]
-pub struct RenderedPrompt {
-    pub rule_id: String,
-    pub system: String,
-    pub user: String,
 }
 
 /// Which rules are in scope for a file, plus any skip-pattern hit.
@@ -211,16 +150,6 @@ struct RuleOutcome {
     record: Option<PerRuleRecord>,
 }
 
-/// Result of pre-expanding deferred rule contexts before the verdict is
-/// finalised. Failures become `__internal` violations; only successes are
-/// threaded into the deferred envelope.
-struct DeferredExpansion<'a> {
-    successes: Vec<(crate::llm::prompt::RuleRef<'a>, String, Option<String>)>,
-    /// `(rule_id, error)` pairs for rules whose context could not expand.
-    failures: Vec<(String, anyhow::Error)>,
-}
-
-
 /// Per-file inputs reused across every rule evaluation in one `check()`
 /// call.
 struct CheckInputs<'a> {
@@ -257,15 +186,6 @@ enum InputResolution {
     Rejected(Verdict),
 }
 
-/// Rules split by how they run: `selected` dispatch through the engine
-/// pool, `deferred` are handed to an in-session evaluator. `explain` holds
-/// the rows the deferred split contributes when `--explain` is on.
-struct RulePartition<'a> {
-    selected: Vec<(&'a String, &'a Rule)>,
-    deferred: Vec<crate::verdict_deferred::DeferredRule>,
-    explain: Vec<RuleExplain>,
-}
-
 /// Folded result of dispatching the selected rules in parallel.
 #[derive(Default)]
 struct DispatchOutcome {
@@ -281,7 +201,6 @@ pub struct HectorEngine {
     /// Canonical form of `config_dir`, computed once at load time so
     /// `rule_matches_path` doesn't `canonicalize()` the root on every call.
     config_dir_canon: PathBuf,
-    llm: Option<Box<dyn crate::llm::LlmClient>>,
     skip: SkipMatcher,
     options: CheckOptions,
     /// Per-rule `ScopeMatcher` cache, keyed by rule id and built once at load
@@ -356,21 +275,14 @@ fn relativize(path: &std::path::Path, root: &std::path::Path) -> std::path::Path
 }
 
 pub struct HectorEngineBuilder {
-    llm: Option<Box<dyn crate::llm::LlmClient>>,
     options: CheckOptions,
 }
 
 impl HectorEngineBuilder {
     pub fn new() -> Self {
         Self {
-            llm: None,
             options: CheckOptions::default(),
         }
-    }
-
-    pub fn with_llm(mut self, llm: Box<dyn crate::llm::LlmClient>) -> Self {
-        self.llm = Some(llm);
-        self
     }
 
     /// Attach optional per-run knobs (rule filter, explain capture).
@@ -380,7 +292,7 @@ impl HectorEngineBuilder {
     }
 
     pub fn load(self, config_path: &Path) -> Result<HectorEngine> {
-        HectorEngine::load_with(config_path, self.llm, self.options)
+        HectorEngine::load_with(config_path, self.options)
     }
 }
 
@@ -395,30 +307,23 @@ pub enum CheckInput {
     Diff { file: PathBuf, unified_diff: String },
 }
 
-/// Translate `(engine, errored, emitted)` into the explain outcome for a
-/// rule that reached engine dispatch (rules filtered or short-circuited by
-/// the diff pre-filter produce their own rows upstream).
+/// Translate `(errored, emitted)` into the explain outcome for a rule that
+/// reached engine dispatch (rules filtered or short-circuited by the diff
+/// pre-filter produce their own rows upstream).
 ///
 /// * `engine_errored` → `Skipped { reason: "engine_error" }`. The rule
 ///   surfaced a `__internal` violation but its policy verdict is
 ///   indeterminate, so the explain row marks it skipped rather than
 ///   asserting fire/pass.
 /// * `any_emitted` → `Fire`.
-/// * Otherwise: `Dispatched` for semantic (LLM ran and returned clean),
-///   `Pass` for deterministic engines.
-fn explain_outcome_for(
-    engine: EngineKind,
-    engine_errored: bool,
-    any_emitted: bool,
-) -> ExplainOutcome {
+/// * Otherwise → `Pass`.
+fn explain_outcome_for(engine_errored: bool, any_emitted: bool) -> ExplainOutcome {
     if engine_errored {
         ExplainOutcome::Skipped {
             reason: "engine_error".into(),
         }
     } else if any_emitted {
         ExplainOutcome::Fire
-    } else if engine == EngineKind::Semantic {
-        ExplainOutcome::Dispatched
     } else {
         ExplainOutcome::Pass
     }
@@ -426,7 +331,7 @@ fn explain_outcome_for(
 
 impl HectorEngine {
     pub fn load(config_path: &Path) -> Result<Self> {
-        Self::load_with(config_path, None, CheckOptions::default())
+        Self::load_with(config_path, CheckOptions::default())
     }
 
     pub fn builder() -> HectorEngineBuilder {
@@ -445,12 +350,6 @@ impl HectorEngine {
     /// at build time via [`HectorEngineBuilder::with_options`].
     pub fn set_rule_filter(&mut self, rules: HashSet<String>) {
         self.options.rules = rules;
-    }
-
-    /// Look up a rule by id from the loaded config — used to resolve
-    /// `DeferredRule` ids back to their full definitions.
-    pub fn config_rule(&self, id: &str) -> Option<&crate::config::Rule> {
-        self.config.rules.get(id)
     }
 
     /// Read-only scope walk: the skip-pattern hit (if any) and a per-rule
@@ -561,11 +460,7 @@ impl HectorEngine {
             .unwrap_or(false)
     }
 
-    fn load_with(
-        config_path: &Path,
-        llm_override: Option<Box<dyn crate::llm::LlmClient>>,
-        options: CheckOptions,
-    ) -> Result<Self> {
+    fn load_with(config_path: &Path, options: CheckOptions) -> Result<Self> {
         // Debug hook: counts engine loads per process. Gated on the env var so
         // it is invisible in production; integration tests set it to assert
         // that `hector check` loads the engine exactly once.
@@ -592,15 +487,6 @@ impl HectorEngine {
                 .with_context(|| format!("rule `{rule_id}` has invalid scope glob"))?;
             scope_matchers.insert(rule_id.clone(), matcher);
         }
-
-        // If no explicit override, auto-construct from config.llm.
-        let llm = match llm_override {
-            Some(client) => Some(client),
-            None => match &config.llm {
-                Some(cfg) => crate::llm::build_from_config(cfg)?,
-                None => None,
-            },
-        };
 
         // Path::parent() returns Some("") for a bare relative filename
         // (e.g. ".hector.yml"), not None — filter that out so config_dir is
@@ -630,7 +516,6 @@ impl HectorEngine {
             config,
             config_dir,
             config_dir_canon,
-            llm,
             skip,
             options,
             scope_matchers,
@@ -684,31 +569,6 @@ impl HectorEngine {
                 record: None,
             };
         }
-        // Short-circuit semantic dispatch when the diff can't plausibly match
-        // (see `try_semantic_skip`). The reason string feeds the explain row,
-        // so authors see the same string the telemetry recorded.
-        if let Some(reason) = self.try_semantic_skip(rule_id, rule, inputs.path, inputs.diff) {
-            let explain = inputs.collect_explain.then(|| RuleExplain {
-                rule_id: rule_id.to_string(),
-                engine: rule.engine,
-                outcome: ExplainOutcome::Skipped {
-                    reason: reason.clone(),
-                },
-            });
-            let record = Some(PerRuleRecord {
-                rule_id: rule_id.to_string(),
-                engine: engine_kind_to_verdict_engine(rule.engine),
-                status: Status::Pass,
-                elapsed_ms: 0,
-                reason: Some(reason),
-            });
-            return RuleOutcome {
-                violations: vec![],
-                passed: Some(rule_id.to_string()),
-                explain,
-                record,
-            };
-        }
         let ctx = RuleContext {
             rule_id,
             rule,
@@ -724,46 +584,11 @@ impl HectorEngine {
                 Some(inputs.diff)
             },
             cwd: &self.config_dir,
-            llm: self.llm.as_deref(),
         };
         let rule_start = Instant::now();
-        let outcome: Result<Vec<Violation>> = match rule.engine {
-            EngineKind::Script => crate::engine::script::ScriptEngine.run(&ctx),
-            EngineKind::Ast => crate::engine::ast::AstEngine.run(&ctx),
-            EngineKind::Semantic => crate::engine::semantic::SemanticEngine.run(&ctx),
-            // Unknown/future engines: treat as pass.
-            _ => Ok(Vec::new()),
-        };
+        let outcome = run_engine(rule.engine, &ctx);
         let rule_elapsed = rule_start.elapsed().as_millis() as u64;
-        // A semantic rule that reached the LLM and produced a result emits a
-        // SemanticVerdict telemetry line; errors don't (they surface as
-        // engine_error in the per-rule record).
-        if rule.engine == EngineKind::Semantic {
-            if let Ok(ref vs) = outcome {
-                let verdict_str = if vs.is_empty() { "pass" } else { "violation" };
-                self.append_semantic_verdict(
-                    rule_id,
-                    Some(&inputs.path.display().to_string()),
-                    verdict_str,
-                );
-            }
-        }
         Self::merge_engine_outcome(rule_id, rule.engine, inputs, outcome, rule_elapsed)
-    }
-
-    /// Emit a SemanticVerdict telemetry line, used by `evaluate_one_rule`'s
-    /// semantic arm. Best-effort: failures warn to stderr.
-    fn append_semantic_verdict(&self, rule_id: &str, file: Option<&str>, verdict_str: &str) {
-        let entry = LogEntry::SemanticVerdict {
-            ts: chrono::Utc::now().to_rfc3339(),
-            rule: rule_id.to_string(),
-            verdict: verdict_str.into(),
-            file: file.map(str::to_string),
-        };
-        if let Err(e) = crate::telemetry::append(&self.config_dir.join(".hector/log.jsonl"), &entry)
-        {
-            eprintln!("hector: telemetry append failed: {e:#}");
-        }
     }
 
     /// Post-process the engine's `Result<Vec<Violation>>` into a `RuleOutcome`:
@@ -788,7 +613,7 @@ impl HectorEngine {
                 let explain = inputs.collect_explain.then(|| RuleExplain {
                     rule_id: rule_id.to_string(),
                     engine,
-                    outcome: explain_outcome_for(engine, false, false),
+                    outcome: explain_outcome_for(false, false),
                 });
                 RuleOutcome {
                     violations: vec![],
@@ -822,7 +647,7 @@ impl HectorEngine {
                 let explain = inputs.collect_explain.then(|| RuleExplain {
                     rule_id: rule_id.to_string(),
                     engine,
-                    outcome: explain_outcome_for(engine, true, false),
+                    outcome: explain_outcome_for(true, false),
                 });
                 RuleOutcome {
                     violations: vec![v],
@@ -841,7 +666,7 @@ impl HectorEngine {
     }
 
     /// Walk the engine's emitted violations, dropping any that match a
-    /// `hector-disable:` directive. P1-2: script/semantic emit file-level
+    /// `hector-disable:` directive. P1-2: the script engine emits file-level
     /// violations with `line: None`, so we honour file-wide disable
     /// directives anywhere in the file in that case.
     fn apply_disables(
@@ -890,7 +715,7 @@ impl HectorEngine {
         let explain = inputs.collect_explain.then(|| RuleExplain {
             rule_id: rule_id.to_string(),
             engine,
-            outcome: explain_outcome_for(engine, false, any_emitted),
+            outcome: explain_outcome_for(false, any_emitted),
         });
         RuleOutcome {
             violations: kept,
@@ -1039,55 +864,19 @@ impl HectorEngine {
         }
     }
 
-    /// Split the resolved rules into those dispatched through the engine
-    /// pool and those deferred to an in-session evaluator.
+    /// The rules to dispatch through the engine pool, after applying the
+    /// `--rule` filter.
     ///
-    /// The `--rule` filter is applied here, upstream of dispatch, so a
-    /// filtered-out rule never enters the work queue or triggers its engine
-    /// (in particular, no LLM call). With `emit_semantic_payload` set, the
-    /// semantic rules are collected into the deferred set instead of
-    /// dispatched; deterministic rules still run. Deferred rules out of
-    /// scope for the file are dropped, mirroring the dispatch path.
-    fn partition_rules(&self, match_path: &Path, collect_explain: bool) -> RulePartition<'_> {
+    /// Filtering here, upstream of dispatch, means a filtered-out rule never
+    /// enters the work queue or triggers its engine. Per-file scope is
+    /// applied later, inside [`Self::evaluate_one_rule`].
+    fn select_rules(&self) -> Vec<(&String, &Rule)> {
         let filter: &HashSet<String> = &self.options.rules;
-        let mut partition = RulePartition {
-            selected: Vec::new(),
-            deferred: Vec::new(),
-            explain: Vec::new(),
-        };
-        for (rule_id, rule) in &self.config.rules {
-            if !filter.is_empty() && !filter.contains(rule_id.as_str()) {
-                continue;
-            }
-            if !should_defer(rule.engine, &self.options) {
-                partition.selected.push((rule_id, rule));
-                continue;
-            }
-            if !self.rule_matches_path(rule_id, match_path) {
-                continue;
-            }
-            partition
-                .deferred
-                .push(crate::verdict_deferred::DeferredRule {
-                    id: rule_id.clone(),
-                    description: rule.description.clone(),
-                    severity: severity_string(rule.severity),
-                    engine: match rule.engine {
-                        EngineKind::Semantic => "semantic".into(),
-                        _ => unreachable!("should_defer guards on Semantic"),
-                    },
-                });
-            if collect_explain {
-                partition.explain.push(RuleExplain {
-                    rule_id: rule_id.clone(),
-                    engine: rule.engine,
-                    outcome: ExplainOutcome::Skipped {
-                        reason: "deferred_subagent".into(),
-                    },
-                });
-            }
-        }
-        partition
+        self.config
+            .rules
+            .iter()
+            .filter(|(rule_id, _)| filter.is_empty() || filter.contains(rule_id.as_str()))
+            .collect()
     }
 
     /// Evaluate the selected rules and fold their outcomes. Output order
@@ -1148,68 +937,9 @@ impl HectorEngine {
         violations.retain(|v| !baseline.contains_with_content(v, Some(content)));
     }
 
-    /// Pre-expand the deferred rules' evaluation contexts and build the
-    /// evaluator-input string the in-session subagent and the direct-API
-    /// path both consume — keeping the evidence byte-identical between them.
-    ///
-    /// Expansion failures are pushed onto `violations` as `__internal`
-    /// entries (yielding an `InternalError` verdict, matching the direct-API
-    /// path) rather than silently dropped. Returns `None` when no context
-    /// expanded, so an all-failures run reads as "no input" rather than an
-    /// empty string.
-    fn build_deferred_evaluator_input(
-        &self,
-        deferred_rules: &[crate::verdict_deferred::DeferredRule],
-        path: &Path,
-        diff: &str,
-        content: Option<&str>,
-        violations: &mut Vec<Violation>,
-    ) -> Option<String> {
-        let expansion = self.expand_deferred_contexts(deferred_rules, path, diff, content);
-        push_expansion_failures_into_violations(&expansion.failures, path, violations);
-        if expansion.successes.is_empty() {
-            return None;
-        }
-        let sentinel = crate::llm::prompt::Sentinel::new_random();
-        Some(crate::llm::prompt::build_evaluator_input(
-            &expansion.successes,
-            &sentinel,
-        ))
-    }
-
-    /// When a deterministic block fires during an `emit_semantic_payload`
-    /// run, the CLI suppresses the deferred envelope and prints only the
-    /// block verdict — which would erase the deferred rules. Surface them on
-    /// `verdict.deferred_rules` so the operator still sees what their policy
-    /// would have evaluated. No-op unless the verdict is a block with
-    /// deferred rules present.
-    fn surface_deferred_on_block(
-        &self,
-        verdict: &mut Verdict,
-        deferred_rules: &[crate::verdict_deferred::DeferredRule],
-    ) {
-        if !matches!(verdict.status, Status::Block) || deferred_rules.is_empty() {
-            return;
-        }
-        verdict.deferred_rules = deferred_rules
-            .iter()
-            .filter_map(|d| {
-                self.config_rule(&d.id)
-                    .map(|r| crate::verdict::DeferredRuleRef {
-                        rule_id: d.id.clone(),
-                        severity: match r.severity {
-                            crate::config::Severity::Error => crate::verdict::Severity::Error,
-                            crate::config::Severity::Warning => crate::verdict::Severity::Warning,
-                        },
-                        reason: "suppressed by deterministic block".to_string(),
-                    })
-            })
-            .collect();
-    }
-
     /// Central orchestration: normalize the input, short-circuit skipped
-    /// files, partition rules, dispatch the deterministic ones, filter the
-    /// baseline, build the deferred envelope, and log telemetry.
+    /// files, select rules, dispatch them, filter the baseline, and log
+    /// telemetry.
     fn check_inner(&self, input: CheckInput, collect_explain: bool) -> Result<CheckReport> {
         use crate::disable::DisableMap;
         let start = Instant::now();
@@ -1226,7 +956,6 @@ impl HectorEngine {
                     return Ok(CheckReport {
                         verdict,
                         explain: vec![],
-                        deferred: None,
                     });
                 }
             };
@@ -1242,7 +971,6 @@ impl HectorEngine {
             return Ok(CheckReport {
                 verdict,
                 explain: Vec::new(),
-                deferred: None,
             });
         }
 
@@ -1265,33 +993,15 @@ impl HectorEngine {
             collect_explain,
         };
 
-        let RulePartition {
-            selected,
-            deferred,
-            mut explain,
-        } = self.partition_rules(&match_path, collect_explain);
-
+        let selected = self.select_rules();
         let mut dispatch = self.dispatch_selected(&selected, &inputs);
-        explain.append(&mut dispatch.explain);
-
         self.apply_baseline(&mut dispatch.violations, &content);
 
-        // Computed before `deferred` is consumed by `build_deferred_envelope`
-        // — the expansion tuples borrow each `DeferredRule`.
-        let evaluator_input = self.build_deferred_evaluator_input(
-            &deferred,
-            &path,
-            &diff,
-            inputs.content,
-            &mut dispatch.violations,
-        );
-
-        let mut verdict = Verdict::from_violations(
+        let verdict = Verdict::from_violations(
             dispatch.violations,
             dispatch.passed,
             start.elapsed().as_millis() as u64,
         );
-        self.surface_deferred_on_block(&mut verdict, &deferred);
 
         self.append_check_log(
             &path.display().to_string(),
@@ -1300,213 +1010,53 @@ impl HectorEngine {
             dispatch.records,
         );
 
-        let deferred =
-            self.build_deferred_envelope(deferred, &path, &diff, &verdict, evaluator_input);
         Ok(CheckReport {
             verdict,
-            explain,
-            deferred,
+            explain: dispatch.explain,
         })
     }
+}
 
-    /// Assemble the `DeferredVerdict` envelope from the rules
-    /// `should_defer` short-circuited; `None` when there are none. The
-    /// envelope sweeps warn-severity violations onto `payload.warnings`
-    /// (the CLI suppresses the verdict JSON when it emits an envelope),
-    /// threads `expand_context` per rule so the subagent and direct-API
-    /// routes read the same prompt, and rolls a fresh sentinel each time.
-    fn build_deferred_envelope(
-        &self,
-        deferred_rules: Vec<crate::verdict_deferred::DeferredRule>,
-        path: &Path,
-        diff: &str,
-        verdict: &Verdict,
-        evaluator_input: Option<String>,
-    ) -> Option<crate::verdict_deferred::DeferredVerdict> {
-        if deferred_rules.is_empty() {
-            return None;
+#[cfg(test)]
+mod tests {
+    use super::{run_engine, RuleContext};
+    use crate::config::{EngineKind, OutputMode, Rule, Severity};
+    use std::path::Path;
+
+    fn rule_with_engine(engine: EngineKind) -> Rule {
+        Rule {
+            description: "x".into(),
+            engine,
+            scope: vec!["*".into()],
+            severity: Severity::Error,
+            script: None,
+            pattern: None,
+            language: None,
+            capabilities: None,
+            fix_hint: None,
+            output: OutputMode::default(),
         }
-        // Suppress the envelope on terminal verdict states. The CLI gates on
-        // this too, but pinning it here means library callers get the same
-        // contract: no envelope once the verdict says "stop." On Block, the
-        // deferred rules are surfaced on `verdict.deferred_rules` instead; on
-        // InternalError, an engine failure has short-circuited the dispatch
-        // the envelope exists to enable.
-        if matches!(verdict.status, Status::Block | Status::InternalError) {
-            return None;
-        }
-        let evaluator_input = evaluator_input.unwrap_or_default();
-
-        // Thread the optional evaluator_model override from the loaded `llm:`
-        // block into the payload. Only the subagent provider reads it.
-        let evaluator_model = self
-            .config
-            .llm
-            .as_ref()
-            .and_then(|l| l.evaluator_model.clone());
-
-        let warnings = build_deferred_warnings(verdict);
-
-        Some(crate::verdict_deferred::DeferredVerdict {
-            schema_version: crate::verdict_deferred::DEFERRED_SCHEMA_VERSION,
-            deferred: true,
-            hector_version: env!("CARGO_PKG_VERSION").to_string(),
-            passed_checks: verdict.passed_checks.clone(),
-            payload: crate::verdict_deferred::DeferredPayload {
-                file: path.display().to_string(),
-                diff: diff.to_string(),
-                passed_checks: verdict.passed_checks.clone(),
-                evaluate: deferred_rules,
-                evaluator_input,
-                evaluator_model,
-                warnings,
-            },
-            elapsed_ms: verdict.elapsed_ms,
-        })
     }
 
-    /// Expand each deferred rule's context via the same
-    /// `engine::context::expand_context` that `render_semantic_prompts` uses,
-    /// so the envelope's `evaluator_input` and the direct-API prompt produce
-    /// byte-identical evidence for the same `(rule, input)`.
-    ///
-    /// Expansion errors are returned in `failures` (not dropped) so the
-    /// caller can thread them into violations as `__internal` entries before
-    /// the verdict is finalised, matching the direct-API path.
-    ///
-    /// The `'a` constraint ties the returned tuples to `deferred_rules` and
-    /// `self`: `RuleRef::id` borrows the `DeferredRule` slice and
-    /// `RuleRef::rule` borrows the config map.
-    fn expand_deferred_contexts<'a>(
-        &'a self,
-        deferred_rules: &'a [crate::verdict_deferred::DeferredRule],
-        path: &Path,
-        diff: &str,
-        content: Option<&str>,
-    ) -> DeferredExpansion<'a> {
-        let mut successes = Vec::with_capacity(deferred_rules.len());
-        let mut failures: Vec<(String, anyhow::Error)> = Vec::new();
-        for d in deferred_rules {
-            let Some(rule) = self.config_rule(&d.id) else {
-                continue;
+    /// The `semantic`/`session` engines were removed in 0.2; configs carrying
+    /// them are rejected at parse (`config::parser::parse_str`). The dispatch
+    /// arm in `run_engine` is the defensive backstop: if such a rule is ever
+    /// constructed directly and reaches dispatch, it must error rather than
+    /// silently pass.
+    #[test]
+    fn removed_engines_error_at_dispatch() {
+        for engine in [EngineKind::Semantic, EngineKind::Session] {
+            let rule = rule_with_engine(engine);
+            let ctx = RuleContext {
+                rule_id: "judge-me",
+                rule: &rule,
+                file: Path::new("foo.ts"),
+                content: Some("x"),
+                diff: None,
+                cwd: Path::new("."),
             };
-            let scope = rule.context.unwrap_or(crate::config::ContextScope::Diff);
-            let expansion = crate::engine::context::expand_context(
-                scope,
-                if diff.is_empty() { None } else { Some(diff) },
-                Some(path),
-                content,
-                &self.config_dir,
-            );
-            match expansion {
-                Ok((primary, context_text)) => {
-                    successes.push((
-                        crate::llm::prompt::RuleRef { id: &d.id, rule },
-                        primary,
-                        context_text,
-                    ));
-                }
-                Err(e) => {
-                    failures.push((d.id.clone(), e));
-                }
-            }
-        }
-        DeferredExpansion {
-            successes,
-            failures,
+            let err = run_engine(engine, &ctx).unwrap_err().to_string();
+            assert!(err.contains("engine removed in hector 0.2"), "got: {err}");
         }
     }
-
-    /// Render the prompts that *would* be sent for every in-scope semantic
-    /// rule, without dispatching — `hector check --print-prompt` uses this to
-    /// debug prompt construction without burning API calls. Honors the
-    /// `--rule` filter and per-rule scope; non-semantic rules are skipped.
-    pub fn render_semantic_prompts(&self, input: CheckInput) -> Result<Vec<RenderedPrompt>> {
-        let (path, diff, content) = match input {
-            CheckInput::File { path, content } => {
-                let resolved = self.resolve_input_path(&path)?;
-                let diff = self.synthesize_file_diff(&resolved, &content);
-                (resolved, diff, Some(content))
-            }
-            CheckInput::Diff { file, unified_diff } => (file, unified_diff, None),
-        };
-        let match_path = relativize(&path, &self.config_dir);
-        let mut out = Vec::new();
-        for (rule_id, rule) in &self.config.rules {
-            if !self.options.rules.is_empty() && !self.options.rules.contains(rule_id) {
-                continue;
-            }
-            if rule.engine != EngineKind::Semantic {
-                continue;
-            }
-            // Use the load-time cached matcher — no GlobSet rebuild per call.
-            if !self.rule_matches_path(rule_id, &match_path) {
-                continue;
-            }
-            let scope = rule.context.unwrap_or(crate::config::ContextScope::Diff);
-            let (primary, context_text) = crate::engine::context::expand_context(
-                scope,
-                if diff.is_empty() { None } else { Some(&diff) },
-                Some(&path),
-                content.as_deref(),
-                &self.config_dir,
-            )?;
-            let (system, user) = crate::llm::prompt::build_prompt_split(
-                &[(rule_id.as_str(), rule)],
-                &primary,
-                context_text.as_deref(),
-            );
-            out.push(RenderedPrompt {
-                rule_id: rule_id.clone(),
-                system,
-                user,
-            });
-        }
-        Ok(out)
-    }
-
-    /// If the rule is semantic and the diff cannot plausibly match it,
-    /// record a `semantic_skipped` telemetry entry and return
-    /// `Some(reason)` so the caller skips engine dispatch (the same
-    /// reason string also feeds the C4 `--explain` row). Otherwise
-    /// return `None`.
-    ///
-    /// Only applies in diff mode: `CheckInput::File` passes an empty
-    /// `diff` here, which `can_match_diff` would classify as
-    /// `SkipReason::Empty` — bypassing every file-mode semantic rule
-    /// silently, which is incorrect. The empty-diff guard preserves
-    /// file-mode semantics: there is no diff to analyze, so dispatch.
-    ///
-    /// The pre-filter lives in the runner (not inside `SemanticEngine`)
-    /// so it sits alongside the other cross-cutting concerns (scope,
-    /// baseline, disable, skip) and the engine stays pure — no HTTP
-    /// request leaves the engine when this fires.
-    fn try_semantic_skip(
-        &self,
-        rule_id: &str,
-        rule: &Rule,
-        path: &Path,
-        diff: &str,
-    ) -> Option<String> {
-        if rule.engine != EngineKind::Semantic || diff.is_empty() {
-            return None;
-        }
-        let analysis = crate::diff::analysis::can_match_diff(diff, path, &rule.description);
-        let crate::diff::analysis::CanMatch::No(reason) = analysis else {
-            return None;
-        };
-        let reason_str = reason.as_str().to_string();
-        let log_path = self.config_dir.join(".hector/log.jsonl");
-        let entry = LogEntry::SemanticSkipped {
-            ts: chrono::Utc::now().to_rfc3339(),
-            file: path.display().to_string(),
-            rule: rule_id.to_string(),
-            reason: reason_str.clone(),
-        };
-        if let Err(e) = crate::telemetry::append(&log_path, &entry) {
-            eprintln!("hector: telemetry append failed: {e:#}");
-        }
-        Some(reason_str)
-    }
-
 }

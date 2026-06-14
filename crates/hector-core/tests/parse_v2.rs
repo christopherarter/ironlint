@@ -6,7 +6,6 @@ const V2: &str = include_str!("../../../tests/fixtures/valid_v2.hector.yml");
 fn parses_v2_minimal() {
     let cfg = parse_str(V2).expect("parse");
     assert_eq!(cfg.schema_version, 2);
-    assert!(cfg.llm.is_none(), "fixture must not have an llm block");
 
     let r = cfg.rules.get("no-console-log").expect("rule present");
     assert_eq!(r.engine, EngineKind::Script);

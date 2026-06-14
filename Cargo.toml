@@ -77,9 +77,6 @@ predicates = "3"
 insta = { version = "1", features = ["yaml", "json", "redactions"] }
 ast-grep-core = "0.42"
 ast-grep-language = "0.42"
-reqwest = { version = "0.12", default-features = false, features = ["json", "blocking", "rustls-tls"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
-wiremock = "0.6"
 chrono = "0.4"
 walkdir = "2"
 fs4 = "0.13"

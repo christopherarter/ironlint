@@ -12,7 +12,6 @@ fn make_ast_rule(pattern: &str, language: &str) -> Rule {
         script: None,
         pattern: Some(pattern.into()),
         language: Some(language.into()),
-        context: None,
         capabilities: None,
         fix_hint: None,
         output: OutputMode::default(),
@@ -33,7 +32,6 @@ fn ast_engine_matches_pattern() {
         content: Some(content),
         diff: None,
         cwd: dir.path(),
-        llm: None,
     };
     let engine = AstEngine;
     let vs = engine.run(&ctx).expect("run");
@@ -58,7 +56,6 @@ fn ast_engine_no_match_no_violation() {
         content: Some(content),
         diff: None,
         cwd: dir.path(),
-        llm: None,
     };
     let engine = AstEngine;
     let vs = engine.run(&ctx).expect("run");
@@ -78,7 +75,6 @@ fn ast_violation_populates_column_and_context() {
         script: None,
         pattern: Some("$E.unwrap()".into()),
         language: Some("rust".into()),
-        context: None,
         capabilities: None,
         fix_hint: None,
         output: OutputMode::default(),
@@ -91,7 +87,6 @@ fn ast_violation_populates_column_and_context() {
         content: Some(content),
         diff: None,
         cwd: std::path::Path::new("."),
-        llm: None,
     };
     let vs = AstEngine.run(&ctx).expect("run");
     assert_eq!(
@@ -125,7 +120,6 @@ fn ast_engine_errors_when_pattern_missing() {
         content: Some("const x = 1;\n"),
         diff: None,
         cwd: dir.path(),
-        llm: None,
     };
     let err = AstEngine.run(&ctx).expect_err("missing pattern");
     assert!(format!("{err:#}").contains("pattern"));
@@ -145,7 +139,6 @@ fn ast_engine_errors_when_language_missing() {
         content: Some("const x = 1;\n"),
         diff: None,
         cwd: dir.path(),
-        llm: None,
     };
     let err = AstEngine.run(&ctx).expect_err("missing language");
     assert!(format!("{err:#}").contains("language"));
@@ -163,7 +156,6 @@ fn ast_engine_errors_when_content_missing() {
         content: None,
         diff: None,
         cwd: dir.path(),
-        llm: None,
     };
     let err = AstEngine.run(&ctx).expect_err("missing content");
     assert!(format!("{err:#}").contains("content"));
@@ -181,7 +173,6 @@ fn ast_returns_every_match_not_just_first() {
         script: None,
         pattern: Some("$E.unwrap()".into()),
         language: Some("rust".into()),
-        context: None,
         capabilities: None,
         fix_hint: None,
         output: OutputMode::default(),
@@ -194,7 +185,6 @@ fn ast_returns_every_match_not_just_first() {
         content: Some(content),
         diff: None,
         cwd: std::path::Path::new("."),
-        llm: None,
     };
     let vs = AstEngine.run(&ctx).expect("run");
     assert_eq!(

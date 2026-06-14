@@ -42,8 +42,8 @@ pub fn record(config: &Path, scan_glob: Option<String>) -> Result<i32> {
         })
         .collect();
 
-    // `HectorEngine` is `Send + Sync` because `LlmClient: Send + Sync` and
-    // every other field is owned data — parallelising the per-file check is
+    // `HectorEngine` is `Send + Sync` because every field is owned data —
+    // parallelising the per-file check is
     // safe. Violations from each file are accumulated under a single Mutex
     // so the final baseline is deterministic regardless of thread order.
     paths.par_iter().for_each(|path| {

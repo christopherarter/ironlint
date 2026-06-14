@@ -12,7 +12,6 @@ fn make_rule(script: &str) -> Rule {
         script: Some(script.into()),
         pattern: None,
         language: None,
-        context: None,
         capabilities: Some(Capabilities {
             network: false,
             writes: WritesPolicy::None,
@@ -35,7 +34,6 @@ fn script_engine_implements_rule_engine_trait() {
         content: Some("clean\n"),
         diff: None,
         cwd: dir.path(),
-        llm: None,
     };
     let engine = ScriptEngine;
     let vs = engine.run(&ctx).expect("run");

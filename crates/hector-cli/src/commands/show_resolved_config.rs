@@ -20,8 +20,6 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Serialize)]
 struct ResolvedView<'a> {
     schema_version: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    llm: Option<&'a hector_core::config::LlmConfig>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     skip: &'a Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -56,7 +54,6 @@ fn build_view<'a>(
         .collect();
     ResolvedView {
         schema_version: cfg.schema_version,
-        llm: cfg.llm.as_ref(),
         skip: &cfg.skip,
         execution: cfg.execution.as_ref(),
         rules,
@@ -198,7 +195,6 @@ mod tests {
             script: Some("true".into()),
             pattern: None,
             language: None,
-            context: None,
             capabilities: None,
             fix_hint: fix_hint.map(|s| s.to_string()),
             output: hector_core::config::OutputMode::default(),
@@ -212,7 +208,6 @@ mod tests {
         }
         hector_core::config::Config {
             schema_version: 2,
-            llm: None,
             extends: vec![],
             trust: None,
             skip: vec![],

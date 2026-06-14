@@ -15,7 +15,6 @@ fn make_rule(script: &str, output: OutputMode) -> Rule {
         script: Some(script.into()),
         pattern: None,
         language: None,
-        context: None,
         capabilities: Some(Capabilities {
             network: false,
             writes: WritesPolicy::None,

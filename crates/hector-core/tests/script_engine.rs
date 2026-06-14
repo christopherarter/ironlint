@@ -11,7 +11,6 @@ fn make_rule(script: &str) -> Rule {
         script: Some(script.into()),
         pattern: None,
         language: None,
-        context: None,
         capabilities: Some(Capabilities {
             network: false,
             writes: WritesPolicy::None,
@@ -63,9 +62,7 @@ fn script_engine_quotes_file_path_with_shell_metacharacters() {
         // parameter, not as literal text spliced into the command.
         script: Some("ls -- {file} >/dev/null".into()),
         pattern: None,
-        language: None,
-        context: None,
-        // Unrestricted capabilities so this test exercises the quoting defense
+        language: None, // Unrestricted capabilities so this test exercises the quoting defense
         // itself on every platform — not the Linux mount-namespace, which
         // would block `touch` regardless of the bug.
         capabilities: Some(Capabilities {

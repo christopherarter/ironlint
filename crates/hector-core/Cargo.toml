@@ -15,8 +15,6 @@ sha2.workspace = true
 globset.workspace = true
 ast-grep-core.workspace = true
 ast-grep-language.workspace = true
-reqwest.workspace = true
-tokio.workspace = true
 chrono.workspace = true
 wait-timeout = "0.2"
 fs4.workspace = true
@@ -33,8 +31,6 @@ libc = "0.2"
 tempfile.workspace = true
 insta.workspace = true
 serde_json.workspace = true
-wiremock.workspace = true
-tokio.workspace = true
 
 [lints]
 workspace = true
