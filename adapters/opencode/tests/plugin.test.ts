@@ -1,5 +1,5 @@
-import { test, expect, beforeAll, afterAll, beforeEach } from "bun:test"
-import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync, mkdirSync } from "node:fs"
+import { test, expect, beforeAll, afterAll } from "bun:test"
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { $ } from "bun"
@@ -43,11 +43,6 @@ beforeAll(async () => {
 
 afterAll(() => {
   rmSync(project, { recursive: true, force: true })
-})
-
-beforeEach(() => {
-  // Reset session state between tests so the session-rule cases are isolated.
-  rmSync(join(project, ".hector", "session.json"), { force: true })
 })
 
 test("hooks no-op when .hector.yml is absent at load time", async () => {
@@ -253,38 +248,6 @@ test("before-hook no-ops when filePath is missing", async () => {
   ).resolves.toBeUndefined()
 })
 
-test("event session.created clears stale session.json", async () => {
-  mkdirSync(join(project, ".hector"), { recursive: true })
-  writeFileSync(
-    join(project, ".hector", "session.json"),
-    JSON.stringify({ session_id: "stale", started_at: "t", edits: [] }),
-  )
-  expect(existsSync(join(project, ".hector", "session.json"))).toBe(true)
-
-  const hooks = await HectorPlugin(fakeCtx(project))
-  await hooks.event!({ event: { type: "session.created" } as never })
-
-  expect(existsSync(join(project, ".hector", "session.json"))).toBe(false)
-})
-
-test("event session.idle no-ops without session.json", async () => {
-  const hooks = await HectorPlugin(fakeCtx(project))
-  await expect(
-    hooks.event!({ event: { type: "session.idle" } as never }),
-  ).resolves.toBeUndefined()
-})
-
-test("event ignores unrelated event types", async () => {
-  const hooks = await HectorPlugin(fakeCtx(project))
-  // No throw; the handler just returns.
-  await expect(
-    hooks.event!({ event: { type: "message.updated" } as never }),
-  ).resolves.toBeUndefined()
-  await expect(
-    hooks.event!({ event: { type: "permission.asked" } as never }),
-  ).resolves.toBeUndefined()
-})
-
 test("before-hook skips self-check of .hector.yml (R3)", async () => {
   // R3: editing the policy file itself used to invoke hector check on
   // a mid-edit file whose on-disk sha no longer matched `trust:`, which
@@ -361,24 +324,4 @@ test("before-hook skips self-check of bare relative .hector.yml (R3)", async () 
       { args: { filePath: ".hector.yml", content: "anything\n" } },
     ),
   ).resolves.toBeUndefined()
-})
-
-test("tool.execute.after records edit to session.json", async () => {
-  const file = join(project, "tracked.txt")
-  writeFileSync(file, "ok\n")
-  const hooks = await HectorPlugin(fakeCtx(project))
-  await hooks["tool.execute.after"]!(
-    {
-      tool: "write",
-      sessionID: "s",
-      callID: "c",
-      args: { filePath: file, content: "ok\n" },
-    },
-    { title: "", output: "", metadata: {} },
-  )
-
-  const stateFile = join(project, ".hector", "session.json")
-  expect(existsSync(stateFile)).toBe(true)
-  const body = await Bun.file(stateFile).text()
-  expect(body).toContain("tracked.txt")
 })

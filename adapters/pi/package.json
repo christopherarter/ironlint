@@ -1,7 +1,7 @@
 {
   "name": "@dynamik-dev/hector-pi",
   "version": "0.1.0",
-  "description": "pi extension for Hector — policy enforcement for AI coding agents. tool_call gate + session record + session check.",
+  "description": "pi extension for Hector — policy enforcement for AI coding agents. tool_call pre-write gate.",
   "type": "module",
   "main": "src/index.ts",
   "exports": {

@@ -2,8 +2,8 @@
 
 [pi](https://pi.dev) extension integration for Hector. Mirrors the OpenCode and
 Claude Code adapters: it gates `write` / `edit` tool calls against your
-project's `.hector.yml` policy **before they execute**, records edits for
-cross-edit (session) rules, and runs a session check at the end of each turn.
+project's `.hector.yml` policy **before they execute**. It is a static,
+per-file pre-write gate — each tool call is checked on its own.
 
 The extension is a pure translation layer between pi's lifecycle and the
 `hector` binary — it contains no rule logic.
@@ -11,9 +11,6 @@ The extension is a pure translation layer between pi's lifecycle and the
 | pi event | Action |
 |----------|--------|
 | `tool_call` (`write` / `edit`) | Compute the proposed content, run `hector check --file <path> --content -`, and `return { block: true, reason }` on a policy violation (exit 2). The check runs against piped stdin — nothing is written to disk. |
-| `tool_result` (`write` / `edit`) | Record a synthetic diff into `.hector/session.json` for session rules (best-effort). |
-| `session_start` | Clear a stale `.hector/session.json` from a prior aborted run. |
-| `agent_end` | Run `hector check --session`. **Advisory** — the turn is already over, so the verdict is surfaced (it cannot retroactively block). |
 
 ## Requirements
 
@@ -76,9 +73,9 @@ The extension honours the `hector` CLI exit-code contract
 
 - **`bash`-tool shell-out** (`cat > foo`, redirections) bypasses the gate — universal across all adapters; arbitrary commands are too brittle to parse.
 - **`edit` fuzzy-match fallback** can't be faithfully simulated, so those edits skip the gate (fail-open on simulate-failure). Exact + unique `oldText` edits gate normally.
-- **`engine: script` rules** read the pre-edit on-disk file under `--content -`. AST / semantic / `hector-disable` rules gate correctly against the proposed pre-write content.
+- **`engine: script` rules** read the pre-edit on-disk file under `--content -`. AST and `hector-disable` rules gate correctly against the proposed pre-write content.
 - **pi subagents** are not specially handled (deferred).
-- **The `agent_end` session check is advisory** — it cannot retroactively block a finished turn; it surfaces the verdict for the next iteration.
+- **No cross-edit checks.** The gate evaluates each `write` / `edit` in isolation; it does not aggregate edits across a turn.
 
 ## Diagnostic
 

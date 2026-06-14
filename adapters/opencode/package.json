@@ -1,7 +1,7 @@
 {
   "name": "@dynamik-dev/hector-opencode",
   "version": "0.1.0",
-  "description": "OpenCode plugin for Hector — policy enforcement for AI coding agents. tool.execute.after gate + session.idle session check.",
+  "description": "OpenCode plugin for Hector — policy enforcement for AI coding agents. tool.execute.before pre-write gate.",
   "type": "module",
   "main": "src/index.ts",
   "exports": {

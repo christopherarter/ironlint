@@ -1,6 +1,6 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { synthesizeDiff, normalizeEdits } from "../src/index.ts"
+import { normalizeEdits } from "../src/index.ts"
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, chmodSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, delimiter } from "node:path"
@@ -43,62 +43,6 @@ test("normalizeEdits: edits[] with a non-string member returns null", () => {
 
 test("normalizeEdits: empty edits[] returns null", () => {
   assert.equal(normalizeEdits({ edits: [] }), null)
-})
-
-// --- synthesizeDiff (P1-8 hunk counts, P1-9 injection scrub) --------------
-
-test("synthesizeDiff: write tool, single-line content", () => {
-  const d = synthesizeDiff("write", "foo.ts", { content: "x" })
-  assert.match(d, /^--- a\/foo\.ts\n\+\+\+ b\/foo\.ts\n/)
-  assert.ok(d.includes("@@ -1 +1 @@"))
-})
-
-test("synthesizeDiff: write tool, multi-line content emits zero-count old side (P1-8)", () => {
-  const d = synthesizeDiff("write", "foo.ts", { content: "x\ny" })
-  assert.ok(d.includes("@@ -1 +1,2 @@"))
-  // Empty old side: no `-<content>` deletion lines (only the `--- a/` header).
-  assert.doesNotMatch(d, /^-[^-]/m)
-})
-
-test("synthesizeDiff: edit tool, multi-line new emits correct counts (P1-8)", () => {
-  const d = synthesizeDiff("edit", "foo.ts", { oldText: "a\nb", newText: "x\ny\nz" })
-  assert.ok(d.includes("@@ -1,2 +1,3 @@"))
-})
-
-test("synthesizeDiff: edit tool, multi-line old single-line new (P1-8)", () => {
-  const d = synthesizeDiff("edit", "foo.ts", { oldText: "a\nb\nc", newText: "x" })
-  assert.ok(d.includes("@@ -1,3 +1 @@"))
-})
-
-test("synthesizeDiff: batch edit emits one hunk per edit", () => {
-  const d = synthesizeDiff("edit", "foo.ts", {
-    edits: [
-      { oldText: "a", newText: "x" },
-      { oldText: "b", newText: "y" },
-    ],
-  })
-  // Exactly one file header, two @@ hunks.
-  assert.equal(d.match(/^--- a\/foo\.ts$/gm)?.length, 1)
-  assert.equal(d.match(/^@@ /gm)?.length, 2)
-  assert.ok(d.includes("-a\n+x"))
-  assert.ok(d.includes("-b\n+y"))
-})
-
-test("synthesizeDiff: escapes embedded +++/---/@@ headers in newText (P1-9)", () => {
-  const evil = "x\n--- a/SECRET\n+++ b/SECRET\n@@ -1 +1 @@\n+pwn"
-  const d = synthesizeDiff("edit", "foo.ts", { oldText: "", newText: evil })
-  assert.doesNotMatch(d, /^\+\+\+ b\/SECRET$/m)
-  assert.doesNotMatch(d, /^--- a\/SECRET$/m)
-  assert.doesNotMatch(d, /^@@ -1 \+1 @@$/m)
-  // The real headers for the real file remain.
-  assert.ok(d.includes("--- a/foo.ts"))
-  assert.ok(d.includes("+++ b/foo.ts"))
-})
-
-test("synthesizeDiff: escapes embedded headers in oldText (P1-9)", () => {
-  // "-- a/SECRET" prefixed with "-" would become "--- a/SECRET" without scrubbing.
-  const d = synthesizeDiff("edit", "foo.ts", { oldText: "-- a/SECRET", newText: "x" })
-  assert.doesNotMatch(d, /^--- a\/SECRET$/m)
 })
 
 // --- computeProposedContent -----------------------------------------------
@@ -478,276 +422,60 @@ test("tool_call: bare relative .hector.yml self-edit short-circuits (R3)", () =>
   }
 })
 
-test("tool_result: records a write to session.json", () => {
-  const dir = makeProject()
-  try {
-    const file = join(dir, "tracked.txt")
-    writeFileSync(file, "ok\n")
-    const handlers = loadExtension(dir)
-    handlers.tool_result!(
-      { toolName: "write", input: { path: file, content: "ok\n" }, isError: false },
-      {},
-    )
-    const stateFile = join(dir, ".hector", "session.json")
-    assert.equal(existsSync(stateFile), true)
-    assert.ok(readFileSync(stateFile, "utf8").includes("tracked.txt"))
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-})
-
-test("tool_result: isError result records nothing", () => {
-  const dir = makeProject()
-  try {
-    const file = join(dir, "failed.txt")
-    const handlers = loadExtension(dir)
-    handlers.tool_result!(
-      { toolName: "write", input: { path: file, content: "x\n" }, isError: true },
-      {},
-    )
-    assert.equal(existsSync(join(dir, ".hector", "session.json")), false)
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-})
-
-test("tool_result: non-gated tool records nothing", () => {
-  const dir = makeProject()
-  try {
-    const handlers = loadExtension(dir)
-    handlers.tool_result!({ toolName: "read", input: { path: "x" } }, {})
-    assert.equal(existsSync(join(dir, ".hector", "session.json")), false)
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-})
-
-test("tool_result: policy-file edit records nothing (R3)", () => {
-  const dir = makeProject()
-  try {
-    const handlers = loadExtension(dir)
-    handlers.tool_result!(
-      { toolName: "write", input: { path: join(dir, ".hector.yml"), content: "x\n" } },
-      {},
-    )
-    assert.equal(existsSync(join(dir, ".hector", "session.json")), false)
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-})
-
-test("session_start: clears stale session.json", () => {
-  const dir = makeProject()
-  try {
-    mkdirSync(join(dir, ".hector"), { recursive: true })
-    writeFileSync(
-      join(dir, ".hector", "session.json"),
-      JSON.stringify({ session_id: "stale", started_at: "t", edits: [] }),
-    )
-    const handlers = loadExtension(dir)
-    handlers.session_start!({}, {})
-    assert.equal(existsSync(join(dir, ".hector", "session.json")), false)
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-})
-
-test("session_start: no-op when no session.json exists", () => {
-  const dir = makeProject()
-  try {
-    const handlers = loadExtension(dir)
-    handlers.session_start!({}, {}) // must not throw
-    assert.equal(existsSync(join(dir, ".hector", "session.json")), false)
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-})
-
-test("agent_end: no-op without session.json", () => {
-  const dir = makeProject()
-  try {
-    const handlers = loadExtension(dir)
-    const notified: string[] = []
-    const result = handlers.agent_end!({}, { ui: { notify: (m: string) => notified.push(m) } })
-    assert.equal(result, undefined)
-    assert.equal(notified.length, 0)
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-})
-
-test("agent_end: advisory surface on a session block (never blocks the turn)", () => {
-  const dir = mkdtempSync(join(tmpdir(), "hector-pi-agentend-"))
-  const bin = mkdtempSync(join(tmpdir(), "hector-pi-fakebin-"))
-  const origPath = process.env["PATH"] ?? ""
-  const origErr = console.error
-  const errs: string[] = []
-  try {
-    mkdirSync(join(dir, ".hector"), { recursive: true })
-    writeFileSync(
-      join(dir, ".hector", "session.json"),
-      JSON.stringify({ session_id: "s", started_at: "t", edits: [] }),
-    )
-    // Fake `hector` that always exits 2 with a JSON verdict on stdout.
-    const fake = join(bin, "hector")
-    writeFileSync(
-      fake,
-      "#!/bin/sh\necho '{\"status\":\"block\",\"violations\":[{\"rule_id\":\"audit-tests\"}]}'\nexit 2\n",
-    )
-    chmodSync(fake, 0o755)
-    process.env["PATH"] = bin + delimiter + origPath
-    console.error = (...args: unknown[]) => {
-      errs.push(args.map(String).join(" "))
-    }
-
-    const handlers = loadExtension(dir)
-    const notified: string[] = []
-    const result = handlers.agent_end!({}, { ui: { notify: (m: string) => notified.push(m) } })
-
-    // Advisory: agent_end never returns a block, even on a session violation.
-    assert.equal(result, undefined)
-    assert.ok(errs.join("\n").includes("session check blocked"))
-    assert.equal(notified.length, 1)
-    assert.ok(notified[0]!.includes("session check blocked"))
-  } finally {
-    console.error = origErr
-    process.env["PATH"] = origPath
-    rmSync(dir, { recursive: true, force: true })
-    rmSync(bin, { recursive: true, force: true })
-  }
-})
-
-test("agent_end: non-blocking on session check internal error", () => {
-  const dir = mkdtempSync(join(tmpdir(), "hector-pi-agentend2-"))
-  const bin = mkdtempSync(join(tmpdir(), "hector-pi-fakebin2-"))
-  const origPath = process.env["PATH"] ?? ""
-  const origErr = console.error
-  const errs: string[] = []
-  try {
-    mkdirSync(join(dir, ".hector"), { recursive: true })
-    writeFileSync(
-      join(dir, ".hector", "session.json"),
-      JSON.stringify({ session_id: "s", started_at: "t", edits: [] }),
-    )
-    const fake = join(bin, "hector")
-    writeFileSync(fake, "#!/bin/sh\necho 'boom' 1>&2\nexit 1\n")
-    chmodSync(fake, 0o755)
-    process.env["PATH"] = bin + delimiter + origPath
-    console.error = (...args: unknown[]) => {
-      errs.push(args.map(String).join(" "))
-    }
-
-    const handlers = loadExtension(dir)
-    const notified: string[] = []
-    const result = handlers.agent_end!({}, { ui: { notify: (m: string) => notified.push(m) } })
-
-    assert.equal(result, undefined) // never blocks
-    assert.equal(notified.length, 0) // no advisory notify on non-2 exit
-    assert.ok(errs.join("\n").includes("internal error during session check"))
-  } finally {
-    console.error = origErr
-    process.env["PATH"] = origPath
-    rmSync(dir, { recursive: true, force: true })
-    rmSync(bin, { recursive: true, force: true })
-  }
-})
-
-const SEMANTIC_YML = `schema_version: 2
-rules:
-  needs-llm:
-    description: "semantic rule with no key -> engine internal error (exit 3)"
-    engine: semantic
-    scope: ["*.txt"]
-    severity: error
-    prompt: "Always block."
-`
-
-function makeSemanticProject(): string {
-  const dir = mkdtempSync(join(tmpdir(), "hector-pi-sem-"))
-  writeFileSync(join(dir, ".hector.yml"), SEMANTIC_YML)
-  execFileSync("hector", ["trust", "--config", join(dir, ".hector.yml")])
-  return dir
-}
+// --- tool_call: exit-3 fail-open / fail-closed ----------------------------
+// A real exit 3 (engine-internal error) is forced via a fake `hector` on PATH
+// that exits 3 — a semantic/session config no longer reaches the engine (it is
+// rejected at load with exit 1), so we cannot provoke exit 3 through config.
 
 test("tool_call: exit-3 fails open by default (allows the edit)", () => {
-  const dir = makeSemanticProject()
-  const hadKey = process.env["ANTHROPIC_API_KEY"]
-  delete process.env["ANTHROPIC_API_KEY"]
+  const dir = makeProject()
+  const bin = mkdtempSync(join(tmpdir(), "hector-pi-fakebin-"))
+  const origPath = process.env["PATH"] ?? ""
   delete process.env["HECTOR_FAIL_CLOSED_ON_INTERNAL"]
   const origErr = console.error
   console.error = () => {}
   try {
-    const file = join(dir, "x.txt")
+    const fake = join(bin, "hector")
+    writeFileSync(fake, "#!/bin/sh\necho 'engine error' 1>&2\nexit 3\n")
+    chmodSync(fake, 0o755)
+    process.env["PATH"] = bin + delimiter + origPath
+
+    const file = join(dir, "src", "x.rs")
     const handlers = loadExtension(dir)
     const result = handlers.tool_call!(
-      { toolName: "write", input: { path: file, content: "anything\n" } },
+      { toolName: "write", input: { path: file, content: "fn a() {}\n" } },
       {},
     )
     assert.equal(result, undefined) // fail-open
   } finally {
     console.error = origErr
-    if (hadKey !== undefined) process.env["ANTHROPIC_API_KEY"] = hadKey
+    process.env["PATH"] = origPath
     rmSync(dir, { recursive: true, force: true })
+    rmSync(bin, { recursive: true, force: true })
   }
 })
 
 test("tool_call: exit-3 fails closed under HECTOR_FAIL_CLOSED_ON_INTERNAL=1", () => {
-  const dir = makeSemanticProject()
-  const hadKey = process.env["ANTHROPIC_API_KEY"]
-  delete process.env["ANTHROPIC_API_KEY"]
+  const dir = makeProject()
+  const bin = mkdtempSync(join(tmpdir(), "hector-pi-fakebin-"))
+  const origPath = process.env["PATH"] ?? ""
+  const hadClosed = process.env["HECTOR_FAIL_CLOSED_ON_INTERNAL"]
   process.env["HECTOR_FAIL_CLOSED_ON_INTERNAL"] = "1"
   const origErr = console.error
   console.error = () => {}
   try {
-    const file = join(dir, "x.txt")
-    const handlers = loadExtension(dir)
-    const result = handlers.tool_call!(
-      { toolName: "write", input: { path: file, content: "anything\n" } },
-      {},
-    ) as { block?: boolean } | undefined
-    assert.equal(result?.block, true) // fail-closed
-  } finally {
-    console.error = origErr
-    delete process.env["HECTOR_FAIL_CLOSED_ON_INTERNAL"]
-    if (hadKey !== undefined) process.env["ANTHROPIC_API_KEY"] = hadKey
-    rmSync(dir, { recursive: true, force: true })
-  }
-})
-
-test("agent_end: never blocks on session check exit 3, even under fail-closed", () => {
-  // The session check runs after the turn finishes, so agent_end is advisory:
-  // even an engine internal error (exit 3) with HECTOR_FAIL_CLOSED_ON_INTERNAL=1
-  // must NOT return a block — it can only surface the error. A fake `hector`
-  // forces exit 3 deterministically.
-  const dir = mkdtempSync(join(tmpdir(), "hector-pi-agentend3-"))
-  const bin = mkdtempSync(join(tmpdir(), "hector-pi-fakebin3-"))
-  const origPath = process.env["PATH"] ?? ""
-  const hadClosed = process.env["HECTOR_FAIL_CLOSED_ON_INTERNAL"]
-  const origErr = console.error
-  const errs: string[] = []
-  try {
-    mkdirSync(join(dir, ".hector"), { recursive: true })
-    writeFileSync(
-      join(dir, ".hector", "session.json"),
-      JSON.stringify({ session_id: "s", started_at: "t", edits: [] }),
-    )
     const fake = join(bin, "hector")
     writeFileSync(fake, "#!/bin/sh\necho 'engine error' 1>&2\nexit 3\n")
     chmodSync(fake, 0o755)
     process.env["PATH"] = bin + delimiter + origPath
-    process.env["HECTOR_FAIL_CLOSED_ON_INTERNAL"] = "1"
-    console.error = (...args: unknown[]) => {
-      errs.push(args.map(String).join(" "))
-    }
 
+    const file = join(dir, "src", "x.rs")
     const handlers = loadExtension(dir)
-    const notified: string[] = []
-    const result = handlers.agent_end!({}, { ui: { notify: (m: string) => notified.push(m) } })
-
-    // Advisory: never a block, even under fail-closed. Only an internal-error log.
-    assert.equal(result, undefined)
-    assert.equal(notified.length, 0)
-    assert.ok(errs.join("\n").includes("internal error"))
+    const result = handlers.tool_call!(
+      { toolName: "write", input: { path: file, content: "fn a() {}\n" } },
+      {},
+    ) as { block?: boolean } | undefined
+    assert.equal(result?.block, true) // fail-closed
   } finally {
     console.error = origErr
     process.env["PATH"] = origPath
