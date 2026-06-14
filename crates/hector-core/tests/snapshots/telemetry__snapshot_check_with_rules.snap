@@ -1,6 +1,5 @@
 ---
 source: crates/hector-core/tests/telemetry.rs
-assertion_line: 316
 expression: entry
 ---
 {
@@ -12,7 +11,7 @@ expression: entry
   "rules": [
     {
       "rule_id": "no-unwrap",
-      "engine": "semantic",
+      "engine": "ast",
       "status": "pass",
       "elapsed_ms": 30
     },

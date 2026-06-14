@@ -1,6 +1,4 @@
-use hector_core::verdict::{
-    DeferredRuleRef, Engine, Severity, Status, Verdict, Violation, SCHEMA_VERSION,
-};
+use hector_core::verdict::{Engine, Severity, Status, Verdict, Violation, SCHEMA_VERSION};
 
 #[test]
 fn engine_enum_separates_trust_from_internal() {
@@ -11,10 +9,10 @@ fn engine_enum_separates_trust_from_internal() {
 }
 
 #[test]
-fn schema_version_is_two() {
-    // SCHEMA_VERSION is 2. Only shape-breaking changes bump it; additive
-    // fields (e.g. `deferred_rules`, skipped when empty) must NOT.
-    assert_eq!(SCHEMA_VERSION, 2);
+fn schema_version_is_three() {
+    // SCHEMA_VERSION is 3 after v3 dropped `deferred_rules` and the
+    // `semantic`/`session` engine variants.
+    assert_eq!(SCHEMA_VERSION, 3);
 }
 
 #[test]
@@ -36,7 +34,6 @@ fn verdict_block_serializes_to_canonical_json() {
         }],
         passed_checks: vec!["no-as-any".into(), "test-coverage-on-auth".into()],
         elapsed_ms: 1340,
-        deferred_rules: vec![],
     };
     insta::assert_json_snapshot!(v, { ".hector_version" => "[VERSION]" });
 }
@@ -50,14 +47,13 @@ fn verdict_pass_with_no_violations() {
         violations: vec![],
         passed_checks: vec!["no-console-log".into()],
         elapsed_ms: 12,
-        deferred_rules: vec![],
     };
     insta::assert_json_snapshot!(v, { ".hector_version" => "[VERSION]" });
 }
 
 #[test]
 fn verdict_with_internal_engine_violation_serializes() {
-    // Engine-runtime errors (LLM down, AST refused, script spawn failure)
+    // Engine-runtime errors (AST refused diff, script spawn failure)
     // serialize with `engine: "internal"` and a `__internal` rule-id suffix
     // so consumers can distinguish them from real rule violations.
     let v = Verdict::from_violations(
@@ -68,7 +64,7 @@ fn verdict_with_internal_engine_violation_serializes() {
             file: "src/app.tsx".to_string(),
             line: None,
             column: None,
-            message: "semantic check requires LlmClient".to_string(),
+            message: "ast engine refused malformed diff".to_string(),
             suggestion: None,
             context: None,
         }],
@@ -124,37 +120,6 @@ fn verdict_pass_constructor_returns_canonical_empty_verdict() {
     assert!(v.passed_checks.is_empty());
     assert_eq!(v.elapsed_ms, 0);
     assert_eq!(v.hector_version, env!("CARGO_PKG_VERSION"));
-}
-
-#[test]
-fn verdict_block_with_deferred_rules_serializes() {
-    // When a deterministic block fires and semantic/session rules were
-    // suppressed, they surface in `deferred_rules`. Lock the on-wire shape:
-    // an array of `{rule_id, severity, reason}` objects after `elapsed_ms`.
-    let v = Verdict {
-        schema_version: SCHEMA_VERSION,
-        hector_version: "0.1.0".to_string(),
-        status: Status::Block,
-        violations: vec![Violation {
-            rule_id: "no-console-log".to_string(),
-            severity: Severity::Error,
-            engine: Engine::Script,
-            file: "src/app.ts".into(),
-            line: Some(42),
-            column: None,
-            message: "console.log not permitted in src/".to_string(),
-            suggestion: None,
-            context: None,
-        }],
-        passed_checks: vec![],
-        elapsed_ms: 12,
-        deferred_rules: vec![DeferredRuleRef {
-            rule_id: "no-todo-comment".to_string(),
-            severity: Severity::Warning,
-            reason: "suppressed by deterministic block".to_string(),
-        }],
-    };
-    insta::assert_json_snapshot!(v, { ".hector_version" => "[VERSION]" });
 }
 
 #[test]

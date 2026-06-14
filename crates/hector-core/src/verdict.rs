@@ -10,16 +10,18 @@ use serde::{Deserialize, Serialize};
 /// Additive changes (new optional field with `skip_serializing_if`,
 /// new enum variant marked `#[non_exhaustive]`) do NOT bump. Consumers
 /// wanting backward compatibility should read `MIN_REQUIRED_SCHEMA_VERSION`
-/// and accept anything `>=`. Strict consumers reject any unexpected version,
-/// so the additive `deferred_rules` field stays on v2 rather than bumping.
-pub const SCHEMA_VERSION: u32 = 2;
+/// and accept anything `>=`. Strict consumers reject any unexpected version.
+///
+/// v3 removed the `deferred_rules` field and the `semantic`/`session`
+/// `Engine` variants when LLM evaluation was dropped.
+pub const SCHEMA_VERSION: u32 = 3;
 
 /// Floor schema version that all current verdicts satisfy.
 ///
 /// Consumers should assert `schema_version >= MIN_REQUIRED_SCHEMA_VERSION`
 /// rather than `schema_version == <constant>`, so they remain compatible
 /// with future additive bumps.
-pub const MIN_REQUIRED_SCHEMA_VERSION: u32 = 2;
+pub const MIN_REQUIRED_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Verdict {
@@ -29,35 +31,6 @@ pub struct Verdict {
     pub violations: Vec<Violation>,
     pub passed_checks: Vec<String>,
     pub elapsed_ms: u64,
-    /// Semantic/session rules whose evaluation was suppressed because a
-    /// deterministic rule fired with `severity: error` on the same edit.
-    /// Empty in all non-deferred-mode flows (and serialized as omitted via
-    /// `skip_serializing_if`), so existing v2 consumers see no wire-format
-    /// change.
-    ///
-    /// Populated only when `CheckOptions::emit_semantic_payload` is true
-    /// AND the resulting `Verdict::status` is `Block`. The full deferred
-    /// envelope is suppressed in that case — these rule refs are the
-    /// surfacing mechanism so the user (and the Claude Code skill) know
-    /// their semantic rules are alive even when not evaluated this turn.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub deferred_rules: Vec<DeferredRuleRef>,
-}
-
-/// Minimal reference to a deferred rule whose evaluation was suppressed by
-/// a deterministic block.
-///
-/// Lives on `Verdict` (not `DeferredVerdict`) because it surfaces in the
-/// deterministic-block path where the full deferred envelope is dropped.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DeferredRuleRef {
-    pub rule_id: String,
-    pub severity: Severity,
-    /// Human-readable string explaining why the rule was not evaluated.
-    /// Stable enough for adapter skills to surface verbatim; not enum'd
-    /// because the only consumer today is the Claude Code interpreter
-    /// skill, which renders it as plain text.
-    pub reason: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -68,7 +41,7 @@ pub enum Status {
     Warn,
     Block,
     /// At least one rule failed to evaluate due to an engine-internal error
-    /// (LLM unavailable, AST refused diff, script spawn failure). Surfaces in
+    /// (AST refused diff, script spawn failure). Surfaces in
     /// `Violation::engine = Internal` rows.
     /// CLI maps to exit code 3 so adapters can distinguish "config
     /// wrong" from "policy violated" (exit 2).
@@ -86,16 +59,15 @@ pub struct Violation {
     /// 1-based column of the violation's start position.
     ///
     /// Only the AST engine populates this — it reads the column from the
-    /// matched node's start byte. The `script`, `semantic`, and `session`
-    /// engines have no positional information from a regex/LLM hit and always
-    /// leave this `None`.
+    /// matched node's start byte. The `script` engine has no positional
+    /// information from a regex hit and always leaves this `None`.
     pub column: Option<u32>,
     pub message: String,
     pub suggestion: Option<String>,
     /// Snippet of source surrounding the violation.
     ///
     /// AST populates this with the matched node's line ±3 lines for editor
-    /// display. Script, semantic, and session engines leave it `None`.
+    /// display. The script engine leaves it `None`.
     pub context: Option<String>,
 }
 
@@ -111,8 +83,6 @@ pub enum Severity {
 pub enum Engine {
     Script,
     Ast,
-    Semantic,
-    Session,
     /// True trust-gate failure: config fingerprint mismatch.
     ///
     /// In practice trust failures halt at `HectorEngine::load`, so this
@@ -120,10 +90,10 @@ pub enum Engine {
     /// where a downstream caller wants to surface a trust-rejection as a
     /// structured verdict instead of a load error.
     Trust,
-    /// Engine-internal runtime error (LLM unavailable, AST refused diff,
-    /// script spawn failure, etc.). The rule's `rule_id` is suffixed with
-    /// `__internal` by the runner so consumers can distinguish runtime
-    /// errors from rule violations.
+    /// Engine-internal runtime error (AST refused diff, script spawn
+    /// failure, etc.). The rule's `rule_id` is suffixed with `__internal`
+    /// by the runner so consumers can distinguish runtime errors from rule
+    /// violations.
     Internal,
 }
 
@@ -136,7 +106,6 @@ impl Verdict {
             violations: vec![],
             passed_checks: vec![],
             elapsed_ms: 0,
-            deferred_rules: vec![],
         }
     }
 
@@ -165,7 +134,6 @@ impl Verdict {
             violations,
             passed_checks: passed,
             elapsed_ms,
-            deferred_rules: vec![],
         }
     }
 }

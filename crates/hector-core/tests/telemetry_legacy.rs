@@ -9,7 +9,7 @@ fn fixture_path(name: &str) -> PathBuf {
 }
 
 #[test]
-fn legacy_log_jsonl_loads_and_lifts_to_typed_variants() {
+fn legacy_log_jsonl_loads_and_lifts_to_check() {
     let entries = read_all(&fixture_path("log_legacy.jsonl")).expect("legacy fixture must load");
     assert_eq!(
         entries.len(),
@@ -17,56 +17,41 @@ fn legacy_log_jsonl_loads_and_lifts_to_typed_variants() {
         "all 5 legacy lines must lift, none dropped"
     );
 
-    // Line 1: kind=check → Check{rules:[]}
-    match &entries[0] {
-        LogEntry::Check {
-            file,
-            status,
-            rules,
-            ..
-        } => {
-            assert_eq!(file, "src/foo.rs");
-            assert_eq!(*status, Status::Pass);
-            assert!(rules.is_empty(), "legacy check has no per-rule data");
-        }
-        other => panic!("entry 0 should be Check, got {other:?}"),
-    }
+    // Every legacy `kind` now collapses to `Check` — the semantic/session
+    // record types were removed with LLM evaluation. `LogEntry` has a single
+    // variant, so these destructures are irrefutable.
 
-    // Line 3: kind=semantic_skipped → SemanticSkipped
-    match &entries[2] {
-        LogEntry::SemanticSkipped {
-            file, rule, reason, ..
-        } => {
-            assert_eq!(file, "src/lib.rs");
-            assert_eq!(rule, "no-unwrap");
-            assert_eq!(reason, "whitespace_only");
-        }
-        other => panic!("entry 2 should be SemanticSkipped, got {other:?}"),
-    }
+    // Line 1: kind=check
+    let LogEntry::Check {
+        file,
+        status,
+        rules,
+        ..
+    } = &entries[0];
+    assert_eq!(file, "src/foo.rs");
+    assert_eq!(*status, Status::Pass);
+    assert!(rules.is_empty(), "legacy check has no per-rule data");
 
-    // Line 4: kind=skipped → Check{rules:[]}
-    match &entries[3] {
-        LogEntry::Check { file, rules, .. } => {
-            assert_eq!(file, "Cargo.lock");
-            assert!(rules.is_empty());
-        }
-        other => panic!("entry 3 should be Check, got {other:?}"),
-    }
+    // Line 3: kind=semantic_skipped → Check
+    let LogEntry::Check { file, rules, .. } = &entries[2];
+    assert_eq!(file, "src/lib.rs");
+    assert!(rules.is_empty());
 
-    // Line 5: kind=check_session → Check{file:"", rules:[]}
-    match &entries[4] {
-        LogEntry::Check {
-            file,
-            status,
-            rules,
-            ..
-        } => {
-            assert_eq!(file, "");
-            assert_eq!(*status, Status::Block);
-            assert!(rules.is_empty());
-        }
-        other => panic!("entry 4 should be Check, got {other:?}"),
-    }
+    // Line 4: kind=skipped → Check
+    let LogEntry::Check { file, rules, .. } = &entries[3];
+    assert_eq!(file, "Cargo.lock");
+    assert!(rules.is_empty());
+
+    // Line 5: kind=check_session → Check{file:""}
+    let LogEntry::Check {
+        file,
+        status,
+        rules,
+        ..
+    } = &entries[4];
+    assert_eq!(file, "");
+    assert_eq!(*status, Status::Block);
+    assert!(rules.is_empty());
 }
 
 #[test]
@@ -119,50 +104,24 @@ fn legacy_status_warn_and_block_lift_correctly() {
     std::fs::write(&log, body).unwrap();
     let entries = read_all(&log).unwrap();
     assert_eq!(entries.len(), 2);
-    let LogEntry::Check { status: s0, .. } = &entries[0] else {
-        panic!("warn line should be Check");
-    };
-    let LogEntry::Check { status: s1, .. } = &entries[1] else {
-        panic!("block line should be Check");
-    };
+    let LogEntry::Check { status: s0, .. } = &entries[0];
+    let LogEntry::Check { status: s1, .. } = &entries[1];
     assert_eq!(*s0, Status::Warn);
     assert_eq!(*s1, Status::Block);
 }
 
 #[test]
-fn legacy_semantic_verdict_lifts_correctly() {
-    // Exercises into_typed's `"semantic_verdict"` arm — the rest of the
-    // arms are covered by the main fixture.
+fn legacy_semantic_verdict_collapses_to_check() {
+    // The `semantic_verdict` kind has no typed equivalent after LLM evaluation
+    // was removed — legacy lines collapse to `Check` via the catch-all lift.
     let dir = tempfile::tempdir().unwrap();
     let log = dir.path().join("sv.jsonl");
-    // legacy semantic_verdict: file present
     let body = "{\"timestamp\":\"t\",\"kind\":\"semantic_verdict\",\"file\":\"src/x.rs\",\"rule_id\":\"r\",\"status\":\"pass\",\"elapsed_ms\":0}\n{\"timestamp\":\"t\",\"kind\":\"semantic_verdict\",\"file\":\"\",\"rule_id\":\"s\",\"status\":\"violation\",\"elapsed_ms\":0}\n";
     std::fs::write(&log, body).unwrap();
     let entries = read_all(&log).unwrap();
     assert_eq!(entries.len(), 2);
-    match &entries[0] {
-        LogEntry::SemanticVerdict {
-            file: Some(f),
-            verdict,
-            rule,
-            ..
-        } => {
-            assert_eq!(f, "src/x.rs");
-            assert_eq!(verdict, "pass");
-            assert_eq!(rule, "r");
-        }
-        other => panic!("expected SemanticVerdict with file, got {other:?}"),
-    }
-    match &entries[1] {
-        LogEntry::SemanticVerdict {
-            file: None,
-            verdict,
-            rule,
-            ..
-        } => {
-            assert_eq!(verdict, "violation");
-            assert_eq!(rule, "s");
-        }
-        other => panic!("expected SemanticVerdict file=None, got {other:?}"),
-    }
+    let LogEntry::Check { file, .. } = &entries[0];
+    assert_eq!(file, "src/x.rs");
+    let LogEntry::Check { file, .. } = &entries[1];
+    assert_eq!(file, "");
 }

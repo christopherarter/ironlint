@@ -3,7 +3,7 @@ source: crates/hector-core/tests/verdict_snapshot.rs
 expression: v
 ---
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "hector_version": "[VERSION]",
   "status": "internal_error",
   "violations": [
@@ -14,7 +14,7 @@ expression: v
       "file": "src/app.tsx",
       "line": null,
       "column": null,
-      "message": "semantic check requires LlmClient",
+      "message": "ast engine refused malformed diff",
       "suggestion": null,
       "context": null
     }

@@ -14,8 +14,9 @@ fn engine_kind_to_verdict_engine(kind: EngineKind) -> crate::verdict::Engine {
     match kind {
         EngineKind::Script => crate::verdict::Engine::Script,
         EngineKind::Ast => crate::verdict::Engine::Ast,
-        EngineKind::Semantic => crate::verdict::Engine::Semantic,
-        EngineKind::Session => crate::verdict::Engine::Session,
+        // Parse-only variants rejected by `parse_str`; `Internal` is the safe
+        // fallback rather than a panic if one is ever constructed directly.
+        EngineKind::Semantic | EngineKind::Session => crate::verdict::Engine::Internal,
     }
 }
 
@@ -836,7 +837,6 @@ impl HectorEngine {
             violations: vec![],
             passed_checks: vec![],
             elapsed_ms: start.elapsed().as_millis() as u64,
-            deferred_rules: vec![],
         }
     }
 

@@ -21,7 +21,7 @@ use std::sync::OnceLock;
 
 /// Telemetry record-set version. Independent of the verdict schema; bumps
 /// when this enum's shape changes (added/removed variants or fields).
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// Per-rule outcome line carried inside a [`LogEntry::Check`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -45,11 +45,6 @@ pub struct PerRuleRecord {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum LogEntry {
-    SessionInit {
-        ts: String,
-        hector_version: String,
-        schema_version: u32,
-    },
     Check {
         ts: String,
         file: String,
@@ -57,35 +52,20 @@ pub enum LogEntry {
         elapsed_ms: u64,
         rules: Vec<PerRuleRecord>,
     },
-    SemanticVerdict {
-        ts: String,
-        rule: String,
-        verdict: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        file: Option<String>,
-    },
-    SemanticSkipped {
-        ts: String,
-        file: String,
-        rule: String,
-        reason: String,
-    },
 }
 
 /// Has the legacy-format deprecation warning been emitted in this process?
 static LEGACY_WARNING_EMITTED: OnceLock<()> = OnceLock::new();
 
-/// Legacy flat shape. Read-only; never serialized.
+/// Legacy flat shape. Read-only; never serialized. Only the fields needed to
+/// reconstruct a [`LogEntry::Check`] are kept — serde ignores the rest
+/// (`kind`, `rule_id`, `reason`) on legacy lines.
 #[derive(Deserialize)]
 struct LogEntryLegacy {
     timestamp: String,
-    kind: String,
     file: String,
-    rule_id: Option<String>,
     status: String,
     elapsed_ms: u64,
-    #[serde(default)]
-    reason: Option<String>,
 }
 
 /// Wrapper deserializer: try the typed shape first, fall back to legacy.
@@ -98,38 +78,18 @@ enum LogEntryRead {
 }
 
 impl LogEntryLegacy {
-    /// Lift a flat legacy record into the closest typed equivalent. The
-    /// mapping is intentionally lossy in one direction — `kind: "check"`
-    /// loses per-rule detail because the legacy format never carried
-    /// `rules`. Consumers must be aware that legacy `Check` records have
-    /// `rules: vec![]`.
+    /// Lift a flat legacy record into a typed [`LogEntry::Check`]. The mapping
+    /// is lossy: the legacy format never carried `rules`, and the removed
+    /// `semantic_*`/`session_init` kinds have no typed equivalent since LLM
+    /// evaluation was dropped — every legacy `kind` collapses to `Check`.
+    /// Status string is best-effort; missing/unknown → Pass.
     fn into_typed(self) -> LogEntry {
-        match self.kind.as_str() {
-            "semantic_skipped" => LogEntry::SemanticSkipped {
-                ts: self.timestamp,
-                file: self.file,
-                rule: self.rule_id.unwrap_or_default(),
-                reason: self.reason.unwrap_or_default(),
-            },
-            "semantic_verdict" => LogEntry::SemanticVerdict {
-                ts: self.timestamp,
-                rule: self.rule_id.unwrap_or_default(),
-                verdict: self.status,
-                file: if self.file.is_empty() {
-                    None
-                } else {
-                    Some(self.file)
-                },
-            },
-            // "check", "check_session", "skipped" all collapse here.
-            // Status string is best-effort; missing/unknown → Pass.
-            _ => LogEntry::Check {
-                ts: self.timestamp,
-                file: self.file,
-                status: parse_status(&self.status),
-                elapsed_ms: self.elapsed_ms,
-                rules: Vec::new(),
-            },
+        LogEntry::Check {
+            ts: self.timestamp,
+            file: self.file,
+            status: parse_status(&self.status),
+            elapsed_ms: self.elapsed_ms,
+            rules: Vec::new(),
         }
     }
 }

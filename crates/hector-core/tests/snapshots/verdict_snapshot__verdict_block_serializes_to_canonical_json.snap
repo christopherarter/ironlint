@@ -3,7 +3,7 @@ source: crates/hector-core/tests/verdict_snapshot.rs
 expression: v
 ---
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "hector_version": "[VERSION]",
   "status": "block",
   "violations": [
