@@ -53,7 +53,7 @@ fn parse_unified_returns_only_path() {
 
 // Regression: the diff parser must reject path traversal in `+++ b/` headers.
 // A malicious diff with `+++ b/../../../etc/passwd` would otherwise hand a path
-// outside the workspace to the semantic context-reader or script engines.
+// outside the workspace to the script or ast engines.
 #[test]
 fn parse_unified_rejects_path_traversal() {
     let diff = "--- a/foo\n+++ b/../../../etc/passwd\n@@ -0,0 +1 @@\n+x\n";

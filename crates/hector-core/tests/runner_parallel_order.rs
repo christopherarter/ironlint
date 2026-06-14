@@ -5,10 +5,9 @@
 //! "rayon" reads as "non-deterministic" at a glance — the order test pins
 //! the contract.
 //!
-//! The original version of this test used a mock LlmClient with per-rule
-//! sleep durations. This version replaces semantic rules with script rules
-//! using `sleep` shell commands so no LlmClient is required. The contract
-//! under test — BTreeMap key order, not completion order — is identical.
+//! The test uses script rules with `sleep` shell commands for per-rule timing
+//! variance, so completion order differs from input order. The contract under
+//! test — BTreeMap key order, not completion order — is what's pinned.
 //!
 //! ALL `HECTOR_MAX_WORKERS` env-mutation tests live in this file. Because
 //! each integration-test file compiles to its own binary (separate process),

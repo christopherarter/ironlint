@@ -19,7 +19,7 @@ struct HunkWindow {
 ///
 /// The diff is line-oriented and intentionally conservative: it finds the
 /// shared prefix/suffix and emits one hunk around the changed middle, which
-/// is enough evidence for semantic rules in pre-write checks without adding a
+/// is enough evidence for ast rules in pre-write checks without adding a
 /// diffing dependency.
 pub fn synthesize_unified(path: &Path, old: Option<&str>, new: &str) -> String {
     let old_body = old.unwrap_or_default();

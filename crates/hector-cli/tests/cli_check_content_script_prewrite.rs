@@ -6,7 +6,7 @@
 //! — the path pre-write adapters (Reasonix `PreToolUse`, OpenCode
 //! `tool.execute.before`) use to gate *proposed* bytes before the edit lands
 //! — runs the script tool against `<path>` on disk instead of the piped
-//! proposal. `ast`/`semantic` already honor `--content` (see the AST tests in
+//! proposal. `ast` already honors `--content` (see the AST tests in
 //! `cli_check_content.rs`); `script` is the lone exception. The fix (Option A
 //! in the spec, §8/§9) pipes `ctx.content` to the script subprocess's stdin.
 //!

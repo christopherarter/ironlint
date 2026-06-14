@@ -27,7 +27,7 @@ impl DisableMap {
 
     /// True if any `hector-disable: <rule_id>` directive in the file matches
     /// `rule_id`, regardless of line. Used for violations with `line: None`
-    /// (file-level findings from `script:` / `semantic:` engines) so the
+    /// (file-level findings from `script:` rules) so the
     /// directive isn't silently ignored.
     pub fn is_disabled_file_wide(&self, rule_id: &str) -> bool {
         self.by_line
