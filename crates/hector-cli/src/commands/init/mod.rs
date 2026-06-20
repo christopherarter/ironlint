@@ -80,10 +80,10 @@ fn emit_rust_rules(out: &mut String, workspace: Option<&Workspace>, linters: Lin
     let scopes = scope_list_with_default(workspace, &[".rs"], "src/**/*.rs", "/**/*.rs");
     if linters.clippy {
         // Detected but not auto-scaffolded: `cargo clippy` is repo-wide
-        // (not per-file), so it belongs in a session rule rather than
-        // a per-edit script rule. Leave a breadcrumb for the user.
+        // (not per-file), so it fits CI or a pre-commit hook better than a
+        // per-edit hector rule. Leave a breadcrumb for the user.
         out.push_str(
-            "  # clippy.toml detected. `cargo clippy` is repo-wide; see\n  # docs/engines.md for adding it as a session rule.\n",
+            "  # clippy.toml detected. `cargo clippy` is repo-wide (not per-file);\n  # run it in CI or a pre-commit hook rather than a per-edit hector rule.\n",
         );
     }
     let _ = writeln!(

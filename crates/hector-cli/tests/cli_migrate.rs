@@ -189,8 +189,12 @@ fn migrate_errors_when_writing_hector_config_fails() {
     drop(assertion);
 }
 
+/// Migrate is engine-agnostic now: `semantic`/`session` rules pass through
+/// verbatim (no special-case stripping). Hector has zero knowledge of those
+/// engines, so the migrated config no longer loads — the user removes the
+/// rules by hand, guided by the `unknown variant` parse error.
 #[test]
-fn migrate_strips_semantic_and_session_rules_with_notice() {
+fn migrate_preserves_removed_engine_rules_and_output_fails_to_load() {
     let dir = tempdir().unwrap();
     fs::write(
         dir.path().join(".bully.yml"),
@@ -204,50 +208,56 @@ rules:
     severity: error
     script: "true"
   judge-me:
-    description: "llm rule"
+    description: "removed-engine rule"
     engine: semantic
-    scope: "**/*.ts"
-    severity: error
-  also-session:
-    description: "session rule"
-    engine: session
     scope: "**/*.ts"
     severity: error
 "#,
     )
     .unwrap();
-    let assert = Command::cargo_bin("hector")
+    let out = Command::cargo_bin("hector")
         .unwrap()
         .args(["migrate", "--dir", dir.path().to_str().unwrap()])
-        .assert()
-        .success();
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "migrate should succeed");
+    let migrate_stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !migrate_stderr.contains("dropped rule"),
+        "migrate no longer emits drop notices; got: {migrate_stderr}"
+    );
     let migrated = fs::read_to_string(dir.path().join(".hector.yml")).unwrap();
     assert!(migrated.contains("keep-me"), "script rule preserved");
-    assert!(!migrated.contains("judge-me"), "semantic rule dropped");
-    assert!(!migrated.contains("also-session"), "session rule dropped");
-    assert
-        .stderr(predicates::str::contains("dropped rule 'judge-me'"))
-        .stderr(predicates::str::contains("dropped rule 'also-session'"));
+    assert!(
+        migrated.contains("judge-me"),
+        "removed-engine rule passed through verbatim"
+    );
 
-    // Stronger than string-absence: the migrated config must actually LOAD.
-    // `validate` resolves through `parse_str`, which hard-rejects any surviving
-    // semantic/session rule, so trust + validate succeeding proves the strip was
-    // complete. Migrate doesn't sign its output, so trust it first.
+    // The migrated config no longer loads: `semantic` is an unknown engine.
+    // Migrate doesn't sign its output, so trust it first to reach the parser.
     let migrated_cfg = dir.path().join(".hector.yml");
     Command::cargo_bin("hector")
         .unwrap()
         .args(["trust", "--config", migrated_cfg.to_str().unwrap()])
         .assert()
         .success();
-    Command::cargo_bin("hector")
+    let validate = Command::cargo_bin("hector")
         .unwrap()
         .args(["validate", "--config", migrated_cfg.to_str().unwrap()])
-        .assert()
-        .success();
+        .output()
+        .unwrap();
+    assert_eq!(validate.status.code(), Some(1));
+    let validate_stderr = String::from_utf8_lossy(&validate.stderr);
+    assert!(
+        validate_stderr.contains("unknown variant") && validate_stderr.contains("semantic"),
+        "validate must reject the surviving semantic rule; got: {validate_stderr}"
+    );
 }
 
+/// Migrate no longer strips the top-level `llm:` block. It survives verbatim;
+/// the loader ignores unknown top-level keys, so the migrated config still loads.
 #[test]
-fn migrate_drops_top_level_llm_block_with_notice() {
+fn migrate_preserves_top_level_llm_block() {
     let dir = tempdir().unwrap();
     fs::write(
         dir.path().join(".bully.yml"),
@@ -266,16 +276,35 @@ rules:
 "#,
     )
     .unwrap();
-    let assert = Command::cargo_bin("hector")
+    let out = Command::cargo_bin("hector")
         .unwrap()
         .args(["migrate", "--dir", dir.path().to_str().unwrap()])
-        .assert()
-        .success();
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "migrate should succeed");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("dropped 'llm:'"),
+        "migrate no longer drops the llm block; got: {stderr}"
+    );
     let migrated = fs::read_to_string(dir.path().join(".hector.yml")).unwrap();
     assert!(migrated.contains("keep-me"), "script rule preserved");
     assert!(
-        !migrated.contains("provider: anthropic"),
-        "llm block dropped"
+        migrated.contains("provider: anthropic"),
+        "llm block passed through verbatim"
     );
-    assert.stderr(predicates::str::contains("dropped 'llm:' block"));
+
+    // The loader ignores unknown top-level keys, so the surviving `llm:` block
+    // does not stop the migrated config from loading.
+    let migrated_cfg = dir.path().join(".hector.yml");
+    Command::cargo_bin("hector")
+        .unwrap()
+        .args(["trust", "--config", migrated_cfg.to_str().unwrap()])
+        .assert()
+        .success();
+    Command::cargo_bin("hector")
+        .unwrap()
+        .args(["validate", "--config", migrated_cfg.to_str().unwrap()])
+        .assert()
+        .success();
 }

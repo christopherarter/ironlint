@@ -369,8 +369,8 @@ fn claude_hook_wired(settings: &serde_json::Value) -> bool {
 /// and "doctor never modifies state" is about *policy* state (configs,
 /// baselines, telemetry), not about the run-state directory itself.
 ///
-/// Also reports current sizes of `baseline.json`, `session.json`, and
-/// `log.jsonl` if present, so the human checklist surfaces "your
+/// Also reports current sizes of `baseline.json` and `log.jsonl` if
+/// present, so the human checklist surfaces "your
 /// telemetry log has grown to 200MB" without forcing the user to
 /// `du -sh .hector/`.
 fn check_runtime_state(ctx: &DoctorContext) -> CheckResult {
@@ -398,7 +398,7 @@ fn check_runtime_state(ctx: &DoctorContext) -> CheckResult {
     let _ = std::fs::remove_file(&probe);
 
     let mut sizes: Vec<String> = Vec::new();
-    for name in ["baseline.json", "session.json", "log.jsonl"] {
+    for name in ["baseline.json", "log.jsonl"] {
         if let Ok(meta) = std::fs::metadata(hector_dir.join(name)) {
             sizes.push(format!("{name}={}b", meta.len()));
         }

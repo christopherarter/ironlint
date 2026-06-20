@@ -74,7 +74,7 @@ Consumed by CI and editor adapters — do not break.
 
 ## Conventions
 
-- New engines plug in via the `EngineKind` enum + a match arm in `runner::run_engine`. The `script` and `ast` arms route to real engines; `semantic`/`session` remain as parse-only variants rejected at load (kept so old configs get a curated error). Don't smuggle new logic into an existing arm.
+- New engines plug in via the `EngineKind` enum (`script`, `ast`) + a match arm in `runner::run_engine`. `EngineKind` is matched exhaustively (no wildcard arm), so adding a variant fails to compile until every site handles it. Configs naming any other engine — including the removed `semantic`/`session` — are rejected by serde at parse time as an unknown variant. Don't smuggle new logic into an existing arm.
 - Test fixtures live in `tests/fixtures/` at the repo root; crate tests use relative paths.
 - `Cargo.lock` is gitignored (workspace policy) — do not commit.
 - Binary is `hector`, not `hector-cli`.

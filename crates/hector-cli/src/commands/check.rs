@@ -156,8 +156,6 @@ fn print_explain(rows: &[RuleExplain]) {
         let engine_name = match row.engine {
             hector_core::config::EngineKind::Script => "script",
             hector_core::config::EngineKind::Ast => "ast",
-            hector_core::config::EngineKind::Semantic => "semantic",
-            hector_core::config::EngineKind::Session => "session",
         };
         eprintln!("{} {} {}", row.rule_id, engine_name, outcome);
     }

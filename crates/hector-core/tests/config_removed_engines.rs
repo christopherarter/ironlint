@@ -6,7 +6,7 @@ fn cfg_with_engine(engine: &str) -> String {
 schema_version: 2
 rules:
   judge-me:
-    description: "llm-judged rule"
+    description: "removed-engine rule"
     engine: {engine}
     scope: "**/*.ts"
     severity: error
@@ -14,23 +14,21 @@ rules:
     )
 }
 
+// The `semantic`/`session` engines were removed entirely in 0.2; `EngineKind`
+// only knows `script` and `ast`, so serde rejects the old values at parse with
+// an `unknown variant` error. (The CLI renders the full chain via `{:#}`.)
 #[test]
-fn semantic_rule_is_rejected_with_curated_error() {
-    let err = parse_str(&cfg_with_engine("semantic"))
-        .unwrap_err()
-        .to_string();
-    assert!(err.contains("rule 'judge-me'"), "got: {err}");
-    assert!(err.contains("engine 'semantic' was removed"), "got: {err}");
-    assert!(err.contains("script or ast"), "got: {err}");
+fn semantic_rule_is_rejected_as_unknown_variant() {
+    let err = format!("{:#}", parse_str(&cfg_with_engine("semantic")).unwrap_err());
+    assert!(err.contains("unknown variant"), "got: {err}");
+    assert!(err.contains("semantic"), "got: {err}");
 }
 
 #[test]
-fn session_rule_is_rejected_with_curated_error() {
-    let err = parse_str(&cfg_with_engine("session"))
-        .unwrap_err()
-        .to_string();
-    assert!(err.contains("rule 'judge-me'"), "got: {err}");
-    assert!(err.contains("engine 'session' was removed"), "got: {err}");
+fn session_rule_is_rejected_as_unknown_variant() {
+    let err = format!("{:#}", parse_str(&cfg_with_engine("session")).unwrap_err());
+    assert!(err.contains("unknown variant"), "got: {err}");
+    assert!(err.contains("session"), "got: {err}");
 }
 
 #[test]

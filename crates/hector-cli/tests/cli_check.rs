@@ -265,13 +265,13 @@ fn check_skips_cargo_lock_with_default_config() {
 /// `check` must surface the parse-time error (exit 1) for removed engines.
 /// The config is trusted first so the parse error — not a trust error — surfaces.
 #[test]
-fn check_rejects_semantic_engine_with_curated_error() {
+fn check_rejects_removed_semantic_engine() {
     let dir = tempdir().unwrap();
     let file = dir.path().join("ok.ts");
     std::fs::write(&file, "const x = 1;\n").unwrap();
     let cfg = write_trusted(
         dir.path(),
-        "schema_version: 2\nrules:\n  judge-me:\n    description: \"llm rule\"\n    engine: semantic\n    scope: [\"**/*.ts\"]\n    severity: error\n",
+        "schema_version: 2\nrules:\n  judge-me:\n    description: \"removed-engine rule\"\n    engine: semantic\n    scope: [\"**/*.ts\"]\n    severity: error\n",
     );
     let out = Command::cargo_bin("hector")
         .unwrap()
@@ -287,7 +287,7 @@ fn check_rejects_semantic_engine_with_curated_error() {
     assert_eq!(out.status.code(), Some(1), "semantic engine must exit 1");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("engine 'semantic' was removed"),
-        "stderr must carry curated error; got: {stderr}"
+        stderr.contains("unknown variant") && stderr.contains("semantic"),
+        "stderr must reject the removed engine as an unknown variant; got: {stderr}"
     );
 }

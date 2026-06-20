@@ -84,7 +84,7 @@ fn init_template_preserves_grep_error_exit_codes() {
 // ---------------------------------------------------------------------
 
 /// Single-package npm project with no linter configured: scopes default to
-/// `src/**/*.<ext>` plus the commented LLM block.
+/// `src/**/*.<ext>`.
 #[test]
 fn init_single_package_npm_no_linter() {
     let dir = tempdir().unwrap();
@@ -242,7 +242,7 @@ fn init_python_with_ruff_keeps_template() {
     assert!(cfg.contains("**/*.py"));
 }
 
-/// Unknown stack (no manifest): generic template plus the LLM comment block.
+/// Unknown stack (no manifest): generic template.
 #[test]
 fn init_unknown_stack_uses_generic_template() {
     let dir = tempdir().unwrap();

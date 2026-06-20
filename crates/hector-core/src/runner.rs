@@ -14,25 +14,14 @@ fn engine_kind_to_verdict_engine(kind: EngineKind) -> crate::verdict::Engine {
     match kind {
         EngineKind::Script => crate::verdict::Engine::Script,
         EngineKind::Ast => crate::verdict::Engine::Ast,
-        // Parse-only variants rejected by `parse_str`; `Internal` is the safe
-        // fallback rather than a panic if one is ever constructed directly.
-        EngineKind::Semantic | EngineKind::Session => crate::verdict::Engine::Internal,
     }
 }
 
 /// Dispatch a single rule to its engine.
-///
-/// The `Semantic`/`Session` arms are defensive: configs carrying those
-/// engines are rejected at parse time (`config::parser::parse_str`), so a
-/// value reaching here means a `Rule` was constructed directly, bypassing
-/// the loader. Erroring rather than silently passing keeps that bug loud.
 fn run_engine(engine: EngineKind, ctx: &RuleContext) -> Result<Vec<Violation>> {
     match engine {
         EngineKind::Script => crate::engine::script::ScriptEngine.run(ctx),
         EngineKind::Ast => crate::engine::ast::AstEngine.run(ctx),
-        EngineKind::Semantic | EngineKind::Session => Err(anyhow::anyhow!(
-            "engine removed in hector 0.2; configs containing it are rejected at load"
-        )),
     }
 }
 
@@ -757,7 +746,7 @@ impl HectorEngine {
     /// `content_authoritative` distinguishes "caller supplied this content"
     /// (file mode — even an empty string is a real target) from "we read it
     /// off disk and the read failed" (diff mode). A failed read yields
-    /// `false` so AST/semantic engines surface `__internal` rather than
+    /// `false` so the AST engine surfaces `__internal` rather than
     /// silently passing on missing content.
     fn resolve_check_input(&self, input: CheckInput, start: Instant) -> InputResolution {
         match input {
@@ -789,7 +778,7 @@ impl HectorEngine {
             },
             CheckInput::Diff { file, unified_diff } => {
                 // Diff mode runs after the agent's edit has landed, so the
-                // on-disk read is the post-edit content AST/semantic rules
+                // on-disk read is the post-edit content AST rules
                 // and disable directives need.
                 let resolved = self.resolve_input_path(&file).unwrap_or_else(|e| {
                     eprintln!(
@@ -1014,65 +1003,5 @@ impl HectorEngine {
             verdict,
             explain: dispatch.explain,
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{run_engine, RuleContext};
-    use crate::config::{EngineKind, OutputMode, Rule, Severity};
-    use std::path::Path;
-
-    fn rule_with_engine(engine: EngineKind) -> Rule {
-        Rule {
-            description: "x".into(),
-            engine,
-            scope: vec!["*".into()],
-            severity: Severity::Error,
-            script: None,
-            pattern: None,
-            language: None,
-            capabilities: None,
-            fix_hint: None,
-            output: OutputMode::default(),
-        }
-    }
-
-    /// The `semantic`/`session` engines were removed in 0.2; configs carrying
-    /// them are rejected at parse (`config::parser::parse_str`). The dispatch
-    /// arm in `run_engine` is the defensive backstop: if such a rule is ever
-    /// constructed directly and reaches dispatch, it must error rather than
-    /// silently pass.
-    #[test]
-    fn removed_engines_error_at_dispatch() {
-        for engine in [EngineKind::Semantic, EngineKind::Session] {
-            let rule = rule_with_engine(engine);
-            let ctx = RuleContext {
-                rule_id: "judge-me",
-                rule: &rule,
-                file: Path::new("foo.ts"),
-                content: Some("x"),
-                diff: None,
-                cwd: Path::new("."),
-            };
-            let err = run_engine(engine, &ctx).unwrap_err().to_string();
-            assert!(err.contains("engine removed in hector 0.2"), "got: {err}");
-        }
-    }
-
-    /// The parse-only `Semantic`/`Session` variants map to `Engine::Internal`
-    /// for the telemetry tag — a defensive fallback, since `parse_str` rejects
-    /// them before they ever reach a verdict.
-    #[test]
-    fn removed_engines_map_to_internal_verdict_engine() {
-        use crate::verdict::Engine;
-        assert_eq!(
-            super::engine_kind_to_verdict_engine(EngineKind::Semantic),
-            Engine::Internal
-        );
-        assert_eq!(
-            super::engine_kind_to_verdict_engine(EngineKind::Session),
-            Engine::Internal
-        );
     }
 }

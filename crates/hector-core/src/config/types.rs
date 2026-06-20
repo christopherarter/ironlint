@@ -91,14 +91,6 @@ pub enum OutputMode {
 pub enum EngineKind {
     Script,
     Ast,
-    /// Parse-only. LLM evaluation was removed in 0.2. These variants exist
-    /// solely so `parse_str` can reject old configs with a curated,
-    /// rule-ID-bearing error instead of serde's generic unknown-variant
-    /// failure. No `EngineKind` value holding them survives `parse_str`.
-    #[doc(hidden)]
-    Semantic,
-    #[doc(hidden)]
-    Session,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

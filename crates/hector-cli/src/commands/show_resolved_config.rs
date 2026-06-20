@@ -115,8 +115,6 @@ fn engine_kind_str(k: hector_core::config::EngineKind) -> &'static str {
     match k {
         hector_core::config::EngineKind::Script => "script",
         hector_core::config::EngineKind::Ast => "ast",
-        hector_core::config::EngineKind::Semantic => "semantic",
-        hector_core::config::EngineKind::Session => "session",
     }
 }
 
