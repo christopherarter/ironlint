@@ -119,6 +119,15 @@ impl Collected {
                 ExplainOutcome::Pass
             }
             GateStatus::Block(message, elapsed) => {
+                // Spec §3: a gate that exits 2 with no output still needs a
+                // human-readable message. The gate layer (`classify`) has no
+                // gate id, so it returns ""; we fill it in here where the id
+                // is known.
+                let message = if message.is_empty() {
+                    format!("{gate_id} blocked")
+                } else {
+                    message
+                };
                 self.blocks.push(Block {
                     gate: gate_id.to_string(),
                     file: file.to_string(),
@@ -558,6 +567,26 @@ mod gate_dispatch_tests {
             .unwrap();
         assert_eq!(v.status, Status::InternalError);
         assert_eq!(v.errors[0].reason, "not_found");
+    }
+
+    #[test]
+    fn block_with_no_output_uses_gate_id_message() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            ".hector.yml",
+            "gates:\n  no-todo:\n    files: \"**/*.rs\"\n    run: \"exit 2\"\n",
+        );
+        let target = write(dir.path(), "a.rs", "x\n");
+        let engine = HectorEngine::load(&dir.path().join(".hector.yml")).unwrap();
+        let v = engine
+            .check(CheckInput::File {
+                path: target,
+                content: "x\n".into(),
+            })
+            .unwrap();
+        assert_eq!(v.status, Status::Block);
+        assert_eq!(v.blocks[0].message, "no-todo blocked");
     }
 
     #[test]
