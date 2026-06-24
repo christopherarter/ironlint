@@ -32,7 +32,7 @@ Notable changes to Hector, newest first. In-flight work lives in `plans/`.
 ### Changed
 
 - `hector init` success message now advises `hector check --file <path>`
-  instead of the no-op `hector trust`.
+  after scaffolding (init auto-blesses, so no separate `hector trust` is needed).
 - `Explain` subcommand help reworded to gates vocabulary.
 - `ExecutionConfig.max_workers` removed (dispatch is sequential; only
   `timeout_secs` is used). Configs that set `execution.max_workers` continue
