@@ -30,7 +30,7 @@ fn collect_into(root: &Path, dir: &Path, out: &mut Vec<(String, Vec<u8>)>) -> Re
         } else {
             let rel = path
                 .strip_prefix(root)
-                .unwrap_or(&path)
+                .expect("walked path must live under the gates root")
                 .components()
                 .map(|c| c.as_os_str().to_string_lossy())
                 .collect::<Vec<_>>()
@@ -126,17 +126,29 @@ mod tests {
     }
 
     #[test]
-    fn hash_is_independent_of_filesystem_enumeration_order() {
-        // Two gate files; the hash must fold them in sorted-relative-path order,
-        // not in whatever order the OS yields. Assert by recomputing — stable.
+    fn hash_folds_gate_files_in_sorted_order() {
+        // compute_hash must fold gate files in sorted-relative-path order,
+        // independent of OS enumeration order. We pin the exact scheme by
+        // recomputing the expected digest with the files folded in sorted
+        // order using the impl's own framing helper. This fails if the impl
+        // ever stops sorting (the `out.sort_by` in collect_gate_files) — on a
+        // filesystem whose read_dir yields b before a — or if the hashing
+        // frame (labels / length prefixes) changes, which doubles as a
+        // regression lock on the stored-hash encoding.
         let dir = tempfile::tempdir().unwrap();
         let cfg = dir.path().join(".hector.yml");
-        write(&cfg, "gates:\n  g:\n    files: \"*\"\n    run: \"true\"\n");
+        let cfg_body = "gates:\n  g:\n    files: \"*\"\n    run: \"true\"\n";
+        write(&cfg, cfg_body);
         write(&dir.path().join(".hector/gates/a.sh"), "a\n");
         write(&dir.path().join(".hector/gates/b.sh"), "b\n");
-        let first = compute_hash(&cfg).unwrap();
-        let second = compute_hash(&cfg).unwrap();
-        assert_eq!(first, second);
+
+        let mut expected = Sha256::new();
+        hash_entry(&mut expected, "config", cfg_body.as_bytes());
+        hash_entry(&mut expected, "gates/a.sh", b"a\n");
+        hash_entry(&mut expected, "gates/b.sh", b"b\n");
+        let want = format!("sha256:{:x}", expected.finalize());
+
+        assert_eq!(compute_hash(&cfg).unwrap(), want);
     }
 
     #[test]
