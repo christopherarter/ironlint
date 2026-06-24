@@ -18,6 +18,10 @@ pub fn run(
     explain: bool,
     allow_external_paths: bool,
 ) -> Result<i32> {
+    // Trust gate: refuse an unblessed or tampered config/gates before the engine
+    // loads or any gate runs. This hashes the config + `.hector/gates/` now; a
+    // write between here and gate execution is a known, accepted TOCTOU window
+    // (the direnv-model limitation — no file locking in 0.3).
     if let Err(e) = hector_core::trust::ensure_trusted(config) {
         eprintln!("ERROR: {e:#}");
         return Ok(1);

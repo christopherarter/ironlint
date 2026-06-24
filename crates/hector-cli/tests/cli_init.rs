@@ -469,8 +469,11 @@ fn init_auto_blesses_so_check_is_trusted() {
         .arg(&target)
         .assert();
     let code = out.get_output().status.code().unwrap();
-    assert_ne!(
-        code, 1,
-        "init-blessed config must not be rejected as untrusted"
+    // Must be a real verdict — pass (0) or block (2) — never untrusted (1) and
+    // never a crashed gate (3). `!= 1` alone would pass on an exit-3 regression.
+    assert!(
+        matches!(code, 0 | 2),
+        "init-blessed config must run to a real verdict (0 or 2), not be \
+         rejected as untrusted (1) or crash a gate (3); got {code}"
     );
 }
