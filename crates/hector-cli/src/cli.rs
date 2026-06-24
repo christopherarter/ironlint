@@ -51,7 +51,7 @@ pub enum Command {
         #[arg(long, default_value_t = false)]
         allow_external_paths: bool,
     },
-    /// Compute the trust fingerprint and write it to the config.
+    /// Bless this config + its `.hector/gates/` scripts in the out-of-repo trust store.
     Trust {
         #[arg(long, default_value = ".hector.yml")]
         config: PathBuf,
