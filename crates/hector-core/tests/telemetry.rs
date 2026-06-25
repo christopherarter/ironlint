@@ -52,5 +52,9 @@ fn malformed_line_is_dropped_and_good_lines_survive() {
     append(&log, &entry).unwrap();
 
     let back = read_all(&log).unwrap();
-    assert_eq!(back.len(), 2, "two good entries survive; corrupt line dropped");
+    assert_eq!(
+        back.len(),
+        2,
+        "two good entries survive; corrupt line dropped"
+    );
 }

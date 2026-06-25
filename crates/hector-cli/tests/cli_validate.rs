@@ -44,7 +44,10 @@ fn validate_accepts_multi_gate_config() {
         .stdout
         .clone();
     let s = String::from_utf8_lossy(&out);
-    assert!(s.contains("2 gate(s)") || s.contains("2 gate"), "validate must print gate count: {s}");
+    assert!(
+        s.contains("2 gate(s)") || s.contains("2 gate"),
+        "validate must print gate count: {s}"
+    );
 }
 
 #[test]

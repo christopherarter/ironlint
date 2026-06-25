@@ -198,7 +198,10 @@ fn doctor_json_output_is_valid_for_clean_gates_config() {
     let v: serde_json::Value =
         serde_json::from_slice(&out).expect("doctor --format json must produce valid JSON");
     // Top-level fields present.
-    assert!(v.get("hector_version").is_some(), "must have hector_version");
+    assert!(
+        v.get("hector_version").is_some(),
+        "must have hector_version"
+    );
     assert!(v.get("checks").is_some(), "must have checks array");
     let checks = v["checks"].as_array().unwrap();
     // Expect 5 checks in gates model: binary, adapter, config, parses, gate_scripts.

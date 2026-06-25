@@ -187,7 +187,8 @@ fn check_gate_scripts(ctx: &DoctorContext) -> CheckResult {
             status: Status::Fail,
             detail: format!("missing/non-executable gate script(s): {}", bad.join("; ")),
             remediation: Some(
-                "ensure gate scripts exist under .hector/gates/ and are executable (chmod +x)".into(),
+                "ensure gate scripts exist under .hector/gates/ and are executable (chmod +x)"
+                    .into(),
             ),
         }
     }

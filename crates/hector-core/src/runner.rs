@@ -469,7 +469,12 @@ impl HectorEngine {
             collected.passed,
             elapsed,
         );
-        self.append_check_log(&file_str, verdict.status, verdict.elapsed_ms, collected.records);
+        self.append_check_log(
+            &file_str,
+            verdict.status,
+            verdict.elapsed_ms,
+            collected.records,
+        );
 
         Ok(CheckReport {
             verdict,

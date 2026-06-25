@@ -28,18 +28,12 @@ fn show_resolved_config_prints_gate_id_files_run() {
         .clone();
     let stdout = String::from_utf8_lossy(&out);
 
-    assert!(
-        stdout.contains("no-todo"),
-        "must print gate id: {stdout}"
-    );
+    assert!(stdout.contains("no-todo"), "must print gate id: {stdout}");
     assert!(
         stdout.contains("files:"),
         "must print files: field: {stdout}"
     );
-    assert!(
-        stdout.contains("run:"),
-        "must print run: field: {stdout}"
-    );
+    assert!(stdout.contains("run:"), "must print run: field: {stdout}");
     assert!(
         stdout.contains("(from"),
         "must print origin path with (from ...): {stdout}"

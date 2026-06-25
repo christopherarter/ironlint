@@ -8,9 +8,11 @@
 /// `gate_id`. File-wide: gates produce one verdict per file, so a directive
 /// anywhere in the file suppresses the gate.
 pub fn is_disabled(content: &str, gate_id: &str) -> bool {
-    content
-        .lines()
-        .any(|line| parse_disable_directives(line).iter().any(|id| id == gate_id))
+    content.lines().any(|line| {
+        parse_disable_directives(line)
+            .iter()
+            .any(|id| id == gate_id)
+    })
 }
 
 fn parse_disable_directives(line: &str) -> Vec<String> {
@@ -89,15 +91,27 @@ mod tests {
 
     #[test]
     fn preserves_namespaced_gate_ids() {
-        assert!(is_disabled("x // hector-disable: python/no-print\n", "python/no-print"));
-        assert!(!is_disabled("x // hector-disable: python/no-print\n", "python"));
+        assert!(is_disabled(
+            "x // hector-disable: python/no-print\n",
+            "python/no-print"
+        ));
+        assert!(!is_disabled(
+            "x // hector-disable: python/no-print\n",
+            "python"
+        ));
     }
 
     #[test]
     fn stops_at_block_comment_close_and_reason() {
         assert!(is_disabled("x /* hector-disable: g1 */\n", "g1"));
-        assert!(is_disabled("x // hector-disable: g1 reason: legacy\n", "g1"));
-        assert!(!is_disabled("x // hector-disable: g1 reason: legacy\n", "reason:"));
+        assert!(is_disabled(
+            "x // hector-disable: g1 reason: legacy\n",
+            "g1"
+        ));
+        assert!(!is_disabled(
+            "x // hector-disable: g1 reason: legacy\n",
+            "reason:"
+        ));
     }
 
     #[test]

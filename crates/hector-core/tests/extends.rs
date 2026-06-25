@@ -19,7 +19,10 @@ fn extends_inherits_gates_from_parent() {
         "extends: [\"parent.yml\"]\ngates:\n  child-gate:\n    files: \"**/*.rs\"\n    run: \"exit 0\"\n",
     );
     let cfg = parse_file_with_extends(&child).expect("parse");
-    assert!(cfg.gates.contains_key("base-gate"), "inherited gate present");
+    assert!(
+        cfg.gates.contains_key("base-gate"),
+        "inherited gate present"
+    );
     assert!(cfg.gates.contains_key("child-gate"), "local gate present");
 }
 

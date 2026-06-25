@@ -232,7 +232,10 @@ mod tests {
             None,
             Duration::from_millis(200),
         );
-        assert!(matches!(out, GateOutcome::Internal(InternalReason::Timeout)));
+        assert!(matches!(
+            out,
+            GateOutcome::Internal(InternalReason::Timeout)
+        ));
     }
 
     #[test]
