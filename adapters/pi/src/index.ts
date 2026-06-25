@@ -155,6 +155,26 @@ function failOpenOrClosed(
   return undefined
 }
 
+/**
+ * Translate a `hector check --format json` verdict into the user-facing block
+ * reason pi surfaces. The CLI prints a Verdict JSON (schema_version 4) on
+ * stdout; the human message lives in `blocks[].message` — surfacing raw stdout
+ * would dump the whole JSON blob at the user. Falls back to a generic string
+ * if stdout is not the expected JSON or carries no message.
+ */
+export function blockReason(stdout: string): string {
+  try {
+    const verdict = JSON.parse(stdout) as { blocks?: Array<{ message?: unknown }> }
+    const messages = (verdict.blocks ?? [])
+      .map((b) => b?.message)
+      .filter((m): m is string => typeof m === "string" && m.length > 0)
+    if (messages.length > 0) return messages.join("\n")
+  } catch {
+    // Not the expected JSON (e.g. a future format change) — fall through.
+  }
+  return "policy violation"
+}
+
 /** Minimal structural view of the pi extension API the adapter relies on. */
 export interface PiExtensionAPI {
   on(event: string, handler: (event: never, ctx?: never) => unknown): void
@@ -202,7 +222,7 @@ export default function hectorExtension(pi: PiExtensionAPI): void {
     )
     if (res.exitCode === 0) return // pass/warn -> allow
     if (res.exitCode === 2) {
-      return { block: true, reason: res.stdout.trim() || "rule violation" }
+      return { block: true, reason: blockReason(res.stdout) }
     }
     if (res.exitCode === 3) {
       return failOpenOrClosed("check", res.stderr.trim())

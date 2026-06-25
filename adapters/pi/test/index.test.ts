@@ -1,11 +1,11 @@
-import { test } from "node:test"
+import { test, after } from "node:test"
 import assert from "node:assert/strict"
-import { normalizeEdits } from "../src/index.ts"
+import { normalizeEdits, blockReason } from "../src/index.ts"
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, chmodSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, delimiter } from "node:path"
-import { computeProposedContent } from "../src/index.ts"
 import { execFileSync } from "node:child_process"
+import { computeProposedContent } from "../src/index.ts"
 import hectorExtension from "../src/index.ts"
 
 // --- normalizeEdits -------------------------------------------------------
@@ -43,6 +43,35 @@ test("normalizeEdits: edits[] with a non-string member returns null", () => {
 
 test("normalizeEdits: empty edits[] returns null", () => {
   assert.equal(normalizeEdits({ edits: [] }), null)
+})
+
+// --- blockReason ----------------------------------------------------------
+
+test("blockReason: extracts the message from a json verdict", () => {
+  const json = JSON.stringify({
+    status: "block",
+    blocks: [{ gate: "no-panic", file: "f.rs", message: "no panics in source" }],
+  })
+  assert.equal(blockReason(json), "no panics in source")
+})
+
+test("blockReason: joins multiple block messages with newlines", () => {
+  const json = JSON.stringify({ blocks: [{ message: "first" }, { message: "second" }] })
+  assert.equal(blockReason(json), "first\nsecond")
+})
+
+test("blockReason: non-json stdout falls back to a generic reason", () => {
+  assert.equal(blockReason("panic! detected\n"), "policy violation")
+})
+
+test("blockReason: a json verdict with no block messages falls back", () => {
+  assert.equal(blockReason(JSON.stringify({ blocks: [] })), "policy violation")
+})
+
+test("blockReason: a non-string message is filtered out, not coerced", () => {
+  // Guards the `typeof m === "string"` predicate: a malformed verdict must not
+  // surface `42` (or `"undefined"`) as the reason — it falls back instead.
+  assert.equal(blockReason(JSON.stringify({ blocks: [{ message: 42 }] })), "policy violation")
 })
 
 // --- computeProposedContent -----------------------------------------------
@@ -154,22 +183,37 @@ function loadExtension(root: string): Record<string, Handler> {
   return handlers
 }
 
-const HECTOR_YML = `schema_version: 2
-rules:
+// Gates-format (0.3) policy: one gate that greps the proposed content (piped on
+// stdin per the ABI) for `panic!` and blocks (exit 2) with a message on stdout.
+const HECTOR_YML = `gates:
   no-panic:
-    description: "no panics in source"
-    engine: ast
-    language: rust
-    scope: ["src/**/*.rs"]
-    severity: error
-    pattern: "panic!($$$)"
+    files: "*.rs"
+    run: 'if grep -q "panic!" ; then echo "no panics in source"; exit 2; fi'
 `
+
+// Plan 2 enforces trust at `check`: an unblessed config fails closed (exit 1).
+// Point XDG_CONFIG_HOME at one ephemeral store for the whole file so blessing
+// (execFileSync) and the adapter's own `hector check` (spawnSync — both inherit
+// process.env) share it, and the real ~/.config/hector/trust.json is untouched.
+const TRUST_STORE = mkdtempSync(join(tmpdir(), "hector-pi-xdg-"))
+const PRIOR_XDG = process.env["XDG_CONFIG_HOME"]
+process.env["XDG_CONFIG_HOME"] = TRUST_STORE
+after(() => {
+  if (PRIOR_XDG === undefined) delete process.env["XDG_CONFIG_HOME"]
+  else process.env["XDG_CONFIG_HOME"] = PRIOR_XDG
+  rmSync(TRUST_STORE, { recursive: true, force: true })
+})
+
+/** Bless `config` in the ephemeral trust store so `check` runs to a verdict. */
+function bless(config: string): void {
+  execFileSync("hector", ["trust", "--config", config])
+}
 
 function makeProject(): string {
   const dir = mkdtempSync(join(tmpdir(), "hector-pi-proj-"))
   mkdirSync(join(dir, "src"), { recursive: true })
   writeFileSync(join(dir, ".hector.yml"), HECTOR_YML)
-  execFileSync("hector", ["trust", "--config", join(dir, ".hector.yml")])
+  bless(join(dir, ".hector.yml"))
   return dir
 }
 
@@ -202,6 +246,25 @@ test("tool_call: write introducing panic blocks", () => {
     assert.equal(result?.block, true)
     assert.ok(typeof result?.reason === "string" && result.reason.length > 0)
     assert.equal(existsSync(file), false)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("tool_call: block reason is the gate message, not the raw JSON verdict", () => {
+  const dir = makeProject()
+  try {
+    const file = join(dir, "src", "reason.rs")
+    const handlers = loadExtension(dir)
+    const result = handlers.tool_call!(
+      { toolName: "write", input: { path: file, content: "fn b() { panic!(); }\n" } },
+      {},
+    ) as { block?: boolean; reason?: string } | undefined
+    assert.equal(result?.block, true)
+    // pi surfaces `reason` verbatim to the user — it must be the gate's stdout
+    // message, not the `--format json` Verdict blob the CLI prints.
+    assert.equal(result?.reason, "no panics in source")
+    assert.ok(!result?.reason?.includes("schema_version"))
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
@@ -348,9 +411,9 @@ test("tool_call: gate activates after .hector.yml is created mid-session", () =>
       ),
       undefined,
     )
-    // Create + trust the config, re-invoke the SAME handler closure.
+    // Create + bless the config, re-invoke the SAME handler closure.
     writeFileSync(join(dir, ".hector.yml"), HECTOR_YML)
-    execFileSync("hector", ["trust", "--config", join(dir, ".hector.yml")])
+    bless(join(dir, ".hector.yml"))
     const result = handlers.tool_call!(
       { toolName: "write", input: { path: file, content: "fn b() { panic!(); }\n" } },
       {},
@@ -362,8 +425,9 @@ test("tool_call: gate activates after .hector.yml is created mid-session", () =>
 })
 
 test("tool_call: .hector.yml self-edit short-circuits (R3) — no hector invocation", () => {
-  // Break the trust hash so ANY hector check would log an internal error.
-  // A clean run proves the basename short-circuit fired before any check.
+  // Write a deliberately invalid config so ANY real hector invocation would
+  // exit non-zero and the adapter would log an "internal error". A clean run
+  // (no such log) proves the basename short-circuit fired before hector ran.
   const dir = mkdtempSync(join(tmpdir(), "hector-pi-policy-"))
   const errs: string[] = []
   const origErr = console.error
@@ -371,13 +435,7 @@ test("tool_call: .hector.yml self-edit short-circuits (R3) — no hector invocat
     errs.push(args.map(String).join(" "))
   }
   try {
-    writeFileSync(join(dir, ".hector.yml"), HECTOR_YML)
-    execFileSync("hector", ["trust", "--config", join(dir, ".hector.yml")])
-    const current = readFileSync(join(dir, ".hector.yml"), "utf8")
-    writeFileSync(
-      join(dir, ".hector.yml"),
-      current.replace(/sha256:[0-9a-f]+/, "sha256:" + "0".repeat(64)),
-    )
+    writeFileSync(join(dir, ".hector.yml"), "gates: [unterminated\n")
     const handlers = loadExtension(dir)
     const file = join(dir, ".hector.yml")
     assert.equal(
