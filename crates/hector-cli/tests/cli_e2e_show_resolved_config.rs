@@ -1,15 +1,14 @@
 //! End-to-end coverage for `hector show-resolved-config` (gates model).
 //!
-//! Output format (from show_resolved_config.rs):
-//!   <gate-id>  (from <origin-path>)
-//!     files: <comma-joined globs>
-//!     run: <run>
+//! Default output format (from show_resolved_config.rs) is TSV — one
+//! tab-separated row per gate:
+//!   gate_id<TAB>origin<TAB>files(comma-joined)<TAB>run
 
 use assert_cmd::Command;
 use tempfile::tempdir;
 
 #[test]
-fn show_resolved_config_prints_gate_id_files_run() {
+fn show_resolved_config_default_tsv_row_per_gate() {
     let dir = tempdir().unwrap();
     let cfg = dir.path().join(".hector.yml");
     std::fs::write(
@@ -28,19 +27,28 @@ fn show_resolved_config_prints_gate_id_files_run() {
         .clone();
     let stdout = String::from_utf8_lossy(&out);
 
-    assert!(stdout.contains("no-todo"), "must print gate id: {stdout}");
-    assert!(
-        stdout.contains("files:"),
-        "must print files: field: {stdout}"
+    let line = stdout
+        .lines()
+        .find(|l| l.starts_with("no-todo"))
+        .expect("default format must emit a TSV row for no-todo");
+    let cols: Vec<&str> = line.split('\t').collect();
+    assert_eq!(
+        cols.len(),
+        4,
+        "TSV row must be 4 tab-separated columns: {line:?}"
     );
-    assert!(stdout.contains("run:"), "must print run: field: {stdout}");
+    assert_eq!(cols[0], "no-todo", "col 1 is the gate id");
     assert!(
-        stdout.contains("(from"),
-        "must print origin path with (from ...): {stdout}"
+        cols[1].contains(".hector.yml"),
+        "col 2 (origin) must reference the config file: {line:?}"
+    );
+    assert_eq!(
+        cols[2], "*.rs,*.txt",
+        "col 3 is the comma-joined files glob: {line:?}"
     );
     assert!(
-        stdout.contains(".hector.yml"),
-        "origin must reference the config file: {stdout}"
+        cols[3].contains("grep -q TODO"),
+        "col 4 is the run command: {line:?}"
     );
 }
 
