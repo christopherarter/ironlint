@@ -45,20 +45,55 @@ fn collect_into(root: &Path, dir: &Path, out: &mut Vec<(String, Vec<u8>)>) -> Re
     Ok(())
 }
 
-/// Compute the trust hash of a config: sha256 over the config file bytes plus
-/// every file under `<config-dir>/.hector/gates/` (sorted by relative path).
-/// Returns `"sha256:<hex>"`.
+/// Compute the trust hash of a config over its **entire `extends:` closure**.
+///
+/// Sha256 over every config file reachable from `config_path` (the root plus
+/// every transitively-extended file) plus every file under each participating
+/// config dir's `.hector/gates/`. Returns `"sha256:<hex>"`.
+///
+/// Folding only the root config would let a blessed child that `extends:` a base
+/// have that base — or the base's gate scripts — swapped under it without
+/// invalidating the hash. Every blob is folded with [`hash_entry`]'s
+/// length-prefixed framing and a label bound to the blob's identity (its
+/// canonical config path, or its gates dir + relative path), so neither
+/// reordering nor relabeling can produce a collision. A no-`extends:` config
+/// resolves to a one-element closure and keeps its prior behaviour: its own
+/// edits, and edits to its own gate scripts, still revoke trust.
 pub fn compute_hash(config_path: &Path) -> Result<String> {
     let mut hasher = Sha256::new();
-    let cfg_bytes =
-        std::fs::read(config_path).with_context(|| format!("reading {}", config_path.display()))?;
-    hash_entry(&mut hasher, "config", &cfg_bytes);
 
-    let config_dir = config_path.parent().unwrap_or_else(|| Path::new("."));
-    let gates_dir = config_dir.join(".hector").join("gates");
-    if gates_dir.is_dir() {
-        for (rel, bytes) in collect_gate_files(&gates_dir)? {
-            hash_entry(&mut hasher, &format!("gates/{rel}"), &bytes);
+    let config_paths = crate::config::extends::resolve_paths(config_path)
+        .with_context(|| format!("resolving extends closure for {}", config_path.display()))?;
+
+    // Fold each config file, keyed by its canonical path.
+    for path in &config_paths {
+        let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+        hash_entry(&mut hasher, &format!("config\0{}", path.display()), &bytes);
+    }
+
+    // Fold gate scripts under each distinct participating config dir's
+    // `.hector/gates/`. Dedup so a shared dir is never double-folded.
+    let mut gate_dirs: Vec<PathBuf> = config_paths
+        .iter()
+        .map(|p| {
+            p.parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join(".hector")
+                .join("gates")
+        })
+        .collect();
+    gate_dirs.sort();
+    gate_dirs.dedup();
+
+    for gates_dir in &gate_dirs {
+        if gates_dir.is_dir() {
+            for (rel, bytes) in collect_gate_files(gates_dir)? {
+                hash_entry(
+                    &mut hasher,
+                    &format!("gates\0{}\0{rel}", gates_dir.display()),
+                    &bytes,
+                );
+            }
         }
     }
     Ok(format!("sha256:{:x}", hasher.finalize()))
@@ -157,9 +192,11 @@ pub fn ensure_trusted_in(config_path: &Path, store_path: &Path) -> Result<()> {
 }
 
 /// Recompute the hash of `config_path` and write it to the store as blessed.
-/// Parse-validates the config first so a broken config is never blessed.
+///
+/// Validates the full `extends:` closure first (not just the local file) so a
+/// config whose `extends:` target is missing or broken is never blessed.
 pub fn bless_in(config_path: &Path, store_path: &Path, now: &str) -> Result<()> {
-    crate::config::parse_file(config_path)
+    crate::config::parse_file_with_extends(config_path)
         .context("refusing to trust a config that does not parse")?;
     let key = canonical_key(config_path)?;
     let hash = compute_hash(config_path)?;
@@ -252,14 +289,15 @@ mod tests {
 
     #[test]
     fn hash_folds_gate_files_in_sorted_order() {
-        // compute_hash must fold gate files in sorted-relative-path order,
-        // independent of OS enumeration order. We pin the exact scheme by
-        // recomputing the expected digest with the files folded in sorted
-        // order using the impl's own framing helper. This fails if the impl
-        // ever stops sorting (the `out.sort_by` in collect_gate_files) — on a
-        // filesystem whose read_dir yields b before a — or if the hashing
-        // frame (labels / length prefixes) changes, which doubles as a
-        // regression lock on the stored-hash encoding.
+        // compute_hash must fold the config plus its gate files in a
+        // deterministic, identity-bound frame: each config keyed by its
+        // canonical path, each gate file keyed by its gates dir + sorted
+        // relative path (independent of OS enumeration order). We pin the exact
+        // scheme by recomputing the digest the same way using the impl's own
+        // framing helper. This fails if the impl stops sorting gate files (the
+        // `out.sort_by` in collect_gate_files) — on a filesystem whose read_dir
+        // yields b before a — or if the label binding / length prefixes change,
+        // which doubles as a regression lock on the stored-hash encoding.
         let dir = tempfile::tempdir().unwrap();
         let cfg = dir.path().join(".hector.yml");
         let cfg_body = "gates:\n  g:\n    files: \"*\"\n    run: \"true\"\n";
@@ -267,13 +305,44 @@ mod tests {
         write(&dir.path().join(".hector/gates/a.sh"), "a\n");
         write(&dir.path().join(".hector/gates/b.sh"), "b\n");
 
+        // Labels carry canonical paths, so recompute against the canonical form.
+        let canon = cfg.canonicalize().unwrap();
+        let gates_dir = canon.parent().unwrap().join(".hector").join("gates");
+
         let mut expected = Sha256::new();
-        hash_entry(&mut expected, "config", cfg_body.as_bytes());
-        hash_entry(&mut expected, "gates/a.sh", b"a\n");
-        hash_entry(&mut expected, "gates/b.sh", b"b\n");
+        hash_entry(
+            &mut expected,
+            &format!("config\0{}", canon.display()),
+            cfg_body.as_bytes(),
+        );
+        hash_entry(
+            &mut expected,
+            &format!("gates\0{}\0a.sh", gates_dir.display()),
+            b"a\n",
+        );
+        hash_entry(
+            &mut expected,
+            &format!("gates\0{}\0b.sh", gates_dir.display()),
+            b"b\n",
+        );
         let want = format!("sha256:{:x}", expected.finalize());
 
         assert_eq!(compute_hash(&cfg).unwrap(), want);
+    }
+
+    #[test]
+    fn compute_hash_errors_on_missing_extends_target() {
+        // compute_hash resolves the extends closure; a config pointing at a
+        // non-existent base can't be hashed — it fails closed rather than
+        // silently hashing only the local file.
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = dir.path().join(".hector.yml");
+        write(&cfg, "extends: [\"./nope.yml\"]\ngates: {}\n");
+        let err = compute_hash(&cfg).unwrap_err().to_string();
+        assert!(
+            err.contains("extends closure"),
+            "error should name the closure resolution: {err}"
+        );
     }
 
     #[test]
