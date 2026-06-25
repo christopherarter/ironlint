@@ -26,6 +26,7 @@ pub enum InternalReason {
     NotExecutable,
     Timeout,
     Signal(i32),
+    HighExit(i32),
     Spawn(String),
 }
 
@@ -37,6 +38,7 @@ impl InternalReason {
             Self::NotExecutable => "not_executable".into(),
             Self::Timeout => "timeout".into(),
             Self::Signal(n) => format!("signal:{n}"),
+            Self::HighExit(c) => format!("exit_code:{c}"),
             Self::Spawn(e) => format!("spawn:{e}"),
         }
     }
@@ -138,7 +140,7 @@ fn classify(status: std::process::ExitStatus, stdout: &str, stderr: &str) -> Gat
         }
         Some(126) => GateOutcome::Internal(InternalReason::NotExecutable),
         Some(127) => GateOutcome::Internal(InternalReason::NotFound),
-        Some(c) if c >= 128 => GateOutcome::Internal(InternalReason::Signal(c - 128)),
+        Some(c) if c >= 128 => GateOutcome::Internal(InternalReason::HighExit(c)),
         _ => GateOutcome::Pass,
     }
 }
@@ -250,6 +252,23 @@ mod tests {
             t(),
         );
         assert!(matches!(out, GateOutcome::Block { .. }));
+    }
+
+    #[test]
+    fn high_normal_exit_is_internal_with_exit_code_label() {
+        // A normal exit with code >=128 (e.g. `exit 137`) is NOT a signal death —
+        // it is a regular exit. It must classify as InternalError, but its reason
+        // label must be the raw code ("exit_code:137"), never the misleading
+        // "signal:9" (which would imply SIGKILL).
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("x.txt");
+        let out = run_gate("exit 137", &env_for(&f, dir.path()), None, t());
+        match out {
+            GateOutcome::Internal(reason) => {
+                assert_eq!(reason.as_str(), "exit_code:137");
+            }
+            other => panic!("expected Internal, got {other:?}"),
+        }
     }
 
     #[test]
