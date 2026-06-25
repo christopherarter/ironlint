@@ -15,6 +15,11 @@ if [[ ! -f "${CONFIG}" ]]; then
   exit 0
 fi
 
+# `hector check` fails closed on an unblessed config (the trust store). The
+# repo's own committed config is trusted by definition here, so bless it once
+# before dogfooding — without this every check returns exit 1 (not trusted).
+hector trust --config "${CONFIG}"
+
 blocked=0
 internal=0
 pass=0
