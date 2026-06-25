@@ -1,12 +1,11 @@
 use crate::cli::OutputFormat;
 use anyhow::{Context, Result};
-use hector_core::runner::{CheckInput, CheckOptions, ExplainOutcome, HectorEngine, RuleExplain};
+use hector_core::runner::{CheckInput, CheckOptions, ExplainOutcome, GateExplain, HectorEngine};
 use hector_core::verdict::{Status, Verdict};
 use std::collections::HashSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-// The signature mirrors the clap subcommand variant one-to-one.
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     file: Option<PathBuf>,
@@ -14,17 +13,22 @@ pub fn run(
     content: Option<String>,
     format: OutputFormat,
     config: &Path,
-    rules: Vec<String>,
+    gates: Vec<String>,
+    event: String,
     explain: bool,
     allow_external_paths: bool,
 ) -> Result<i32> {
-    // Load once: build with the non-rule options, then validate `--rule`
-    // against the loaded config and store the validated set in place, rather
-    // than paying trust-verify + extends DFS + YAML parse for a separate
-    // probe load.
+    // Trust gate: refuse an unblessed or tampered config/gates before the engine
+    // loads or any gate runs. This hashes the config + `.hector/gates/` now; a
+    // write between here and gate execution is a known, accepted TOCTOU window
+    // (the direnv-model limitation — no file locking in 0.3).
+    if let Err(e) = hector_core::trust::ensure_trusted(config) {
+        eprintln!("ERROR: {e:#}");
+        return Ok(1);
+    }
     let options = CheckOptions {
-        rules: HashSet::new(),
-        explain,
+        gates: HashSet::new(),
+        event,
         allow_external_paths,
     };
     let mut engine = match HectorEngine::builder().with_options(options).load(config) {
@@ -34,10 +38,10 @@ pub fn run(
             return Ok(1);
         }
     };
-    if let Some(code) = validate_rule_filter(&engine, &rules) {
+    if let Some(code) = validate_gate_filter(&engine, &gates) {
         return Ok(code);
     }
-    engine.set_rule_filter(rules.into_iter().collect());
+    engine.set_gate_filter(gates.into_iter().collect());
 
     match (file, diff) {
         (Some(f), None) => run_file(&engine, f, content, format, explain),
@@ -49,9 +53,6 @@ pub fn run(
     }
 }
 
-/// Check a single file. `--content` overrides the disk read so PreToolUse
-/// adapters can gate on proposed pre-write content; clap guarantees
-/// `--content` implies `--file`.
 fn run_file(
     engine: &HectorEngine,
     file: PathBuf,
@@ -75,89 +76,75 @@ fn run_file(
     Ok(exit_code(&report.verdict))
 }
 
-/// Check every changed file in a unified diff and aggregate the verdicts.
-/// An empty diff is an error; a pure-deletion diff is a clean Pass (deleted
-/// files can't be read and no rule fires on absent content).
+/// Check every non-deleted changed file in a unified diff. Gates read each
+/// file's current on-disk content (gates don't consume diffs).
 fn run_diff(
     engine: &HectorEngine,
     diff: &Path,
     format: OutputFormat,
     explain: bool,
 ) -> Result<i32> {
-    let unified_diff = std::fs::read_to_string(diff)?;
-    let changed = hector_core::diff::parser::parse_unified(&unified_diff)?;
+    let unified = std::fs::read_to_string(diff)?;
+    let changed = hector_core::diff::parser::parse_unified(&unified)?;
     if changed.is_empty() {
         eprintln!("ERROR: no changed files in diff");
         return Ok(1);
     }
-    // C3: deleted files can't be read and no rule fires on absent content,
-    // so a pure-deletion diff is a clean Pass.
-    let non_deleted: Vec<&hector_core::diff::ChangedFile> = changed
+    let targets: Vec<_> = changed
         .iter()
         .filter(|f| f.op != hector_core::diff::ChangeOp::Deleted)
         .collect();
-    if non_deleted.is_empty() {
-        let verdict = Verdict::from_violations(vec![], vec![], 0);
-        emit(&verdict, format)?;
-        return Ok(0);
-    }
-
-    let mut aggregated_violations = Vec::new();
-    let mut aggregated_passed = Vec::new();
-    let mut aggregated_explain: Vec<RuleExplain> = Vec::new();
-    let mut elapsed_ms: u64 = 0;
-    for f in non_deleted {
-        let per_file_diff = build_single_file_diff(&unified_diff, &f.path);
-        let r = engine.check_with_explain(CheckInput::Diff {
-            file: f.path.clone(),
-            unified_diff: per_file_diff,
+    let mut blocks = Vec::new();
+    let mut errors = Vec::new();
+    let mut passed = Vec::new();
+    let mut explains: Vec<GateExplain> = Vec::new();
+    let mut elapsed = 0u64;
+    for f in targets {
+        let content = std::fs::read_to_string(&f.path).unwrap_or_default();
+        let r = engine.check_with_explain(CheckInput::File {
+            path: f.path.clone(),
+            content,
         })?;
-        elapsed_ms = elapsed_ms.saturating_add(r.verdict.elapsed_ms);
-        aggregated_violations.extend(r.verdict.violations);
-        aggregated_passed.extend(r.verdict.passed_checks);
-        aggregated_explain.extend(r.explain);
+        elapsed = elapsed.saturating_add(r.verdict.elapsed_ms);
+        blocks.extend(r.verdict.blocks);
+        errors.extend(r.verdict.errors);
+        passed.extend(r.verdict.passed);
+        explains.extend(r.explain);
     }
-    let verdict = Verdict::from_violations(aggregated_violations, aggregated_passed, elapsed_ms);
+    let verdict = Verdict::from_outcomes(blocks, errors, passed, elapsed);
     if explain {
-        print_explain(&aggregated_explain);
+        print_explain(&explains);
     }
     emit(&verdict, format)?;
     Ok(exit_code(&verdict))
 }
 
-/// Refuse `--rule <unknown>` at the CLI boundary so callers see a clear
-/// error before any rule runs.
-fn validate_rule_filter(engine: &HectorEngine, rules: &[String]) -> Option<i32> {
-    if rules.is_empty() {
+fn validate_gate_filter(engine: &HectorEngine, gates: &[String]) -> Option<i32> {
+    if gates.is_empty() {
         return None;
     }
-    let known: HashSet<&str> = engine.config_rule_ids().collect();
-    let unknown: Vec<&String> = rules
+    let known: HashSet<&str> = engine.gate_ids().collect();
+    let unknown: Vec<&str> = gates
         .iter()
-        .filter(|id| !known.contains(id.as_str()))
+        .map(|s| s.as_str())
+        .filter(|id| !known.contains(id))
         .collect();
     if unknown.is_empty() {
         None
     } else {
-        let names: Vec<&str> = unknown.iter().map(|s| s.as_str()).collect();
-        eprintln!("ERROR: unknown rule id(s): {}", names.join(", "));
+        eprintln!("ERROR: unknown gate id(s): {}", unknown.join(", "));
         Some(1)
     }
 }
 
-/// Render the `--explain` rows to stderr so stdout (JSON) stays clean.
-fn print_explain(rows: &[RuleExplain]) {
+fn print_explain(rows: &[GateExplain]) {
     for row in rows {
         let outcome = match &row.outcome {
             ExplainOutcome::Fire => "fire".to_string(),
             ExplainOutcome::Pass => "pass".to_string(),
             ExplainOutcome::Skipped { reason } => format!("skipped {reason}"),
         };
-        let engine_name = match row.engine {
-            hector_core::config::EngineKind::Script => "script",
-            hector_core::config::EngineKind::Ast => "ast",
-        };
-        eprintln!("{} {} {}", row.rule_id, engine_name, outcome);
+        eprintln!("{} {}", row.gate_id, outcome);
     }
 }
 
@@ -165,36 +152,27 @@ fn exit_code(v: &Verdict) -> i32 {
     match v.status {
         Status::Block => 2,
         Status::InternalError => 3,
-        // Pass, Warn, and any future #[non_exhaustive] variants all exit 0
-        // (fail-open): unknown status values must never accidentally block.
         _ => 0,
     }
 }
 
 fn emit(v: &Verdict, format: OutputFormat) -> Result<()> {
     match format {
-        OutputFormat::Json => {
-            println!("{}", serde_json::to_string_pretty(v)?);
-        }
+        OutputFormat::Json => println!("{}", serde_json::to_string_pretty(v)?),
         OutputFormat::Human => {
-            for vio in &v.violations {
-                eprintln!(
-                    "{}: [{}] {}{}",
-                    vio.severity_human(),
-                    vio.rule_id,
-                    vio.file,
-                    vio.line.map(|l| format!(":{l}")).unwrap_or_default()
-                );
-                eprintln!("  {}", vio.message);
+            for b in &v.blocks {
+                eprintln!("block: [{}] {}", b.gate, b.file);
+                eprintln!("  {}", b.message);
+            }
+            for e in &v.errors {
+                eprintln!("error: [{}] {} ({})", e.gate, e.file, e.reason);
             }
             println!(
                 "{}",
                 match v.status {
                     Status::Pass => "pass",
-                    Status::Warn => "warn",
                     Status::Block => "block",
                     Status::InternalError => "internal_error",
-                    // #[non_exhaustive]: future variants surface as "unknown".
                     _ => "unknown",
                 }
             );
@@ -203,88 +181,6 @@ fn emit(v: &Verdict, format: OutputFormat) -> Result<()> {
     Ok(())
 }
 
-/// Extract the path from a `+++ b/<path>[\t<timestamp>]` header line.
-///
-/// POSIX `diff -u` appends `\t<timestamp>` after the path; split at the
-/// first tab and discard the timestamp before comparing paths.
-fn header_path(line: &str) -> Option<&str> {
-    line.strip_prefix("+++ b/").map(|p| {
-        p.split('\t')
-            .next()
-            .unwrap_or(p)
-            .trim_end_matches(['\n', '\r'])
-    })
-}
-
-/// Extract the path from a `--- a/<path>[\t<timestamp>]` header line.
-///
-/// Symmetric to `header_path`: strips the `--- a/` prefix, splits at the
-/// first tab (POSIX timestamp), and trims trailing `\r`/`\n`.
-fn minus_header_path(line: &str) -> Option<&str> {
-    line.strip_prefix("--- a/").map(|p| {
-        p.split('\t')
-            .next()
-            .unwrap_or(p)
-            .trim_end_matches(['\n', '\r'])
-    })
-}
-
-/// Slice a multi-file unified diff down to the hunks for a single file.
-///
-/// A file's section starts at the `--- a/<path>` header that precedes its
-/// `+++ b/<path>` line and ends at the next `--- a/...` header (or EOF). We
-/// scan for the matching `+++ b/<path>` and, when found, walk backwards to
-/// include the preceding `--- a/...` line so the slice is a syntactically
-/// well-formed diff in its own right.
-///
-/// The preceding `--- a/` line is included only when its path matches the
-/// target; a foreign header from the previous file is omitted (and
-/// `parse_unified` tolerates an absent `---` header).
-fn build_single_file_diff(full: &str, file: &Path) -> String {
-    let target = file.display().to_string();
-    // `split_inclusive` preserves line terminators so we can round-trip the
-    // slice without re-emitting newlines.
-    let lines: Vec<&str> = full.split_inclusive('\n').collect();
-
-    // Locate the `+++ b/<path>` for the target file, stripping any
-    // POSIX-style tab+timestamp before the path comparison.
-    let plus_idx = lines
-        .iter()
-        .position(|line| header_path(line).is_some_and(|p| p == target));
-    let Some(plus_idx) = plus_idx else {
-        return String::new();
-    };
-
-    // Include the preceding `--- a/...` header only when its parsed path
-    // matches the target; a foreign header from the previous file would
-    // otherwise corrupt this slice.
-    let header_idx =
-        if plus_idx > 0 && minus_header_path(lines[plus_idx - 1]).is_some_and(|p| p == target) {
-            plus_idx - 1
-        } else {
-            plus_idx
-        };
-
-    // Walk forward until the next `--- ` header (start of another file) or
-    // end of input.
-    let end_idx = lines
-        .iter()
-        .enumerate()
-        .skip(plus_idx + 1)
-        .find_map(|(i, line)| line.starts_with("--- ").then_some(i))
-        .unwrap_or(lines.len());
-
-    lines[header_idx..end_idx].concat()
-}
-
-/// Resolve a `--content` value: a literal `-` reads bytes from stdin
-/// (the documented adapter path for large content); any other string is
-/// the content itself.
-///
-/// `Read::read_to_string` already rejects non-UTF-8 bytes — surface that
-/// as an `anyhow` error with context rather than panicking. Stdin is
-/// allowed to be empty (an empty pre-write file is legitimate, e.g.
-/// `write_file` creating a new empty source).
 fn resolve_content_value(value: String) -> Result<String> {
     if value == "-" {
         let mut buf = String::new();
@@ -294,74 +190,5 @@ fn resolve_content_value(value: String) -> Result<String> {
         Ok(buf)
     } else {
         Ok(value)
-    }
-}
-
-trait SeverityHuman {
-    fn severity_human(&self) -> &'static str;
-}
-
-impl SeverityHuman for hector_core::verdict::Violation {
-    fn severity_human(&self) -> &'static str {
-        match self.severity {
-            hector_core::verdict::Severity::Error => "error",
-            hector_core::verdict::Severity::Warning => "warn",
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::path::PathBuf;
-
-    #[test]
-    fn slice_preserves_each_files_hunks() {
-        let full = "--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1 +1 @@\n-x\n+fn a() {}\n--- a/src/b.rs\n+++ b/src/b.rs\n@@ -1 +1 @@\n-x\n+fn b() { panic!(); }\n";
-        let slice_a = build_single_file_diff(full, &PathBuf::from("src/a.rs"));
-        let slice_b = build_single_file_diff(full, &PathBuf::from("src/b.rs"));
-        assert_eq!(
-            slice_a,
-            "--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1 +1 @@\n-x\n+fn a() {}\n"
-        );
-        assert_eq!(
-            slice_b,
-            "--- a/src/b.rs\n+++ b/src/b.rs\n@@ -1 +1 @@\n-x\n+fn b() { panic!(); }\n"
-        );
-        // Sanity: each slice parses cleanly into a single ChangedFile.
-        let parsed_a = hector_core::diff::parser::parse_unified(&slice_a).unwrap();
-        let parsed_b = hector_core::diff::parser::parse_unified(&slice_b).unwrap();
-        assert_eq!(parsed_a.len(), 1);
-        assert_eq!(parsed_a[0].path, PathBuf::from("src/a.rs"));
-        assert_eq!(parsed_b.len(), 1);
-        assert_eq!(parsed_b[0].path, PathBuf::from("src/b.rs"));
-    }
-
-    #[test]
-    fn slice_returns_empty_for_unknown_file() {
-        let full = "--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1 +1 @@\n+x\n";
-        let slice = build_single_file_diff(full, &PathBuf::from("src/missing.rs"));
-        assert_eq!(slice, "");
-    }
-
-    /// `build_single_file_diff` must not include a foreign `--- a/<other>`
-    /// header in the slice when it doesn't match the target file.
-    #[test]
-    fn slice_drops_mismatched_minus_header() {
-        let diff = "--- a/src/a.rs\n+++ b/src/b.rs\n@@ -1,1 +1,1 @@\n-old\n+new\n";
-        let slice = build_single_file_diff(diff, &PathBuf::from("src/b.rs"));
-        // The foreign `--- a/src/a.rs` header must not appear in the slice.
-        assert!(
-            !slice.starts_with("--- a/src/a.rs"),
-            "slice must not include the mismatched --- header; got: {slice:?}"
-        );
-        // The slice must still be parseable and yield exactly src/b.rs.
-        let files = hector_core::diff::parser::parse_unified(&slice).expect("re-parse");
-        assert_eq!(
-            files.len(),
-            1,
-            "mismatched --- header must not introduce a phantom file"
-        );
-        assert_eq!(files[0].path, PathBuf::from("src/b.rs"));
     }
 }

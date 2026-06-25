@@ -1,5 +1,5 @@
 //! Origin tracking on the post-extends merge. The walker must attribute
-//! every rule to the file it was defined in, with local definitions winning
+//! every gate to the file it was defined in, with local definitions winning
 //! on collision (matching `resolve`'s merge semantics).
 
 use hector_core::config::extends::resolve_with_origin;
@@ -11,26 +11,25 @@ fn write(p: &std::path::Path, body: &str) {
 }
 
 #[test]
-fn origin_map_attributes_each_rule_to_its_defining_file() {
+fn origin_map_attributes_each_gate_to_its_defining_file() {
     let dir = tempdir().unwrap();
     let parent = dir.path().join("parent.yml");
     write(
         &parent,
-        "schema_version: 2\nrules:\n  inherited:\n    description: \"from parent\"\n    engine: script\n    scope: [\"*.txt\"]\n    severity: warning\n    script: \"true\"\n  overridden:\n    description: \"parent version\"\n    engine: script\n    scope: [\"*.txt\"]\n    severity: error\n    script: \"true\"\n",
+        "gates:\n  inherited:\n    files: \"**/*.txt\"\n    run: \"exit 0\"\n  overridden:\n    files: \"**/*.txt\"\n    run: \"exit 0\"\n",
     );
     let child = dir.path().join(".hector.yml");
     write(
         &child,
-        "schema_version: 2\nextends: [\"parent.yml\"]\nrules:\n  local:\n    description: \"only in child\"\n    engine: script\n    scope: [\"*.md\"]\n    severity: warning\n    script: \"true\"\n  overridden:\n    description: \"child wins\"\n    engine: script\n    scope: [\"*.txt\"]\n    severity: warning\n    script: \"true\"\n",
+        "extends: [\"parent.yml\"]\ngates:\n  local:\n    files: \"**/*.md\"\n    run: \"exit 0\"\n  overridden:\n    files: \"**/*.ts\"\n    run: \"exit 0\"\n",
     );
 
     let (cfg, origins) = resolve_with_origin(&child).unwrap();
 
-    assert_eq!(cfg.rules.len(), 3, "merged rule count");
+    assert_eq!(cfg.gates.len(), 3, "merged gate count");
     assert_eq!(
-        cfg.rules.get("overridden").unwrap().description,
-        "child wins",
-        "local wins on collision"
+        cfg.gates["overridden"].run, "exit 0",
+        "local gate wins on collision"
     );
 
     let canon_child: PathBuf = child.canonicalize().unwrap();
@@ -50,21 +49,15 @@ fn origin_map_records_transitive_grandparent() {
     let grand = dir.path().join("grand.yml");
     write(
         &grand,
-        "schema_version: 2\nrules:\n  from-grand:\n    description: \"x\"\n    engine: script\n    scope: [\"*\"]\n    severity: warning\n    script: \"true\"\n",
+        "gates:\n  from-grand:\n    files: \"**/*.rs\"\n    run: \"exit 0\"\n",
     );
     let parent = dir.path().join("parent.yml");
-    write(
-        &parent,
-        "schema_version: 2\nextends: [\"grand.yml\"]\nrules: {}\n",
-    );
+    write(&parent, "extends: [\"grand.yml\"]\ngates: {}\n");
     let child = dir.path().join(".hector.yml");
-    write(
-        &child,
-        "schema_version: 2\nextends: [\"parent.yml\"]\nrules: {}\n",
-    );
+    write(&child, "extends: [\"parent.yml\"]\ngates: {}\n");
 
     let (cfg, origins) = resolve_with_origin(&child).unwrap();
-    assert_eq!(cfg.rules.len(), 1);
+    assert_eq!(cfg.gates.len(), 1);
     assert_eq!(
         origins.get("from-grand").unwrap(),
         &grand.canonicalize().unwrap()

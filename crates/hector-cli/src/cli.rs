@@ -24,22 +24,6 @@ pub enum Command {
         /// `--file` from disk. Pass `-` to read the bytes from stdin
         /// (recommended for any content larger than a few KB; argv has
         /// OS-level size limits).
-        ///
-        /// Designed for PreToolUse adapters — Reasonix, OpenCode
-        /// `tool.execute.before`, deepseek-reasonix and similar — that
-        /// need to gate on the proposed edit *before* it lands on disk.
-        /// Requires `--file` so scope matching, baseline matching, and
-        /// AST language detection all key off the real project path.
-        ///
-        /// `engine: script` rules receive this content on the command's
-        /// **stdin**. Write your tool's stdin form so it gates the proposed
-        /// edit pre-write — e.g. `biome check --stdin-file-path={file}`,
-        /// `ruff check --stdin-filename {file} -`, `eslint --stdin
-        /// --stdin-filename {file}`. A path-only command (`biome check
-        /// {file}`) still reads the on-disk file. Whole-program tools (tsc,
-        /// cargo, test runners) can't gate a single proposed file — run those
-        /// post-write / in CI. AST and `hector-disable:` directives
-        /// already read `--content`.
         #[arg(
             long,
             value_name = "STRING_OR_DASH",
@@ -51,10 +35,13 @@ pub enum Command {
         format: OutputFormat,
         #[arg(long, default_value = ".hector.yml")]
         config: PathBuf,
-        /// Evaluate only this rule id. Repeatable; multiple flags OR'd.
-        #[arg(long = "rule", action = clap::ArgAction::Append)]
-        rules: Vec<String>,
-        /// After the verdict, print a per-rule outcome report to stderr.
+        /// Evaluate only this gate id. Repeatable; multiple flags OR'd.
+        #[arg(long = "gate", action = clap::ArgAction::Append)]
+        gates: Vec<String>,
+        /// What triggered this check, surfaced to gates as $HECTOR_EVENT.
+        #[arg(long, default_value = "manual")]
+        event: String,
+        /// After the verdict, print a per-gate outcome report to stderr.
         #[arg(long)]
         explain: bool,
         /// Allow checking files whose canonical path falls outside the
@@ -64,12 +51,12 @@ pub enum Command {
         #[arg(long, default_value_t = false)]
         allow_external_paths: bool,
     },
-    /// Compute the trust fingerprint and write it to the config.
+    /// Bless this config + its `.hector/gates/` scripts in the out-of-repo trust store.
     Trust {
         #[arg(long, default_value = ".hector.yml")]
         config: PathBuf,
     },
-    /// Parse and validate the config without running any rules.
+    /// Parse and validate the config without running any gates.
     Validate {
         #[arg(long, default_value = ".hector.yml")]
         config: PathBuf,
@@ -79,31 +66,7 @@ pub enum Command {
         #[arg(long, default_value = ".")]
         dir: PathBuf,
     },
-    /// Rewrite .bully.yml to .hector.yml (schema v1 -> v2). Move .bully/ -> .hector/.
-    Migrate {
-        #[arg(long, default_value = ".")]
-        dir: PathBuf,
-        /// Delete .bully.yml after migration.
-        #[arg(long)]
-        clean: bool,
-    },
-    /// Record current violations to .hector/baseline.json (silenced from future runs).
-    ///
-    /// Without an action, defaults to `record`. The action subcommands are
-    /// `record` (capture current violations) and `refresh` (re-hash every
-    /// stored entry against current file content). Existing
-    /// `hector baseline` invocations keep working — the subcommand is
-    /// optional.
-    Baseline {
-        #[command(subcommand)]
-        action: Option<BaselineAction>,
-        #[arg(long, default_value = ".hector.yml", global = true)]
-        config: PathBuf,
-        /// (record mode) Glob filter restricting which files are scanned.
-        #[arg(long, global = true)]
-        scan: Option<String>,
-    },
-    /// Diagnose the local install, config, trust, engine availability, and adapter wiring.
+    /// Diagnose the local install, config, and adapter wiring.
     ///
     /// Read-only. Exits 0 if every check passes or only warns; exits 1 on any failure.
     Doctor {
@@ -115,9 +78,9 @@ pub enum Command {
         #[arg(long, default_value = "human")]
         format: OutputFormat,
     },
-    /// Show which rules are in scope for `<file>` and which skip-pattern
-    /// (if any) suppresses it. Read-only — no engine runs, no telemetry
-    /// is written.
+    /// Show which gates apply to `<file>` and their run commands.
+    ///
+    /// Read-only — no gate runs, no telemetry is written.
     Explain {
         /// Path to inspect. Relative to cwd.
         file: PathBuf,
@@ -126,37 +89,16 @@ pub enum Command {
         #[arg(long, default_value = ".hector.yml")]
         config: PathBuf,
     },
-    /// List the rules whose scope matches `<file>` with their description
-    /// and severity. Read-only — see `explain` for full scope reporting.
-    Guide {
-        /// Path to inspect. Relative to cwd.
-        file: PathBuf,
-        #[arg(long, default_value = "human")]
-        format: OutputFormat,
-        #[arg(long, default_value = ".hector.yml")]
-        config: PathBuf,
-    },
-    /// Print the post-extends merged rule set.
+    /// Print the post-extends merged gate set.
     ///
-    /// Read-only. Does not run any rule. Default format is TSV with the
-    /// columns: `id<TAB>engine<TAB>severity<TAB>scope<TAB>fix_hint<TAB>origin`.
-    /// `--format yaml` prints the canonical merged config (sans `trust:`
-    /// and `extends:`); `--format json` prints the same shape as JSON
-    /// with each rule annotated by its origin.
+    /// Read-only. Does not run any gate. Default format prints each gate
+    /// with its files glob(s) and run command, annotated by origin.
     ShowResolvedConfig {
         #[arg(long, default_value = ".hector.yml")]
         config: PathBuf,
         #[arg(long, default_value = "tsv")]
         format: ShowFormat,
     },
-}
-
-#[derive(Debug, Clone, Copy, Subcommand)]
-pub enum BaselineAction {
-    /// Record current violations to .hector/baseline.json.
-    Record,
-    /// Re-hash every baseline entry against current file content.
-    Refresh,
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]

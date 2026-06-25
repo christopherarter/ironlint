@@ -1,10 +1,7 @@
-pub mod baseline;
 pub mod check;
 pub mod doctor;
 pub mod explain;
-pub mod guide;
 pub mod init;
-pub mod migrate;
 pub mod show_resolved_config;
 pub mod trust;
 pub mod validate;

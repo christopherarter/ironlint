@@ -13,19 +13,9 @@ anyhow.workspace = true
 thiserror.workspace = true
 sha2.workspace = true
 globset.workspace = true
-ast-grep-core.workspace = true
-ast-grep-language.workspace = true
 chrono.workspace = true
 wait-timeout = "0.2"
 fs4.workspace = true
-regex.workspace = true
-rayon = "1.10"
-num_cpus = "1.16"
-rand = "0.8"
-
-[target.'cfg(target_os = "linux")'.dependencies]
-nix.workspace = true
-libc = "0.2"
 
 [dev-dependencies]
 tempfile.workspace = true

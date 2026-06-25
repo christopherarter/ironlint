@@ -11,7 +11,7 @@ A plan owns its own progress via its checkboxes — that's the source of truth. 
 
 ## Active
 
-_(nothing queued)_
+_(nothing queued — Plan 2 trust store shipped 2026-06-24)_
 
 ## Future
 
@@ -21,7 +21,7 @@ Ideas that haven't graduated to plans. When something here has enough definition
 - **A4 `context.lines`** — per-rule context-line count override on the semantic prompt.
 - **C5 `validate --execute-dry-run`** — invoke `script:` rules in a sandbox during `validate`, surface failures early.
 - **F1 declarative session rules** — `when.changed_any` / `require.changed_any` as a deterministic alternative to LLM-driven session eval.
-- **G1 trust+rules split CI lint** (stop-gap; full trust-model decision blocks 0.3 freeze).
+- ~~**G1 trust+rules split CI lint** (stop-gap; full trust-model decision blocks 0.3 freeze).~~ (resolved by the 2026-06-24 trust store)
 
 ### Shipped without a plan file
 
@@ -54,6 +54,7 @@ Completed plans live in [`archive/`](archive/). They're frozen design records.
 - [`2026-05-14-hector-h1-emit-semantic-payload`](archive/2026-05-14-hector-h1-emit-semantic-payload.md) — `hector check --emit-semantic-payload` flag + `llm.provider: claude-code-subagent` provider arm + `DeferredVerdict` envelope (`hector_core::verdict_deferred`); enables H3 (Claude Code adapter subagent mode).
 - [`2026-05-14-hector-h2-record-verdict`](archive/2026-05-14-hector-h2-record-verdict.md) — `hector record-verdict` subcommand appends one `SemanticVerdict` record to `.hector/log.jsonl`; consumed by the Claude Code interpreter skill (H3) to keep coverage reports accurate under subagent-mediated semantic eval.
 - [`2026-05-14-hector-h3-adapter-subagent-mode`](archive/2026-05-14-hector-h3-adapter-subagent-mode.md) — Claude Code adapter subagent mode: hook routes `llm.provider: claude-code-subagent` through `--emit-semantic-payload`, wraps the result in `hookSpecificOutput.additionalContext`; new `hector` interpreter skill + `hector-evaluator` subagent close the loop. Restores bully parity for subscription users.
+- [`2026-06-24-hector-trust-store`](archive/2026-06-24-hector-trust-store.md) — out-of-repo trust store; check fails closed until blessed.
 
 ## Conventions
 

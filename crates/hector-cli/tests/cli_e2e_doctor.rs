@@ -1,33 +1,26 @@
-//! CLI integration tests for `hector doctor`.
+//! CLI integration tests for `hector doctor` (gates model).
 //!
 //! Each test isolates `~/.claude/settings.json` lookup by setting the
 //! `HOME` env var to a tempdir, so the adapter check observes a clean
-//! environment. The doctor module honors `HOME` via the `home_dir`
-//! helper it inherits from `runner.rs`.
+//! environment.
 
 use assert_cmd::Command;
 use std::fs;
 use tempfile::tempdir;
 
-fn write_trusted(dir: &std::path::Path, body: &str) -> std::path::PathBuf {
-    let cfg = dir.join(".hector.yml");
-    fs::write(&cfg, body).unwrap();
-    Command::cargo_bin("hector")
-        .unwrap()
-        .args(["trust", "--config", cfg.to_str().unwrap()])
-        .assert()
-        .success();
-    cfg
+fn write_gates_config(dir: &std::path::Path) {
+    fs::write(
+        dir.join(".hector.yml"),
+        "gates:\n  g:\n    files: [\"**/*.rs\"]\n    run: \"true\"\n",
+    )
+    .unwrap();
 }
 
 #[test]
 fn doctor_runs_and_reports_binary_check() {
     let dir = tempdir().unwrap();
     let home = tempdir().unwrap();
-    write_trusted(
-        dir.path(),
-        "schema_version: 2\nrules:\n  r:\n    description: \"x\"\n    engine: script\n    scope: [\"*\"]\n    severity: error\n    script: \"true\"\n",
-    );
+    write_gates_config(dir.path());
     let out = Command::cargo_bin("hector")
         .unwrap()
         .env("HOME", home.path())
@@ -71,67 +64,10 @@ fn doctor_fails_when_config_missing() {
 }
 
 #[test]
-fn doctor_fails_when_trust_fingerprint_broken() {
+fn doctor_passes_on_clean_gates_config() {
     let dir = tempdir().unwrap();
     let home = tempdir().unwrap();
-    // Write a config with a *wrong* trust fingerprint.
-    let cfg = dir.path().join(".hector.yml");
-    let body = "schema_version: 2\nrules:\n  r:\n    description: \"x\"\n    engine: script\n    scope: [\"*\"]\n    severity: error\n    script: \"true\"\ntrust:\n  fingerprint: sha256:0000000000000000000000000000000000000000000000000000000000000000\n";
-    fs::write(&cfg, body).unwrap();
-    let out = Command::cargo_bin("hector")
-        .unwrap()
-        .env("HOME", home.path())
-        .args(["doctor", "--dir", dir.path().to_str().unwrap()])
-        .output()
-        .unwrap();
-    assert_eq!(out.status.code(), Some(1));
-    let s = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        s.contains("trust") && s.contains("fail"),
-        "expected a failing `trust` row: {s}"
-    );
-    // Parses-OK before trust-FAIL: distinguish parse failures from trust failures.
-    assert!(
-        s.contains("parses"),
-        "parses check must still appear before trust: {s}"
-    );
-    assert!(
-        s.contains("hector trust"),
-        "remediation must hint at `hector trust`: {s}"
-    );
-}
-
-#[test]
-fn doctor_warns_on_legacy_schema_version_one() {
-    // schema v1 fails at the parses step (extends::resolve_trusted refuses v1
-    // before trust is verified — see config/extends.rs `peek_schema_version`).
-    // Doctor must surface that as a `parses` fail with a `hector migrate` hint.
-    let dir = tempdir().unwrap();
-    let home = tempdir().unwrap();
-    let cfg = dir.path().join(".hector.yml");
-    fs::write(&cfg, "schema_version: 1\nrules: {}\n").unwrap();
-    let out = Command::cargo_bin("hector")
-        .unwrap()
-        .env("HOME", home.path())
-        .args(["doctor", "--dir", dir.path().to_str().unwrap()])
-        .output()
-        .unwrap();
-    assert_eq!(out.status.code(), Some(1));
-    let s = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        s.contains("hector migrate"),
-        "v1 remediation must hint at migrate: {s}"
-    );
-}
-
-#[test]
-fn doctor_passes_on_clean_v2_config() {
-    let dir = tempdir().unwrap();
-    let home = tempdir().unwrap();
-    write_trusted(
-        dir.path(),
-        "schema_version: 2\nrules:\n  r:\n    description: \"x\"\n    engine: script\n    scope: [\"*\"]\n    severity: error\n    script: \"true\"\n",
-    );
+    write_gates_config(dir.path());
     let out = Command::cargo_bin("hector")
         .unwrap()
         .env("HOME", home.path())
@@ -140,31 +76,32 @@ fn doctor_passes_on_clean_v2_config() {
         .unwrap();
     assert_eq!(out.status.code(), Some(0));
     let s = String::from_utf8_lossy(&out.stdout);
-    for needle in ["binary", "config", "parses", "trust", "schema"] {
+    // All five checks must appear in output.
+    for needle in ["binary", "adapter", "config", "parses", "gate_scripts"] {
         assert!(s.contains(needle), "expected `{needle}` row in: {s}");
     }
 }
 
 #[test]
-fn doctor_pass_engines_for_script_config() {
-    // Pure script config — engines row should be pass.
+fn doctor_parses_fail_on_legacy_schema_config() {
     let dir = tempdir().unwrap();
     let home = tempdir().unwrap();
-    write_trusted(
-        dir.path(),
-        "schema_version: 2\nrules:\n  r:\n    description: \"x\"\n    engine: script\n    scope: [\"*\"]\n    severity: error\n    script: \"true\"\n",
-    );
+    fs::write(
+        dir.path().join(".hector.yml"),
+        "schema_version: 2\nrules: {}\n",
+    )
+    .unwrap();
     let out = Command::cargo_bin("hector")
         .unwrap()
         .env("HOME", home.path())
         .args(["doctor", "--dir", dir.path().to_str().unwrap()])
         .output()
         .unwrap();
-    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(out.status.code(), Some(1));
     let s = String::from_utf8_lossy(&out.stdout);
     assert!(
-        s.contains("engines") && s.contains("ok"),
-        "engines should pass: {s}"
+        s.contains("parses") && s.contains("fail"),
+        "expected `parses fail` for legacy schema: {s}"
     );
 }
 
@@ -172,10 +109,7 @@ fn doctor_pass_engines_for_script_config() {
 fn doctor_adapter_warn_when_settings_missing() {
     let dir = tempdir().unwrap();
     let home = tempdir().unwrap(); // empty: no ~/.claude/settings.json
-    write_trusted(
-        dir.path(),
-        "schema_version: 2\nrules:\n  r:\n    description: \"x\"\n    engine: script\n    scope: [\"*\"]\n    severity: error\n    script: \"true\"\n",
-    );
+    write_gates_config(dir.path());
     let out = Command::cargo_bin("hector")
         .unwrap()
         .env("HOME", home.path())
@@ -197,13 +131,10 @@ fn doctor_adapter_pass_when_hook_wired() {
     let claude = home.path().join(".claude");
     fs::create_dir_all(&claude).unwrap();
     // Wire a PostToolUse hook whose command references `hector` so the
-    // detector recognizes it without needing the real adapter installed.
-    let settings = r#"{"hooks":{"PostToolUse":[{"matcher":"Edit|Write","hooks":[{"type":"command","command":"hector check --diff -"}]}]}}"#;
+    // detector recognizes it.
+    let settings = r#"{"hooks":{"PostToolUse":[{"matcher":"Edit|Write","hooks":[{"type":"command","command":"hector check --file $HECTOR_FILE"}]}]}}"#;
     fs::write(claude.join("settings.json"), settings).unwrap();
-    write_trusted(
-        dir.path(),
-        "schema_version: 2\nrules:\n  r:\n    description: \"x\"\n    engine: script\n    scope: [\"*\"]\n    severity: error\n    script: \"true\"\n",
-    );
+    write_gates_config(dir.path());
     let out = Command::cargo_bin("hector")
         .unwrap()
         .env("HOME", home.path())
@@ -227,11 +158,9 @@ fn doctor_adapter_warn_when_settings_present_but_no_hector_hook() {
     fs::write(
         claude.join("settings.json"),
         r#"{"hooks":{"PostToolUse":[{"matcher":"Edit","hooks":[{"type":"command","command":"echo unrelated"}]}]}}"#,
-    ).unwrap();
-    write_trusted(
-        dir.path(),
-        "schema_version: 2\nrules:\n  r:\n    description: \"x\"\n    engine: script\n    scope: [\"*\"]\n    severity: error\n    script: \"true\"\n",
-    );
+    )
+    .unwrap();
+    write_gates_config(dir.path());
     let out = Command::cargo_bin("hector")
         .unwrap()
         .env("HOME", home.path())
@@ -244,46 +173,13 @@ fn doctor_adapter_warn_when_settings_present_but_no_hector_hook() {
         s.contains("adapter") && s.contains("warn"),
         "expected `adapter warn` when no hector hook: {s}"
     );
-    assert!(
-        s.contains("docs/adapters/claude-code.md") || s.contains("install"),
-        "expected adapter install hint: {s}"
-    );
 }
 
 #[test]
-fn doctor_runtime_state_pass_when_hector_dir_writable() {
+fn doctor_json_output_is_valid_for_clean_gates_config() {
     let dir = tempdir().unwrap();
     let home = tempdir().unwrap();
-    write_trusted(
-        dir.path(),
-        "schema_version: 2\nrules:\n  r:\n    description: \"x\"\n    engine: script\n    scope: [\"*\"]\n    severity: error\n    script: \"true\"\n",
-    );
-    let out = Command::cargo_bin("hector")
-        .unwrap()
-        .env("HOME", home.path())
-        .args(["doctor", "--dir", dir.path().to_str().unwrap()])
-        .output()
-        .unwrap();
-    assert_eq!(out.status.code(), Some(0));
-    let s = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        s.contains("runtime_state"),
-        "expected runtime_state row: {s}"
-    );
-    assert!(
-        s.contains("ok"),
-        "runtime_state should pass on a fresh tempdir: {s}"
-    );
-}
-
-#[test]
-fn doctor_json_output_snapshot_for_clean_v2_config() {
-    let dir = tempdir().unwrap();
-    let home = tempdir().unwrap();
-    write_trusted(
-        dir.path(),
-        "schema_version: 2\nrules:\n  r:\n    description: \"x\"\n    engine: script\n    scope: [\"*\"]\n    severity: error\n    script: \"true\"\n",
-    );
+    write_gates_config(dir.path());
     let out = Command::cargo_bin("hector")
         .unwrap()
         .env("HOME", home.path())
@@ -299,32 +195,21 @@ fn doctor_json_output_snapshot_for_clean_v2_config() {
         .get_output()
         .stdout
         .clone();
-    let mut value: serde_json::Value =
+    let v: serde_json::Value =
         serde_json::from_slice(&out).expect("doctor --format json must produce valid JSON");
-    // Redact volatile fields before snapshotting:
-    //   - hector_version: changes every release
-    //   - per-check `detail`: contains absolute paths and sizes
-    if let Some(obj) = value.as_object_mut() {
-        obj.insert(
-            "hector_version".into(),
-            serde_json::Value::String("[REDACTED]".into()),
-        );
+    // Top-level fields present.
+    assert!(
+        v.get("hector_version").is_some(),
+        "must have hector_version"
+    );
+    assert!(v.get("checks").is_some(), "must have checks array");
+    let checks = v["checks"].as_array().unwrap();
+    // Expect 5 checks in gates model: binary, adapter, config, parses, gate_scripts.
+    assert_eq!(checks.len(), 5, "gates model doctor has 5 checks: {v}");
+    // Each check has name, status, detail.
+    for c in checks {
+        assert!(c.get("name").is_some());
+        assert!(c.get("status").is_some());
+        assert!(c.get("detail").is_some());
     }
-    if let Some(checks) = value.get_mut("checks").and_then(|c| c.as_array_mut()) {
-        for c in checks {
-            if let Some(o) = c.as_object_mut() {
-                o.insert(
-                    "detail".into(),
-                    serde_json::Value::String("[REDACTED]".into()),
-                );
-                if o.get("remediation").is_some_and(|r| !r.is_null()) {
-                    o.insert(
-                        "remediation".into(),
-                        serde_json::Value::String("[REDACTED]".into()),
-                    );
-                }
-            }
-        }
-    }
-    insta::assert_json_snapshot!(value);
 }

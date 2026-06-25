@@ -16,7 +16,8 @@ fn main() -> Result<()> {
             content,
             format,
             config,
-            rules,
+            gates,
+            event,
             explain,
             allow_external_paths,
         } => commands::check::run(
@@ -25,33 +26,20 @@ fn main() -> Result<()> {
             content,
             format,
             &config,
-            rules,
+            gates,
+            event,
             explain,
             allow_external_paths,
         )?,
         Command::Trust { config } => commands::trust::run(&config)?,
         Command::Validate { config } => commands::validate::run(&config)?,
         Command::Init { dir } => commands::init::run(&dir)?,
-        Command::Migrate { dir, clean } => commands::migrate::run(&dir, clean)?,
-        Command::Baseline {
-            action,
-            config,
-            scan,
-        } => match action.unwrap_or(cli::BaselineAction::Record) {
-            cli::BaselineAction::Record => commands::baseline::record(&config, scan)?,
-            cli::BaselineAction::Refresh => commands::baseline::refresh(&config)?,
-        },
         Command::Doctor { dir, format } => commands::doctor::run(&dir, format)?,
         Command::Explain {
             file,
             format,
             config,
         } => commands::explain::run(&file, format, &config)?,
-        Command::Guide {
-            file,
-            format,
-            config,
-        } => commands::guide::run(&file, format, &config)?,
         Command::ShowResolvedConfig { config, format } => {
             commands::show_resolved_config::run(&config, format)?
         }

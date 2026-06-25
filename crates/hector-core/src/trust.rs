@@ -1,248 +1,430 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
-/// Strip the `trust:` block and serialize to canonical JSON for hashing.
-///
-/// Canonicalization route: YAML → serde_yaml::Value → serde_json::Value
-/// (with recursive key sorting via BTreeMap) → serde_json::to_string.
-/// RFC 8259 normatively specifies the JSON byte form, so this output is
-/// stable across serde_yaml emitter changes (which are not normative).
-///
-/// Anchors and aliases (`&name`/`*name`) are rejected pre-parse because
-/// serde_yaml 0.9 expands them transparently before building the Value tree,
-/// so post-parse detection is not possible. We reject them to prevent
-/// serde_yaml's expansion from silently flattening structural ambiguity.
-pub fn canonicalize_for_fingerprint(input: &str) -> Result<String> {
-    // Pre-parse anchor/alias guard: reject any YAML that contains anchor
-    // definitions (&name) or alias references (*name) outside of quoted strings.
-    // serde_yaml 0.9 expands anchors at the Event level — the Value tree never
-    // preserves them — so detection must happen here on the raw bytes.
-    if contains_yaml_anchor_or_alias(input) {
-        anyhow::bail!("YAML anchors/tags are not supported in trust fingerprint");
-    }
-    let mut yaml_value: serde_yaml::Value = serde_yaml::from_str(input).context("parse yaml")?;
-    // Strip the trust block before canonicalization.
-    if let serde_yaml::Value::Mapping(ref mut map) = yaml_value {
-        map.remove(serde_yaml::Value::String("trust".into()));
-    }
-    // Convert YAML → JSON (lossless for our schema; we don't use
-    // binary scalars, anchors-as-values, or complex keys).
-    let json_value = yaml_to_json(yaml_value)?;
-    let sorted = sort_json_keys(json_value);
-    Ok(serde_json::to_string(&sorted)?)
+/// Feed one labeled blob into the hasher with length prefixes on both the
+/// label and the content, so no two distinct (label, bytes) pairs can collide
+/// by concatenation.
+fn hash_entry(hasher: &mut Sha256, label: &str, bytes: &[u8]) {
+    hasher.update((label.len() as u64).to_le_bytes());
+    hasher.update(label.as_bytes());
+    hasher.update((bytes.len() as u64).to_le_bytes());
+    hasher.update(bytes);
 }
 
-/// Scan raw YAML for anchor definitions (`&name`) or alias references (`*name`)
-/// that appear outside quoted strings. Returns true if any are found.
-///
-/// This is a heuristic scan, not a full YAML parser. It detects the common
-/// cases: `&anchor` after a mapping key on the same line, and `*alias` as
-/// a standalone value. Two known false-positive paths, both fail-safe
-/// (rejection, not silent misaccept):
-///
-/// - **Unquoted scalars** containing `&word`/`*word` (e.g.
-///   `description: Foo&Bar`, or a script value with a shell-glob like
-///   `grep *main`).
-/// - **Double-quoted strings with backslash-escaped quotes** like
-///   `script: "grep -E \"pattern\" {file} && exit 0"` — `\"` is not
-///   parsed as an escape sequence here, so `in_double` toggles off
-///   prematurely and a later `&word`/`*word` inside the same string
-///   is seen as unquoted. Workaround: rewrite the string with single
-///   quotes or use YAML's `|`/`>` block-scalar styles.
-///
-/// Both cases are uncommon; both fail in the safe direction (operator
-/// sees a clear error and can re-author the config).
-fn contains_yaml_anchor_or_alias(input: &str) -> bool {
-    for line in input.lines() {
-        // Strip the leading whitespace then check if this is a quoted value
-        let trimmed = line.trim();
-        // Skip pure comment lines
-        if trimmed.starts_with('#') {
-            continue;
-        }
-        // Look for & or * outside of quoted regions
-        let mut in_single = false;
-        let mut in_double = false;
-        let chars: Vec<char> = line.chars().collect();
-        let mut i = 0;
-        while i < chars.len() {
-            let c = chars[i];
-            match c {
-                '\'' if !in_double => in_single = !in_single,
-                '"' if !in_single => in_double = !in_double,
-                '#' if !in_single && !in_double => break, // rest is comment
-                '&' | '*' if !in_single && !in_double => {
-                    // Confirm the next char is alphanumeric (anchor/alias name start)
-                    if i + 1 < chars.len()
-                        && (chars[i + 1].is_alphanumeric() || chars[i + 1] == '_')
-                    {
-                        return true;
-                    }
-                }
-                _ => {}
-            }
-            i += 1;
-        }
-    }
-    false
-}
-
-fn yaml_to_json(v: serde_yaml::Value) -> Result<serde_json::Value> {
-    Ok(match v {
-        serde_yaml::Value::Null => serde_json::Value::Null,
-        serde_yaml::Value::Bool(b) => serde_json::Value::Bool(b),
-        serde_yaml::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                serde_json::Value::Number(i.into())
-            } else if let Some(u) = n.as_u64() {
-                serde_json::Value::Number(u.into())
-            } else if let Some(f) = n.as_f64() {
-                serde_json::Number::from_f64(f)
-                    .map(serde_json::Value::Number)
-                    .ok_or_else(|| anyhow!("non-finite number in trust fingerprint"))?
-            } else {
-                return Err(anyhow!("unsupported number in trust fingerprint: {n:?}"));
-            }
-        }
-        serde_yaml::Value::String(s) => serde_json::Value::String(s),
-        serde_yaml::Value::Sequence(seq) => {
-            let items: Result<Vec<_>> = seq.into_iter().map(yaml_to_json).collect();
-            serde_json::Value::Array(items?)
-        }
-        serde_yaml::Value::Mapping(map) => {
-            let mut obj = serde_json::Map::new();
-            for (k, v) in map {
-                let key = match k {
-                    serde_yaml::Value::String(s) => s,
-                    other => {
-                        return Err(anyhow!(
-                            "trust fingerprint requires string keys, got {other:?}"
-                        ))
-                    }
-                };
-                obj.insert(key, yaml_to_json(v)?);
-            }
-            serde_json::Value::Object(obj)
-        }
-        serde_yaml::Value::Tagged(_) => {
-            return Err(anyhow!(
-                "YAML anchors/tags are not supported in trust fingerprint"
-            ));
-        }
-    })
-}
-
-fn sort_json_keys(v: serde_json::Value) -> serde_json::Value {
-    match v {
-        serde_json::Value::Object(map) => {
-            let sorted: std::collections::BTreeMap<String, serde_json::Value> = map
-                .into_iter()
-                .map(|(k, v)| (k, sort_json_keys(v)))
-                .collect();
-            serde_json::Value::Object(sorted.into_iter().collect())
-        }
-        serde_json::Value::Array(arr) => {
-            serde_json::Value::Array(arr.into_iter().map(sort_json_keys).collect())
-        }
-        other => other,
-    }
-}
-
-/// Compute the sha256 fingerprint of a config, prefixed with `sha256:`.
-pub fn fingerprint(input: &str) -> Result<String> {
-    let canonical = canonicalize_for_fingerprint(input)?;
-    let mut hasher = Sha256::new();
-    hasher.update(canonical.as_bytes());
-    let digest = hasher.finalize();
-    Ok(format!("sha256:{:x}", digest))
-}
-
-/// Verify that the `trust.fingerprint` field of the config equals the recomputed fingerprint.
-pub fn verify(input: &str) -> Result<()> {
-    let value: serde_yaml::Value = serde_yaml::from_str(input).context("parse yaml")?;
-    let recorded = value
-        .get("trust")
-        .and_then(|t| t.get("fingerprint"))
-        .and_then(|f| f.as_str())
-        .ok_or_else(|| anyhow!("trust block missing or empty; run `hector trust`"))?
-        .to_string();
-    let expected = fingerprint(input)?;
-    if recorded == expected {
-        Ok(())
-    } else {
-        anyhow::bail!(
-            "trust fingerprint mismatch — config body has changed since `hector trust`. \
-             If you just upgraded hector, the canonicalization algorithm changed in 0.2; \
-             run `hector trust <path>` to re-sign. Otherwise inspect the diff."
-        )
-    }
-}
-
-/// Update or insert the `trust:` block in the YAML source with a fresh fingerprint.
-///
-/// Performs a string-level edit so comments, key order, and scalar style in the
-/// rest of the file are preserved verbatim. The fingerprint itself is
-/// computed via [`fingerprint`], which canonicalizes the YAML semantically and
-/// is unaffected by comments or formatting.
-///
-/// If a top-level `trust:` block already exists, it is replaced in place. The
-/// block is identified as a line starting with `trust:` at column 0 and ending
-/// at the next top-level key (or EOF). Otherwise, a fresh block is appended.
-pub fn write_trust_block(input: &str) -> Result<String> {
-    let fp = fingerprint(input)?;
-    let new_block = format!("trust:\n  fingerprint: {fp}\n");
-
-    let lines: Vec<&str> = input.lines().collect();
-    let trust_start = lines.iter().position(|l| {
-        // Top-level `trust:` key (column 0, no leading whitespace). The trust
-        // block is always written `trust:\n` with the fingerprint on the
-        // following line, so an exact match on `trust:` (after stripping
-        // trailing whitespace and inline comments) is sufficient and
-        // unambiguously avoids matching `trusted:`, `trust_chain:`, etc.
-        let no_comment = match l.find('#') {
-            Some(i) => &l[..i],
-            None => l,
-        };
-        no_comment.trim_end() == "trust:"
-    });
-
-    if let Some(start) = trust_start {
-        // End-of-block: first subsequent non-empty line whose first byte is
-        // not whitespace (i.e. another top-level key) — or EOF.
-        let end = (start + 1..lines.len())
-            .find(|i| {
-                let l = lines[*i];
-                !l.is_empty() && !l.starts_with(' ') && !l.starts_with('\t')
-            })
-            .unwrap_or(lines.len());
-
-        let mut out = String::with_capacity(input.len() + new_block.len());
-        if start > 0 {
-            for l in &lines[..start] {
-                out.push_str(l);
-                out.push('\n');
-            }
-        }
-        out.push_str(&new_block);
-        if end < lines.len() {
-            for l in &lines[end..] {
-                out.push_str(l);
-                out.push('\n');
-            }
-            // Preserve trailing-newline shape of the original.
-            if !input.ends_with('\n') {
-                out.pop();
-            }
-        }
-        return Ok(out);
-    }
-
-    // No existing trust block — append at EOF.
-    let mut out = String::with_capacity(input.len() + new_block.len() + 1);
-    out.push_str(input);
-    if !out.is_empty() && !out.ends_with('\n') {
-        out.push('\n');
-    }
-    out.push_str(&new_block);
+/// Recursively collect `(relative-path, bytes)` for every file under `dir`,
+/// with `/`-separated relative paths for cross-platform determinism.
+fn collect_gate_files(dir: &Path) -> Result<Vec<(String, Vec<u8>)>> {
+    let mut out = Vec::new();
+    collect_into(dir, dir, &mut out)?;
+    out.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(out)
+}
+
+fn collect_into(root: &Path, dir: &Path, out: &mut Vec<(String, Vec<u8>)>) -> Result<()> {
+    for entry in std::fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_into(root, &path, out)?;
+        } else {
+            let rel = path
+                .strip_prefix(root)
+                .expect("walked path must live under the gates root")
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("/");
+            let bytes =
+                std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+            out.push((rel, bytes));
+        }
+    }
+    Ok(())
+}
+
+/// Compute the trust hash of a config: sha256 over the config file bytes plus
+/// every file under `<config-dir>/.hector/gates/` (sorted by relative path).
+/// Returns `"sha256:<hex>"`.
+pub fn compute_hash(config_path: &Path) -> Result<String> {
+    let mut hasher = Sha256::new();
+    let cfg_bytes =
+        std::fs::read(config_path).with_context(|| format!("reading {}", config_path.display()))?;
+    hash_entry(&mut hasher, "config", &cfg_bytes);
+
+    let config_dir = config_path.parent().unwrap_or_else(|| Path::new("."));
+    let gates_dir = config_dir.join(".hector").join("gates");
+    if gates_dir.is_dir() {
+        for (rel, bytes) in collect_gate_files(&gates_dir)? {
+            hash_entry(&mut hasher, &format!("gates/{rel}"), &bytes);
+        }
+    }
+    Ok(format!("sha256:{:x}", hasher.finalize()))
+}
+
+pub const TRUST_STORE_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TrustStore {
+    /// Schema version. A defaulted (never-written) store has `0`; a store
+    /// written by `bless` carries `TRUST_STORE_VERSION`. Trust decisions key
+    /// off per-entry hashes, not this field — it exists for future migrations.
+    #[serde(default)]
+    pub version: u32,
+    #[serde(default)]
+    pub entries: BTreeMap<String, TrustEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrustEntry {
+    pub hash: String,
+    pub blessed_at: String,
+}
+
+/// `$XDG_CONFIG_HOME` (if set and non-empty) else `$HOME/.config`. Pure
+/// resolver split out from the env read so it is testable without mutating
+/// process env.
+fn config_home_from(xdg: Option<String>, home: Option<String>) -> Option<PathBuf> {
+    if let Some(x) = xdg {
+        if !x.is_empty() {
+            return Some(PathBuf::from(x));
+        }
+    }
+    home.map(|h| PathBuf::from(h).join(".config"))
+}
+
+fn config_home() -> Option<PathBuf> {
+    config_home_from(
+        std::env::var("XDG_CONFIG_HOME").ok(),
+        std::env::var("HOME").ok(),
+    )
+}
+
+fn store_path_in(config_home: &Path) -> PathBuf {
+    config_home.join("hector").join("trust.json")
+}
+
+/// Absolute path to the out-of-repo trust store.
+pub fn trust_store_path() -> Result<PathBuf> {
+    let home = config_home().ok_or_else(|| {
+        anyhow::anyhow!("cannot resolve config home (set $XDG_CONFIG_HOME or $HOME)")
+    })?;
+    Ok(store_path_in(&home))
+}
+
+/// Read the store; a missing file yields an empty store (never an error).
+pub fn read_store(path: &Path) -> Result<TrustStore> {
+    match std::fs::read_to_string(path) {
+        Ok(s) => serde_json::from_str(&s).with_context(|| format!("parsing {}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(TrustStore::default()),
+        Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
+    }
+}
+
+/// Write the store atomically: serialize to a sibling temp file, then rename.
+pub fn write_store(path: &Path, store: &TrustStore) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+    }
+    let json = serde_json::to_string_pretty(store)?;
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, json).with_context(|| format!("writing {}", tmp.display()))?;
+    std::fs::rename(&tmp, path).with_context(|| format!("renaming into {}", path.display()))?;
+    Ok(())
+}
+
+/// Canonical absolute path used as the store key for `config_path`.
+fn canonical_key(config_path: &Path) -> Result<String> {
+    let canon = config_path
+        .canonicalize()
+        .with_context(|| format!("resolving {}", config_path.display()))?;
+    Ok(canon.to_string_lossy().to_string())
+}
+
+/// Verify `config_path` (and its gate scripts) match a blessed entry in the
+/// store at `store_path`. Fails closed with a fixed, actionable message.
+pub fn ensure_trusted_in(config_path: &Path, store_path: &Path) -> Result<()> {
+    let key = canonical_key(config_path)?;
+    let expected = compute_hash(config_path)?;
+    let store = read_store(store_path)?;
+    match store.entries.get(&key) {
+        Some(entry) if entry.hash == expected => Ok(()),
+        _ => anyhow::bail!("config/gates not trusted — review and run `hector trust`"),
+    }
+}
+
+/// Recompute the hash of `config_path` and write it to the store as blessed.
+/// Parse-validates the config first so a broken config is never blessed.
+pub fn bless_in(config_path: &Path, store_path: &Path, now: &str) -> Result<()> {
+    crate::config::parse_file(config_path)
+        .context("refusing to trust a config that does not parse")?;
+    let key = canonical_key(config_path)?;
+    let hash = compute_hash(config_path)?;
+    let mut store = read_store(store_path)?;
+    store.version = TRUST_STORE_VERSION;
+    store.entries.insert(
+        key,
+        TrustEntry {
+            hash,
+            blessed_at: now.to_string(),
+        },
+    );
+    write_store(store_path, &store)
+}
+
+/// Thin wrapper: enforce trust against the real out-of-repo store.
+pub fn ensure_trusted(config_path: &Path) -> Result<()> {
+    ensure_trusted_in(config_path, &trust_store_path()?)
+}
+
+/// Thin wrapper: bless against the real out-of-repo store, stamping `blessed_at`
+/// with the current UTC time.
+pub fn bless(config_path: &Path) -> Result<()> {
+    let now = chrono::Utc::now().to_rfc3339();
+    bless_in(config_path, &trust_store_path()?, &now)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::Path;
+
+    fn write(p: &Path, body: &str) {
+        if let Some(parent) = p.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(p, body).unwrap();
+    }
+
+    #[test]
+    fn hash_is_deterministic_and_prefixed() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = dir.path().join(".hector.yml");
+        write(
+            &cfg,
+            "gates:\n  g:\n    files: \"*.rs\"\n    run: \"true\"\n",
+        );
+        let a = compute_hash(&cfg).unwrap();
+        let b = compute_hash(&cfg).unwrap();
+        assert_eq!(a, b, "same inputs must hash identically");
+        assert!(
+            a.starts_with("sha256:"),
+            "hash must be sha256-prefixed: {a}"
+        );
+    }
+
+    #[test]
+    fn editing_config_changes_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = dir.path().join(".hector.yml");
+        write(
+            &cfg,
+            "gates:\n  g:\n    files: \"*.rs\"\n    run: \"true\"\n",
+        );
+        let before = compute_hash(&cfg).unwrap();
+        write(
+            &cfg,
+            "gates:\n  g:\n    files: \"*.rs\"\n    run: \"false\"\n",
+        );
+        let after = compute_hash(&cfg).unwrap();
+        assert_ne!(before, after, "a config edit must invalidate the hash");
+    }
+
+    #[test]
+    fn editing_a_gate_script_changes_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = dir.path().join(".hector.yml");
+        write(
+            &cfg,
+            "gates:\n  g:\n    files: \"*.rs\"\n    run: \".hector/gates/g.sh\"\n",
+        );
+        let script = dir.path().join(".hector/gates/g.sh");
+        write(&script, "#!/bin/sh\nexit 0\n");
+        let before = compute_hash(&cfg).unwrap();
+        write(&script, "#!/bin/sh\nexit 2\n");
+        let after = compute_hash(&cfg).unwrap();
+        assert_ne!(before, after, "a gate-script edit must invalidate the hash");
+    }
+
+    #[test]
+    fn hash_folds_gate_files_in_sorted_order() {
+        // compute_hash must fold gate files in sorted-relative-path order,
+        // independent of OS enumeration order. We pin the exact scheme by
+        // recomputing the expected digest with the files folded in sorted
+        // order using the impl's own framing helper. This fails if the impl
+        // ever stops sorting (the `out.sort_by` in collect_gate_files) — on a
+        // filesystem whose read_dir yields b before a — or if the hashing
+        // frame (labels / length prefixes) changes, which doubles as a
+        // regression lock on the stored-hash encoding.
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = dir.path().join(".hector.yml");
+        let cfg_body = "gates:\n  g:\n    files: \"*\"\n    run: \"true\"\n";
+        write(&cfg, cfg_body);
+        write(&dir.path().join(".hector/gates/a.sh"), "a\n");
+        write(&dir.path().join(".hector/gates/b.sh"), "b\n");
+
+        let mut expected = Sha256::new();
+        hash_entry(&mut expected, "config", cfg_body.as_bytes());
+        hash_entry(&mut expected, "gates/a.sh", b"a\n");
+        hash_entry(&mut expected, "gates/b.sh", b"b\n");
+        let want = format!("sha256:{:x}", expected.finalize());
+
+        assert_eq!(compute_hash(&cfg).unwrap(), want);
+    }
+
+    #[test]
+    fn missing_gates_dir_hashes_only_the_config() {
+        // No .hector/gates/ at all — must succeed (not error), hashing config alone.
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = dir.path().join(".hector.yml");
+        write(
+            &cfg,
+            "gates:\n  g:\n    files: \"*.rs\"\n    run: \"true\"\n",
+        );
+        assert!(compute_hash(&cfg).unwrap().starts_with("sha256:"));
+    }
+
+    #[test]
+    fn store_path_joins_under_config_home() {
+        let p = store_path_in(Path::new("/home/u/.config"));
+        assert_eq!(p, Path::new("/home/u/.config/hector/trust.json"));
+    }
+
+    #[test]
+    fn read_missing_store_is_empty_not_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = read_store(&dir.path().join("trust.json")).unwrap();
+        assert!(store.entries.is_empty());
+    }
+
+    #[test]
+    fn write_then_read_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested/trust.json"); // parent must be created
+        let mut store = TrustStore {
+            version: TRUST_STORE_VERSION,
+            entries: std::collections::BTreeMap::new(),
+        };
+        store.entries.insert(
+            "/abs/.hector.yml".to_string(),
+            TrustEntry {
+                hash: "sha256:abc".into(),
+                blessed_at: "2026-06-24T00:00:00Z".into(),
+            },
+        );
+        write_store(&path, &store).unwrap();
+        let back = read_store(&path).unwrap();
+        assert_eq!(back.entries["/abs/.hector.yml"].hash, "sha256:abc");
+        assert_eq!(
+            back.entries["/abs/.hector.yml"].blessed_at,
+            "2026-06-24T00:00:00Z"
+        );
+        assert_eq!(back.version, TRUST_STORE_VERSION);
+    }
+
+    #[test]
+    fn xdg_config_home_overrides_home() {
+        // config_home() prefers XDG_CONFIG_HOME. Test the pure resolver with an
+        // explicit value rather than mutating process env.
+        assert_eq!(
+            config_home_from(Some("/x".into()), Some("/h".into())),
+            Some(PathBuf::from("/x"))
+        );
+        assert_eq!(
+            config_home_from(None, Some("/h".into())),
+            Some(PathBuf::from("/h/.config"))
+        );
+        // An empty XDG_CONFIG_HOME is treated as unset and falls through to HOME.
+        assert_eq!(
+            config_home_from(Some(String::new()), Some("/h".into())),
+            Some(PathBuf::from("/h/.config"))
+        );
+        assert_eq!(config_home_from(None, None), None);
+    }
+
+    #[test]
+    fn read_store_surfaces_non_notfound_errors() {
+        // A path that exists but is a directory makes read_to_string fail with a
+        // kind other than NotFound — that must propagate as Err, not be swallowed
+        // into an empty store.
+        let dir = tempfile::tempdir().unwrap();
+        assert!(read_store(dir.path()).is_err());
+    }
+
+    fn cfg_with_gate(dir: &Path) -> PathBuf {
+        let cfg = dir.join(".hector.yml");
+        write(
+            &cfg,
+            "gates:\n  g:\n    files: \"*\"\n    run: \".hector/gates/g.sh\"\n",
+        );
+        write(&dir.join(".hector/gates/g.sh"), "#!/bin/sh\nexit 0\n");
+        cfg
+    }
+
+    #[test]
+    fn bless_then_ensure_succeeds() {
+        let proj = tempfile::tempdir().unwrap();
+        let store = tempfile::tempdir().unwrap();
+        let store_path = store.path().join("trust.json");
+        let cfg = cfg_with_gate(proj.path());
+        bless_in(&cfg, &store_path, "2026-06-24T00:00:00Z").unwrap();
+        assert!(ensure_trusted_in(&cfg, &store_path).is_ok());
+    }
+
+    #[test]
+    fn never_blessed_is_not_trusted() {
+        let proj = tempfile::tempdir().unwrap();
+        let store = tempfile::tempdir().unwrap();
+        let cfg = cfg_with_gate(proj.path());
+        let err = ensure_trusted_in(&cfg, &store.path().join("trust.json"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("not trusted"),
+            "message must say not trusted: {err}"
+        );
+        assert!(
+            err.contains("hector trust"),
+            "message must point at `hector trust`: {err}"
+        );
+    }
+
+    #[test]
+    fn editing_a_gate_after_bless_revokes_trust() {
+        let proj = tempfile::tempdir().unwrap();
+        let store = tempfile::tempdir().unwrap();
+        let store_path = store.path().join("trust.json");
+        let cfg = cfg_with_gate(proj.path());
+        bless_in(&cfg, &store_path, "t").unwrap();
+        // Tamper with the gate script.
+        write(
+            &proj.path().join(".hector/gates/g.sh"),
+            "#!/bin/sh\nexit 2\n",
+        );
+        assert!(ensure_trusted_in(&cfg, &store_path).is_err());
+    }
+
+    #[test]
+    fn editing_config_after_bless_revokes_trust() {
+        let proj = tempfile::tempdir().unwrap();
+        let store = tempfile::tempdir().unwrap();
+        let store_path = store.path().join("trust.json");
+        let cfg = cfg_with_gate(proj.path());
+        bless_in(&cfg, &store_path, "t").unwrap();
+        write(&cfg, "gates:\n  g:\n    files: \"*\"\n    run: \"true\"\n");
+        assert!(ensure_trusted_in(&cfg, &store_path).is_err());
+    }
+
+    #[test]
+    fn bless_rejects_unparseable_config() {
+        let proj = tempfile::tempdir().unwrap();
+        let store = tempfile::tempdir().unwrap();
+        let cfg = proj.path().join(".hector.yml");
+        write(&cfg, "schema_version: 2\nrules: {}\n"); // legacy → parser rejects
+        assert!(bless_in(&cfg, &store.path().join("trust.json"), "t").is_err());
+    }
 }

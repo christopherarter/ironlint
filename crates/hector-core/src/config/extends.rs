@@ -4,29 +4,16 @@ use anyhow::{anyhow, Context, Result};
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
-/// Resolve extends recursively.
+/// Resolve `extends:` recursively.
 ///
-/// Earlier ancestors are inherited; local rules win on collision. Does
-/// **not** verify trust — callers that execute the resulting rules (e.g.
-/// `HectorEngine::load`) must use [`resolve_trusted`] instead, so the trust
-/// chain is enforced before any `script:` runs.
+/// Earlier ancestors are inherited; local gates win on collision. Trust is not
+/// verified here — it returns in a later plan as the out-of-repo store.
 pub fn resolve(root: &Path) -> Result<Config> {
     let mut seen = HashSet::new();
-    resolve_inner(root, &mut seen, false)
+    resolve_inner(root, &mut seen)
 }
 
-/// Resolve extends and verify trust at every step.
-///
-/// Same as [`resolve`], but additionally calls [`crate::trust::verify`] on
-/// every config visited by the DFS (root and every transitive ancestor).
-/// Closes the bypass where a signed child could `extends:` an unsigned parent
-/// and still load.
-pub fn resolve_trusted(root: &Path) -> Result<Config> {
-    let mut seen = HashSet::new();
-    resolve_inner(root, &mut seen, true)
-}
-
-fn resolve_inner(path: &Path, seen: &mut HashSet<PathBuf>, verify_trust: bool) -> Result<Config> {
+fn resolve_inner(path: &Path, seen: &mut HashSet<PathBuf>) -> Result<Config> {
     let canonical = path
         .canonicalize()
         .with_context(|| format!("canonicalizing {}", path.display()))?;
@@ -35,60 +22,32 @@ fn resolve_inner(path: &Path, seen: &mut HashSet<PathBuf>, verify_trust: bool) -
     }
     let content = std::fs::read_to_string(&canonical)
         .with_context(|| format!("reading {}", canonical.display()))?;
-    // Detect schema v1 BEFORE trust verify so users see a clear
-    // "run `hector migrate`" hint instead of "trust block missing".
-    if matches!(super::parser::peek_schema_version(&content), Some(1)) {
-        return Err(anyhow!(
-            "{} is schema_version 1 (legacy bully); run `hector migrate` to upgrade to schema_version 2",
-            canonical.display()
-        ));
-    }
-    if verify_trust {
-        crate::trust::verify(&content)
-            .with_context(|| format!("trust verify for {}", canonical.display()))?;
-    }
     let mut cfg = parse_str(&content)?;
 
     let parent_dir = canonical.parent().unwrap_or_else(|| Path::new("."));
     let extends = std::mem::take(&mut cfg.extends);
     for relative in &extends {
         let abs = parent_dir.join(relative);
-        let inherited = resolve_inner(&abs, seen, verify_trust)?;
+        let inherited = resolve_inner(&abs, seen)?;
         merge_inherited(&mut cfg, inherited);
     }
     seen.remove(&canonical);
     Ok(cfg)
 }
 
+/// Inherited gates fill in only where the local config doesn't already define
+/// them — local wins on collision.
 fn merge_inherited(local: &mut Config, inherited: Config) {
-    // Inherited rules fill in only where local doesn't already define them.
-    for (id, rule) in inherited.rules {
-        local.rules.entry(id).or_insert(rule);
+    for (id, gate) in inherited.gates {
+        local.gates.entry(id).or_insert(gate);
     }
-    // Skip entries are additive — the union of every config in the extends
-    // chain is what fires. Order doesn't matter (globs are unordered set
-    // semantics), so we just append (deduped).
-    for g in inherited.skip {
-        if !local.skip.contains(&g) {
-            local.skip.push(g);
-        }
-    }
-    // trust block is per-config; never inherited.
 }
 
-/// Resolve extends and return a per-rule origin map.
+/// Resolve `extends:` and return a per-gate origin map.
 ///
-/// The map attributes every surviving rule id to the canonical path of
-/// the file it was defined in. Local definitions win on collision —
-/// same semantics as [`resolve`] — and the origin map reflects that
-/// (the local file's path is recorded for any rule the local config
-/// defined directly).
-///
-/// This entry point does **not** verify trust. `show-resolved-config`
-/// is a read-only inspection command and operators reach for it
-/// precisely when debugging an as-yet-unsigned config; gating it on
-/// trust would defeat the purpose. Callers that intend to *execute*
-/// rules must continue to use [`resolve_trusted`].
+/// Attributes every surviving gate id to the canonical path of the file it was
+/// defined in. Local definitions win on collision and the origin map reflects
+/// that. Read-only inspection (`show-resolved-config`); no trust verification.
 pub fn resolve_with_origin(root: &Path) -> Result<(Config, BTreeMap<String, PathBuf>)> {
     let mut seen = HashSet::new();
     let mut origins: BTreeMap<String, PathBuf> = BTreeMap::new();
@@ -109,22 +68,9 @@ fn resolve_inner_with_origin(
     }
     let content = std::fs::read_to_string(&canonical)
         .with_context(|| format!("reading {}", canonical.display()))?;
-    if matches!(super::parser::peek_schema_version(&content), Some(1)) {
-        return Err(anyhow!(
-            "{} is schema_version 1 (legacy bully); run `hector migrate` to upgrade to schema_version 2",
-            canonical.display()
-        ));
-    }
     let mut cfg = parse_str(&content)?;
 
-    // Record every rule defined *directly* in this file. A closer
-    // ancestor (i.e. the call frame above us in the DFS, which is
-    // closer to the local config) may have already claimed the id —
-    // and "closer wins" mirrors `merge_inherited`'s "local wins on
-    // collision". Use `entry().or_insert_with` so an outer (closer)
-    // frame's recording is never overwritten by an inner (further)
-    // frame.
-    for id in cfg.rules.keys() {
+    for id in cfg.gates.keys() {
         origins
             .entry(id.clone())
             .or_insert_with(|| canonical.clone());
@@ -150,22 +96,12 @@ fn merge_inherited_with_origin(
     let inherited_canonical = inherited_from
         .canonicalize()
         .unwrap_or_else(|_| inherited_from.to_path_buf());
-    for (id, rule) in inherited.rules {
-        // Only fill in rules the local config (or a closer ancestor)
-        // hasn't already claimed. The recursive walker has already
-        // recorded the defining file for any closer-ancestor rule; we
-        // only record an origin here when the rule is genuinely new to
-        // the merged config.
-        if let std::collections::btree_map::Entry::Vacant(slot) = local.rules.entry(id.clone()) {
+    for (id, gate) in inherited.gates {
+        if let std::collections::btree_map::Entry::Vacant(slot) = local.gates.entry(id.clone()) {
             origins
                 .entry(id)
                 .or_insert_with(|| inherited_canonical.clone());
-            slot.insert(rule);
-        }
-    }
-    for g in inherited.skip {
-        if !local.skip.contains(&g) {
-            local.skip.push(g);
+            slot.insert(gate);
         }
     }
 }

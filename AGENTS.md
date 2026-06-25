@@ -4,7 +4,9 @@ Guidance for AI coding agents working in this repo.
 
 ## What this is
 
-Rust rewrite of [dynamik-dev/bully](https://github.com/dynamik-dev/bully) — policy-enforcement pipeline for AI coding agents. Status: **0.1 complete**. Two engines (`script`, `ast`) wired — hector is a static gate; LLM evaluation was removed in 0.2. CLI ships `check`, `trust`, `validate`, `init`, `migrate`, `baseline`. Claude Code adapter at `adapters/claude-code/` shipped (0.1c). Plan 0.2 adds OpenAI + Aider + pre-commit. Authoritative docs: `specs/overview.md` (1.0 vision), `specs/2026-05-11-hector-plan-and-0.1-design.md` (phasing + 0.1 design); per-phase plans in `plans/`.
+Rust rewrite of [dynamik-dev/bully](https://github.com/dynamik-dev/bully) — a tool-agnostic, static policy-enforcement gate for AI coding agents. Status: **0.3 "gates" redesign, Plans 1 (core engine + CLI) and 2 (trust store) merged.** A gate is `files` (globs) + `run` (a shell command); hector matches a touched file to gates, runs each `run` once with the ABI on env + proposed content on stdin, and reads only the exit code (`2` = Block). No per-rule engines, no severity, no LLM. CLI ships `check`, `validate`, `init`, `explain`, `show-resolved-config`, `doctor`, `trust` (blesses the out-of-repo store; `check` fails closed — exit 1 — on untrusted config/gates). Claude Code adapter at `adapters/claude-code/` (predates the redesign; adapter ABI is Plan 4). Authoritative design: `specs/2026-06-15-hector-gates-redesign-design.md` (supersedes the old engine model in `specs/2026-05-11-hector-plan-and-0.1-design.md`); per-phase plans in `plans/` (`plans/2026-06-15-hector-gates-redesign-core.md` = Plan 1).
+
+**Not yet built (later plans):** `hector verify` + the full `doctor` expansion (Plan 3 — `doctor` is currently a minimal static-check command); the adapter `--event`/ABI side (Plan 4).
 
 ## Rules
 
@@ -24,58 +26,60 @@ cargo build --release                       # produces ./target/release/hector
 cargo test                                  # all workspace tests
 cargo test -p hector-core                   # core only
 cargo test -p hector-cli                    # CLI only
-cargo test --test cli_e2e_script_rules      # single integration test file
+cargo test --test cli_e2e_gates             # single integration test file
 cargo test <name>                           # filter by test-fn name
 cargo clippy --all-targets -- -D warnings   # lint
 cargo fmt
 bash scripts/ci-coverage.sh                 # per-file ≥80% region-coverage gate (matches CI)
 ```
 
-Snapshot tests: `insta` — `cargo insta review` after intentional verdict-shape changes. CLI tests use `assert_cmd` against the compiled binary.
+CLI tests use `assert_cmd` against the compiled binary. (`insta` snapshots may exist for some surfaces — `cargo insta review` after an intentional shape change.)
 
 ## Architecture
 
 Cargo workspace, two crates:
 
 - **`hector-core`** — library. Modules:
-  - `config` — parse v1/v2 YAML, glob scope matching, `extends:` resolution
-  - `diff` — unified-diff parser
-  - `engine` — `RuleEngine` trait + two impls: `script` (capability-sandboxed exec) and `ast` (via `ast-grep-core`)
-  - `runner` — orchestrates: load → trust-verify → scope-match → dispatch engine → baseline-filter → telemetry-log
-  - `trust` — canonical-YAML sha256 fingerprint
-  - `verdict` — Pass/Warn/Block + locked JSON shape
-  - `disable` — `hector-disable: <rule-id>` line directives (one rule per directive; directive ends at whitespace/`*`/`/`)
-  - `baseline` — record-and-filter existing violations by `rule_id::file::line` fingerprint
-  - `telemetry` — `.hector/log.jsonl`, append-only check log
-- **`hector-cli`** — thin binary, name `hector`. `cli.rs` defines clap subcommands; `commands/{check,trust,validate,init,migrate,baseline}.rs` are one-function adapters into core.
+  - `config` — parse the gates YAML (`Config { extends, execution, gates }`, `Gate { files, run }`), glob scope matching (`scope.rs`), `extends:` resolution (`extends.rs`)
+  - `diff` — unified-diff parser (used by CLI `--diff` to enumerate changed files)
+  - `engine` — the single gate-execution model: `gate::run_gate` spawns `sh -c <run>`, feeds stdin, enforces the timeout, and classifies the exit code into a `GateOutcome` (`Pass` / `Block { message }` / `Internal(InternalReason)`). No `RuleEngine` trait, no per-engine impls.
+  - `runner` — orchestrates: load → `extends`-resolve → build per-gate scope matchers → for each gate run `run_gate` per matching file → fold into a `Verdict` → telemetry-log
+  - `trust` — out-of-repo allow-list at `~/.config/hector/trust.json` (XDG: `$XDG_CONFIG_HOME/hector/trust.json`). Hash covers the config bytes + every file under `.hector/gates/` (sorted by relative path); keyed by the config's canonical absolute path. Atomic write on `hector trust`. Enforcement is at the CLI `check` layer only — `HectorEngine::load` stays pure.
+  - `verdict` — `Status` (Pass / Block / InternalError) + the locked JSON shape (`Verdict { blocks, errors, passed, .. }`, `Block`, `GateError`)
+  - `disable` — `hector-disable: <gate-id>` line directives; file-wide (a directive anywhere suppresses that gate for that file). Directive ends at whitespace/`*`/`/`.
+  - `telemetry` — `.hector/log.jsonl`, append-only check log of `PerGateRecord`s
+- **`hector-cli`** — thin binary, name `hector`. `cli.rs` defines clap subcommands; `commands/{check,validate,init,explain,show_resolved_config,doctor,trust}.rs` are one-function adapters into core.
 
-Three load-time invariants enforced by `HectorEngine::load` (`crates/hector-core/src/runner.rs`):
+`HectorEngine::load` (`crates/hector-core/src/runner.rs`) resolves `extends` and builds the per-gate scope matchers. Two things it relies on:
 
-1. **Trust gate.** `trust::verify` recomputes the sha256 of the YAML with `trust:` stripped and keys sorted; mismatch errors (CLI exit 1). Only defense against malicious `script:` rules — capabilities are accident-protection, not adversarial-protection. See `docs/security/trust.md` and `docs/security/capabilities.md`.
-2. **Schema version.** `parser::SUPPORTED_SCHEMAS = [1, 2]`. v1 is legacy bully; `is_legacy()` is the migration hook.
-3. **Extends.** `config::extends::resolve` does a cycle-detected DFS; inherited rules fill gaps but **local rules win on collision**, and `trust:` is never inherited.
+1. **Extends.** `config::extends::resolve` does a cycle-detected DFS; inherited gates fill gaps but **local gates win on collision**.
+2. **Legacy rejection.** `config::parser` rejects any pre-0.3 config (top-level `schema_version:`, `rules:`, or `trust:`) with a curated error pointing at the gates format — there is no migration path (no install base).
 
-**Exit-code contract** (`commands/check.rs`):
+(Trust is enforced at the CLI `check` layer — `check::run` calls `trust::ensure_trusted` before invoking the engine and exits 1 on missing/mismatch. `HectorEngine::load` stays pure; read-only commands do not enforce trust.)
 
-- `0` — Pass or Warn
-- `1` — internal/config error (untrusted, parse failure, missing file)
-- `2` — Block (≥1 error-severity policy violation)
-- `3` — InternalError (≥1 engine runtime error; `__internal` violations present — e.g. AST refused diff, script spawn failure)
+**The gate ABI** (locked stability surface — every adapter must satisfy it, every gate `run` may rely on it): `$HECTOR_FILE` (absolute path under check), `$HECTOR_ROOT` (project root = the gate's cwd), `$HECTOR_EVENT` (`edit`/`write`/`pre-commit`/`manual`), the proposed post-edit content on **stdin**. No string templating — the path travels only as an env value, never spliced into `run`.
+
+**Gate verdict contract.** The gate owns the verdict via its exit code: `2` → Block; `0`/`1`/`3`–`125` → Pass (blocking is opt-in per gate — a tool that exits 1 on findings is a pass unless the script remaps it to `2`); `126`/`127`/`≥128` (signal) / wall-clock timeout → InternalError (a broken gate is never a silent pass). On Block, the gate's combined trimmed stdout+stderr is the message; if both are empty, the runner fills `"<gate-id> blocked"`.
+
+**Exit-code contract** (`commands/check.rs`) — consumed by CI and editor adapters, do not break:
+
+- `0` — Pass (no warning tier exists)
+- `1` — config/load error (parse failure, missing file, unknown `--gate`, or untrusted config/gates)
+- `2` — Block (≥1 gate exited 2)
+- `3` — InternalError (≥1 gate crashed: 127 / timeout / signal)
 
 Adapters fail-open on exit 3 by default; opt-in fail-closed via `HECTOR_FAIL_CLOSED_ON_INTERNAL=1`.
 
-Consumed by CI and editor adapters — do not break.
+**Verdict JSON** (`verdict.rs`): `SCHEMA_VERSION = 4`. Treat `Verdict`, `Block`, `GateError`, `Status`, and `SCHEMA_VERSION` as a public stability surface — bump `SCHEMA_VERSION` to change shape. (Telemetry records are versioned independently — `telemetry::SCHEMA_VERSION = 3`.)
 
-**Verdict JSON** (`verdict.rs`): "locked-but-unstable" at 0.1, freezes at 0.3. Treat `Verdict`, `Violation`, `Status`, `Severity`, `Engine`, `SCHEMA_VERSION` as a public stability surface now — bump `SCHEMA_VERSION` to change shape.
+**Execution model.** One `run` invocation per matching file, **sequential** (rayon parallel dispatch is a possible follow-up). Per-gate wall-clock is `HECTOR_TIMEOUT` env (secs) → `execution.timeout_secs` (default 30), clamped ≥1. No sandboxing in 0.3 — the timeout is the only execution rail.
 
-**Capability sandbox** (`engine/capability.rs`): **Linux-strict for network, advisory for writes**. On Linux, `network: false` unshares the net namespace when privileged (best-effort with warning otherwise). Writes policy: no-op pending CAP_SYS_ADMIN-via-CLONE_NEWUSER work in 0.2. On macOS, all constraints are advisory; the command runs unrestricted.
-
-**Scope matching** (`config/scope.rs`) deliberately diverges from raw globset: bare patterns without `/` also register as `**/<pattern>`, so `*.py` matches at any depth — mirrors bully's semantics. Don't "fix" it.
+**Scope matching** (`config/scope.rs`) deliberately diverges from raw globset: bare patterns without `/` also register as `**/<pattern>`, so `*.py` matches at any depth — mirrors bully's semantics. Don't "fix" it. Applies to each gate's `files` list.
 
 ## Conventions
 
-- New engines plug in via the `EngineKind` enum (`script`, `ast`) + a match arm in `runner::run_engine`. `EngineKind` is matched exhaustively (no wildcard arm), so adding a variant fails to compile until every site handles it. Configs naming any other engine — including the removed `semantic`/`session` — are rejected by serde at parse time as an unknown variant. Don't smuggle new logic into an existing arm.
+- A gate is exactly two fields: `files` (glob or list) + `run` (a shell string, handed to `sh -c` verbatim). There are no engines, no `severity`, no output-parsing modes — a gate blocks by exiting `2` and owns its own message. Don't reintroduce per-rule kinds.
 - Test fixtures live in `tests/fixtures/` at the repo root; crate tests use relative paths.
 - `Cargo.lock` is gitignored (workspace policy) — do not commit.
 - Binary is `hector`, not `hector-cli`.
-- `Engine::Trust` in the verdict enum is the catch-all for _internal_ engine errors and trust-gate failures (semantic mismatch acknowledged); rename is on the table before the verdict shape freezes at 0.3.
+- Trust enforcement lives in the CLI `check` command (`commands/check.rs`), not in `HectorEngine::load`. Read-only commands (`validate`, `explain`, `show-resolved-config`, `doctor`) do not enforce trust. `doctor` is intentionally minimal until Plan 3.

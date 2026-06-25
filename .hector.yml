@@ -1,51 +1,19 @@
-schema_version: 2
-rules:
-  no-unwrap-in-src:
-    description: Avoid .unwrap() in production source. Use ? or expect() with a message.
-    engine: ast
-    language: rust
-    scope:
-    - crates/*/src/**/*.rs
-    severity: warning
-    pattern: $EXPR.unwrap()
-  no-panic-in-src:
-    description: Avoid panic!() in production source. Return an error instead.
-    engine: ast
-    language: rust
-    scope:
-    - crates/*/src/**/*.rs
-    severity: warning
-    pattern: panic!($$$)
+# Hector's own policy, in the 0.3 gates model. Dogfooded by scripts/ci-dogfood.sh.
+#
+# Gates have no severity — every gate blocks (exit 2). The pre-0.3
+# `severity: warning` rules (no-unwrap-in-src / no-panic-in-src /
+# no-eprintln-debug) are therefore dropped, not downgraded: hector's own
+# test-heavy src legitimately uses .unwrap()/panic! in #[cfg(test)] code, so a
+# blocking gate would be wrong. The three former `severity: error` rules stay as
+# blocking gates. The old in-YAML `trust:` block is gone — trust now lives in
+# the out-of-repo store (`hector trust`).
+gates:
   no-todo-in-src:
-    description: todo!() must not ship. Replace with a real implementation or return an error.
-    engine: ast
-    language: rust
-    scope:
-    - crates/*/src/**/*.rs
-    severity: error
-    pattern: todo!($$$)
+    files: crates/*/src/**/*.rs
+    run: "grep -nE 'todo!\\(' \"$HECTOR_FILE\"; case $? in 0) exit 2;; 1) exit 0;; *) exit $?;; esac"
   no-unimplemented-in-src:
-    description: unimplemented!() must not ship.
-    engine: ast
-    language: rust
-    scope:
-    - crates/*/src/**/*.rs
-    severity: error
-    pattern: unimplemented!($$$)
+    files: crates/*/src/**/*.rs
+    run: "grep -nE 'unimplemented!\\(' \"$HECTOR_FILE\"; case $? in 0) exit 2;; 1) exit 0;; *) exit $?;; esac"
   no-dbg-in-src:
-    description: dbg!() is a debug macro and must not ship.
-    engine: ast
-    language: rust
-    scope:
-    - crates/*/src/**/*.rs
-    severity: error
-    pattern: dbg!($$$)
-  no-eprintln-debug:
-    description: Don't ship `eprintln!("DEBUG ...")` — use tracing or remove it.
-    engine: script
-    scope:
-    - crates/*/src/**/*.rs
-    severity: warning
-    script: grep -nE 'eprintln!\("DEBUG' {file} && exit 1 || exit 0
-trust:
-  fingerprint: sha256:8798ad5a0ab624c9a5d56b87372cdaf1fdd3ccc5339fe2573b82b26be28b9f36
+    files: crates/*/src/**/*.rs
+    run: "grep -nE 'dbg!\\(' \"$HECTOR_FILE\"; case $? in 0) exit 2;; 1) exit 0;; *) exit $?;; esac"

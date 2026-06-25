@@ -16,12 +16,7 @@ anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
-globset.workspace = true
-walkdir.workspace = true
 chrono.workspace = true
-ignore = "0.4"
-rayon = "1"
-fs4.workspace = true
 
 [dev-dependencies]
 assert_cmd.workspace = true

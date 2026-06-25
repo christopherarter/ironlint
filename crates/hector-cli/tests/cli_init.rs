@@ -4,8 +4,10 @@ use std::path::Path;
 use tempfile::tempdir;
 
 fn run_init(dir: &Path) {
+    let xdg = tempdir().unwrap();
     Command::cargo_bin("hector")
         .unwrap()
+        .env("XDG_CONFIG_HOME", xdg.path())
         .args(["init", "--dir", dir.to_str().unwrap()])
         .assert()
         .success();
@@ -16,13 +18,33 @@ fn read_cfg(dir: &Path) -> String {
 }
 
 #[test]
+fn init_scaffolds_gates_config_not_rules() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("Cargo.toml"), "[package]\nname = \"foo\"\n").unwrap();
+    run_init(dir.path());
+    let cfg = read_cfg(dir.path());
+    assert!(
+        cfg.starts_with("gates:\n"),
+        "gates model config must start with `gates:`:\n{cfg}"
+    );
+    assert!(
+        !cfg.contains("schema_version"),
+        "gates model must not emit schema_version:\n{cfg}"
+    );
+    assert!(
+        !cfg.contains("rules:"),
+        "gates model must not emit rules: key:\n{cfg}"
+    );
+}
+
+#[test]
 fn init_scaffolds_for_rust_project() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("Cargo.toml"), "[package]\nname = \"foo\"\n").unwrap();
     run_init(dir.path());
     let cfg = read_cfg(dir.path());
-    assert!(cfg.contains("schema_version: 2"));
-    assert!(cfg.contains("rules:"));
+    assert!(cfg.contains("no-unwrap-in-src"));
+    assert!(cfg.contains("gates:"));
 }
 
 #[test]
@@ -36,25 +58,13 @@ fn init_refuses_to_overwrite() {
         .failure();
 }
 
-/// `grep PATTERN {file} && exit 1 || exit 0` collapses grep's exit-2
-/// (regex/parse error) into exit 0 (pass), masking a broken rule forever.
-/// The template routes exit codes through a `case` statement instead:
-///   - 0 (found)        → exit 1 (violation)
-///   - 1 (not found)    → exit 0 (pass)
-///   - 2 (grep error)   → exit 2 (surfaced as violation by runner)
-///
-/// So the template must not contain `|| exit 0` (the masking idiom) and
-/// must contain `case $?` (the explicit exit-code routing).
+/// The grep-based gates must use `case $?` routing and exit 2 to block
+/// (not `|| exit 0` masking, and not exit 1 which was the old convention).
 #[test]
-fn init_template_preserves_grep_error_exit_codes() {
+fn init_template_uses_exit_2_convention() {
     for (manifest, name, contents) in [
         ("Cargo.toml", "Cargo.toml", "[package]\nname = \"foo\"\n"),
         ("package.json", "package.json", "{}\n"),
-        (
-            "pyproject.toml",
-            "pyproject.toml",
-            "[project]\nname=\"x\"\n",
-        ),
         // Generic stack — no manifest.
         ("", "", ""),
     ] {
@@ -65,17 +75,73 @@ fn init_template_preserves_grep_error_exit_codes() {
         run_init(dir.path());
         let cfg = read_cfg(dir.path());
 
-        // The Python template doesn't use grep; only assert on stacks that do.
-        if manifest != "pyproject.toml" {
-            assert!(
-                !cfg.contains("|| exit 0"),
-                "stack `{manifest}`: grep template must not mask exit 2 via `|| exit 0`; got:\n{cfg}"
-            );
-            assert!(
-                cfg.contains("case $?"),
-                "stack `{manifest}`: expected case-statement exit-code routing; got:\n{cfg}"
-            );
+        assert!(
+            !cfg.contains("|| exit 0"),
+            "stack `{manifest}`: grep template must not mask exit 2 via `|| exit 0`; got:\n{cfg}"
+        );
+        assert!(
+            cfg.contains("case $?"),
+            "stack `{manifest}`: expected case-statement exit-code routing; got:\n{cfg}"
+        );
+        assert!(
+            cfg.contains("exit 2"),
+            "stack `{manifest}`: blocking arm must use exit 2; got:\n{cfg}"
+        );
+    }
+}
+
+/// Gates model uses $HECTOR_FILE env var, not {{file}} template.
+#[test]
+fn init_template_uses_hector_file_env_var() {
+    for (manifest, name, contents) in [
+        ("Cargo.toml", "Cargo.toml", "[package]\nname = \"foo\"\n"),
+        ("package.json", "package.json", "{}\n"),
+        ("", "", ""),
+    ] {
+        let dir = tempdir().unwrap();
+        if !manifest.is_empty() {
+            fs::write(dir.path().join(name), contents).unwrap();
         }
+        run_init(dir.path());
+        let cfg = read_cfg(dir.path());
+
+        assert!(
+            !cfg.contains("{{file}}") && !cfg.contains("{file}"),
+            "stack `{manifest}`: must not use {{file}} template (use $HECTOR_FILE); got:\n{cfg}"
+        );
+        // Grep-based gates (rust, node, generic) use $HECTOR_FILE.
+        // Python ruff gate uses $HECTOR_FILE too.
+        assert!(
+            cfg.contains("$HECTOR_FILE") || cfg.contains("HECTOR_FILE"),
+            "stack `{manifest}`: gates must reference $HECTOR_FILE; got:\n{cfg}"
+        );
+    }
+}
+
+/// Generated config must validate with `hector validate`.
+#[test]
+fn init_generated_config_validates_ok() {
+    for (manifest, name, contents) in [
+        ("Cargo.toml", "Cargo.toml", "[package]\nname = \"foo\"\n"),
+        ("package.json", "package.json", "{}\n"),
+        (
+            "pyproject.toml",
+            "pyproject.toml",
+            "[project]\nname=\"x\"\n",
+        ),
+        ("", "", ""),
+    ] {
+        let dir = tempdir().unwrap();
+        if !manifest.is_empty() {
+            fs::write(dir.path().join(name), contents).unwrap();
+        }
+        run_init(dir.path());
+        let cfg_path = dir.path().join(".hector.yml");
+        Command::cargo_bin("hector")
+            .unwrap()
+            .args(["validate", "--config", cfg_path.to_str().unwrap()])
+            .assert()
+            .code(0);
     }
 }
 
@@ -84,7 +150,7 @@ fn init_template_preserves_grep_error_exit_codes() {
 // ---------------------------------------------------------------------
 
 /// Single-package npm project with no linter configured: scopes default to
-/// `src/**/*.<ext>`.
+/// `src/**/*.<ext>` patterns.
 #[test]
 fn init_single_package_npm_no_linter() {
     let dir = tempdir().unwrap();
@@ -98,9 +164,8 @@ fn init_single_package_npm_no_linter() {
     assert!(!cfg.contains("eslint-check"));
 }
 
-/// Single-package npm + biome: the `no-console-log` grep rule is dropped
-/// (biome's `noConsole` catches it) and a passthrough `biome-check` wrapper
-/// is scaffolded instead.
+/// Single-package npm + biome: the `no-console-log` grep gate is dropped
+/// (biome's `noConsole` catches it) and a `biome-check` gate is scaffolded instead.
 #[test]
 fn init_single_package_npm_with_biome_drops_console_log() {
     let dir = tempdir().unwrap();
@@ -111,28 +176,47 @@ fn init_single_package_npm_with_biome_drops_console_log() {
 
     assert!(
         !cfg.contains("no-console-log"),
-        "biome detected — `no-console-log` grep rule must be skipped; got:\n{cfg}"
+        "biome detected — `no-console-log` grep gate must be skipped; got:\n{cfg}"
     );
     assert!(
         cfg.contains("biome-check"),
-        "biome detected — expected `biome-check` passthrough rule; got:\n{cfg}"
-    );
-    assert!(
-        cfg.contains("output: passthrough"),
-        "passthrough wrapper rules must explicitly opt in to `output: passthrough`; got:\n{cfg}"
+        "biome detected — expected `biome-check` gate; got:\n{cfg}"
     );
     // No workspace manifests → scopes still `src/**/*.<ext>`.
     assert!(cfg.contains("src/**/*.ts"));
     // No pnpm-lock.yaml or yarn.lock → use npx as the package-manager exec.
     assert!(
         cfg.contains("npx biome"),
-        "no lockfile → wrapper should use `npx`; got:\n{cfg}"
+        "no lockfile → gate should use `npx`; got:\n{cfg}"
     );
 }
 
+/// Regression: the dynamic biome/eslint `run` strings carry embedded
+/// double-quotes (e.g. `--stdin-file-path="$HECTOR_FILE"`) that must be escaped
+/// so the scaffolded YAML stays valid under the STRICT parser. `hector validate`
+/// runs that strict parser and is not trust-gated, so this guards the escaping
+/// independently of the auto-bless wiring that also happens to catch it.
+#[test]
+fn init_biome_scaffold_strictly_validates() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("package.json"), "{}\n").unwrap();
+    fs::write(dir.path().join("biome.json"), "{}\n").unwrap();
+    run_init(dir.path());
+    let cfg = read_cfg(dir.path());
+    assert!(
+        cfg.contains("biome-check"),
+        "expected the dynamic biome-check linter gate:\n{cfg}"
+    );
+    let cfg_path = dir.path().join(".hector.yml");
+    Command::cargo_bin("hector")
+        .unwrap()
+        .args(["validate", "--config", cfg_path.to_str().unwrap()])
+        .assert()
+        .code(0);
+}
+
 /// pnpm workspace + biome: scopes use the workspace `packages:` globs,
-/// `no-console-log` is dropped, and the wrapper uses `pnpm exec` because
-/// `pnpm-lock.yaml` exists.
+/// `no-console-log` is dropped, and the wrapper uses `pnpm exec`.
 #[test]
 fn init_pnpm_workspace_with_biome_uses_workspace_scopes() {
     let dir = tempdir().unwrap();
@@ -149,14 +233,14 @@ fn init_pnpm_workspace_with_biome_uses_workspace_scopes() {
 
     assert!(!cfg.contains("no-console-log"));
     assert!(cfg.contains("biome-check"));
-    // Workspace globs land in scope.
+    // Workspace globs land in files field.
     assert!(
         cfg.contains("apps/**/src/**/*.ts"),
-        "pnpm workspace → expected `apps/**/src/**/*.ts` scope; got:\n{cfg}"
+        "pnpm workspace → expected `apps/**/src/**/*.ts` files; got:\n{cfg}"
     );
     assert!(
         cfg.contains("packages/**/src/**/*.ts"),
-        "pnpm workspace → expected `packages/**/src/**/*.ts` scope; got:\n{cfg}"
+        "pnpm workspace → expected `packages/**/src/**/*.ts` files; got:\n{cfg}"
     );
     // Single-root `src/**` scope must NOT leak into monorepo configs.
     assert!(
@@ -166,12 +250,12 @@ fn init_pnpm_workspace_with_biome_uses_workspace_scopes() {
     // pnpm-lock.yaml present → `pnpm exec`.
     assert!(
         cfg.contains("pnpm exec biome"),
-        "pnpm-lock present → wrapper should use `pnpm exec`; got:\n{cfg}"
+        "pnpm-lock present → gate should use `pnpm exec`; got:\n{cfg}"
     );
 }
 
-/// pnpm workspace, no linter: the grep `no-console-log` rule still fires but
-/// its scopes use the workspace shape, not a single-root `src/`.
+/// pnpm workspace, no linter: the grep `no-console-log` gate still fires but
+/// its scopes use the workspace shape.
 #[test]
 fn init_pnpm_workspace_no_linter_uses_workspace_scopes() {
     let dir = tempdir().unwrap();
@@ -195,9 +279,8 @@ fn init_pnpm_workspace_no_linter_uses_workspace_scopes() {
     );
 }
 
-/// Cargo workspace with clippy.toml present. The Rust grep rule scopes use
-/// the workspace members glob (Rust workspaces often don't use `src/` at the
-/// top), and clippy.toml does NOT cause us to drop the unwrap grep rule.
+/// Cargo workspace with clippy.toml present. The Rust grep gate scopes use
+/// the workspace members.
 #[test]
 fn init_cargo_workspace_scopes_match_members() {
     let dir = tempdir().unwrap();
@@ -210,8 +293,7 @@ fn init_cargo_workspace_scopes_match_members() {
     run_init(dir.path());
     let cfg = read_cfg(dir.path());
 
-    // The Rust unwrap rule stays — clippy.toml doesn't suppress it
-    // (clippy is repo-wide).
+    // The Rust unwrap gate stays — clippy.toml doesn't suppress it.
     assert!(cfg.contains("no-unwrap-in-src"));
     // Cargo workspaces don't have a single-root src/ — scope should
     // reference workspace members.
@@ -225,8 +307,7 @@ fn init_cargo_workspace_scopes_match_members() {
     );
 }
 
-/// Single-package python with `[tool.ruff]`: the `ruff-check` template stays —
-/// its scope is `**/*.py`, which already works for non-monorepo Python.
+/// Single-package python: the `ruff-check` gate is scaffolded.
 #[test]
 fn init_python_with_ruff_keeps_template() {
     let dir = tempdir().unwrap();
@@ -253,8 +334,7 @@ fn init_unknown_stack_uses_generic_template() {
 }
 
 /// Single-package npm + ESLint config (no biome): the `no-console-log` grep
-/// rule is dropped (eslint's `no-console` covers it) and an `eslint-check`
-/// passthrough wrapper is scaffolded.
+/// gate is dropped and an `eslint-check` gate is scaffolded.
 #[test]
 fn init_single_package_npm_with_eslint_drops_console_log() {
     let dir = tempdir().unwrap();
@@ -265,20 +345,19 @@ fn init_single_package_npm_with_eslint_drops_console_log() {
 
     assert!(
         !cfg.contains("no-console-log"),
-        "eslint detected — `no-console-log` grep rule must be skipped; got:\n{cfg}"
+        "eslint detected — `no-console-log` grep gate must be skipped; got:\n{cfg}"
     );
     assert!(
         cfg.contains("eslint-check"),
-        "eslint detected — expected `eslint-check` passthrough rule; got:\n{cfg}"
+        "eslint detected — expected `eslint-check` gate; got:\n{cfg}"
     );
-    assert!(cfg.contains("output: passthrough"));
     assert!(
         cfg.contains("npx eslint"),
-        "no lockfile → wrapper should use `npx`; got:\n{cfg}"
+        "no lockfile → gate should use `npx`; got:\n{cfg}"
     );
 }
 
-/// Bonus: yarn lockfile selects `yarn exec` for the wrapper command.
+/// yarn lockfile selects `yarn exec` for the wrapper command.
 #[test]
 fn init_with_yarn_lock_uses_yarn_exec() {
     let dir = tempdir().unwrap();
@@ -290,13 +369,11 @@ fn init_with_yarn_lock_uses_yarn_exec() {
 
     assert!(
         cfg.contains("yarn exec biome"),
-        "yarn.lock present → wrapper should use `yarn exec`; got:\n{cfg}"
+        "yarn.lock present → gate should use `yarn exec`; got:\n{cfg}"
     );
 }
 
-/// Both biome AND eslint configured is unusual (typically during a
-/// migration). Resolve in favor of biome — the more modern tool. Either
-/// way, neither produces a duplicate `no-console-log` grep rule.
+/// Both biome AND eslint configured: prefer biome.
 #[test]
 fn init_with_both_biome_and_eslint_prefers_biome() {
     let dir = tempdir().unwrap();
@@ -310,12 +387,11 @@ fn init_with_both_biome_and_eslint_prefers_biome() {
     assert!(cfg.contains("biome-check"));
     assert!(
         !cfg.contains("eslint-check"),
-        "biome + eslint both present → prefer biome, do not scaffold both wrappers; got:\n{cfg}"
+        "biome + eslint both present → prefer biome; got:\n{cfg}"
     );
 }
 
-/// pnpm-workspace.yaml without a quoted glob still parses. (YAML allows
-/// bare scalars; some pnpm configs use unquoted entries.)
+/// pnpm-workspace.yaml without a quoted glob still parses.
 #[test]
 fn init_pnpm_workspace_handles_unquoted_globs() {
     let dir = tempdir().unwrap();
@@ -361,4 +437,43 @@ fn init_npm_workspaces_object_field() {
     let cfg = read_cfg(dir.path());
 
     assert!(cfg.contains("apps/**/src/**/*.ts"));
+}
+
+/// `init` auto-blesses, so a `check` against the scaffolded config runs
+/// without a separate `hector trust` step (it is not rejected as untrusted).
+#[test]
+fn init_auto_blesses_so_check_is_trusted() {
+    let proj = tempfile::tempdir().unwrap();
+    let xdg = tempfile::tempdir().unwrap();
+
+    Command::cargo_bin("hector")
+        .unwrap()
+        .env("XDG_CONFIG_HOME", xdg.path())
+        .args(["init", "--dir"])
+        .arg(proj.path())
+        .assert()
+        .success();
+
+    let cfg = proj.path().join(".hector.yml");
+    let target = proj.path().join("a.rs");
+    std::fs::write(&target, "x\n").unwrap();
+
+    // Should NOT be rejected as untrusted. Some scaffolded gate may or may not
+    // block on this file, but the verdict must not be the trust exit-1.
+    let out = Command::cargo_bin("hector")
+        .unwrap()
+        .env("XDG_CONFIG_HOME", xdg.path())
+        .args(["check", "--config"])
+        .arg(&cfg)
+        .arg("--file")
+        .arg(&target)
+        .assert();
+    let code = out.get_output().status.code().unwrap();
+    // Must be a real verdict — pass (0) or block (2) — never untrusted (1) and
+    // never a crashed gate (3). `!= 1` alone would pass on an exit-3 regression.
+    assert!(
+        matches!(code, 0 | 2),
+        "init-blessed config must run to a real verdict (0 or 2), not be \
+         rejected as untrusted (1) or crash a gate (3); got {code}"
+    );
 }

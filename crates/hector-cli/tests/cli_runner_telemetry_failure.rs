@@ -6,6 +6,8 @@
 //    source of truth for verdicts.
 // 2. stderr contains the "telemetry append failed" diagnostic.
 
+mod common;
+
 use assert_cmd::Command;
 use std::fs;
 use tempfile::tempdir;
@@ -18,24 +20,20 @@ fn telemetry_failure_warns_to_stderr() {
     let cfg = dir.path().join(".hector.yml");
     fs::write(
         &cfg,
-        "schema_version: 2\nrules:\n  noop:\n    description: x\n    engine: script\n    scope: [\"*.txt\"]\n    severity: error\n    script: \"true\"\n",
+        "gates:\n  noop:\n    files: [\"*.txt\"]\n    run: \"true\"\n",
     )
     .unwrap();
-    Command::cargo_bin("hector")
-        .unwrap()
-        .args(["trust", "--config", cfg.to_str().unwrap()])
-        .assert()
-        .success();
+
+    let xdg = common::blessed_store(&cfg);
 
     // Pre-place a regular file at `<cfg_dir>/.hector` so that
     // `create_dir_all(".hector")` inside telemetry::append fails (parent
-    // exists but is not a directory). The append at the end of the
-    // `check` call will then return an error that the runner must
-    // surface to stderr instead of dropping silently.
+    // exists but is not a directory).
     fs::write(dir.path().join(".hector"), "not a directory").unwrap();
 
     let out = Command::cargo_bin("hector")
         .unwrap()
+        .env("XDG_CONFIG_HOME", xdg.path())
         .args([
             "check",
             "--config",

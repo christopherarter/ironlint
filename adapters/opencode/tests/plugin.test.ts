@@ -14,14 +14,10 @@ import HectorPlugin from "../src/index.ts"
 
 let project: string
 
-const HECTOR_YML = `schema_version: 2
-rules:
+const HECTOR_YML = `gates:
   no-debug:
-    description: "no DEBUG markers in source"
-    engine: script
-    scope: ["*.txt"]
-    severity: error
-    script: "grep -nE 'DEBUG' {file} && exit 1 || exit 0"
+    files: ["*.txt"]
+    run: "grep -nE 'DEBUG' $HECTOR_FILE && exit 2 || exit 0"
 `
 
 function fakeCtx(root: string) {

@@ -1,35 +1,21 @@
 use serde::{Deserialize, Serialize};
 
-/// Verdict JSON schema version.
-///
-/// Bumps ONLY on:
-/// - field removals or type changes,
-/// - enum variant removals,
-/// - semantic re-interpretations of existing fields.
-///
-/// Additive changes (new optional field with `skip_serializing_if`,
-/// new enum variant marked `#[non_exhaustive]`) do NOT bump. Consumers
-/// wanting backward compatibility should read `MIN_REQUIRED_SCHEMA_VERSION`
-/// and accept anything `>=`. Strict consumers reject any unexpected version.
-///
-/// v3 removed the `deferred_rules` field and the `semantic`/`session`
-/// `Engine` variants when LLM evaluation was dropped.
-pub const SCHEMA_VERSION: u32 = 3;
+/// Verdict JSON schema version. Bumped to 4 for the gates redesign:
+/// `Violation`/`Severity`/`Engine` removed; `blocks`/`errors` added.
+pub const SCHEMA_VERSION: u32 = 4;
 
-/// Floor schema version that all current verdicts satisfy.
-///
-/// Consumers should assert `schema_version >= MIN_REQUIRED_SCHEMA_VERSION`
-/// rather than `schema_version == <constant>`, so they remain compatible
-/// with future additive bumps.
-pub const MIN_REQUIRED_SCHEMA_VERSION: u32 = 3;
+/// Floor schema version all current verdicts satisfy.
+pub const MIN_REQUIRED_SCHEMA_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Verdict {
     pub schema_version: u32,
     pub hector_version: String,
     pub status: Status,
-    pub violations: Vec<Violation>,
-    pub passed_checks: Vec<String>,
+    pub blocks: Vec<Block>,
+    pub errors: Vec<GateError>,
+    /// Gate ids that ran and passed (for `--explain` / telemetry).
+    pub passed: Vec<String>,
     pub elapsed_ms: u64,
 }
 
@@ -38,102 +24,130 @@ pub struct Verdict {
 #[non_exhaustive]
 pub enum Status {
     Pass,
-    Warn,
     Block,
-    /// At least one rule failed to evaluate due to an engine-internal error
-    /// (AST refused diff, script spawn failure). Surfaces in
-    /// `Violation::engine = Internal` rows.
-    /// CLI maps to exit code 3 so adapters can distinguish "config
-    /// wrong" from "policy violated" (exit 2).
     #[serde(rename = "internal_error")]
     InternalError,
 }
 
+/// A gate that exited 2 on a file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Violation {
-    pub rule_id: String,
-    pub severity: Severity,
-    pub engine: Engine,
+pub struct Block {
+    pub gate: String,
     pub file: String,
-    pub line: Option<u32>,
-    /// 1-based column of the violation's start position.
-    ///
-    /// Only the AST engine populates this — it reads the column from the
-    /// matched node's start byte. The `script` engine has no positional
-    /// information from a regex hit and always leaves this `None`.
-    pub column: Option<u32>,
+    /// Verbatim trimmed stdout+stderr from the gate.
     pub message: String,
-    pub suggestion: Option<String>,
-    /// Snippet of source surrounding the violation.
-    ///
-    /// AST populates this with the matched node's line ±3 lines for editor
-    /// display. The script engine leaves it `None`.
-    pub context: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Severity {
-    Error,
-    Warning,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Engine {
-    Script,
-    Ast,
-    /// True trust-gate failure: config fingerprint mismatch.
-    ///
-    /// In practice trust failures halt at `HectorEngine::load`, so this
-    /// variant is rarely seen in a `Violation`. Reserved for the case
-    /// where a downstream caller wants to surface a trust-rejection as a
-    /// structured verdict instead of a load error.
-    Trust,
-    /// Engine-internal runtime error (AST refused diff, script spawn
-    /// failure, etc.). The rule's `rule_id` is suffixed with `__internal`
-    /// by the runner so consumers can distinguish runtime errors from rule
-    /// violations.
-    Internal,
+/// A gate that crashed (not found / not executable / timeout / signal).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GateError {
+    pub gate: String,
+    pub file: String,
+    /// Stable reason string from `InternalReason::as_str`.
+    pub reason: String,
 }
 
 impl Verdict {
     pub fn pass() -> Self {
-        Self {
-            schema_version: SCHEMA_VERSION,
-            hector_version: env!("CARGO_PKG_VERSION").to_string(),
-            status: Status::Pass,
-            violations: vec![],
-            passed_checks: vec![],
-            elapsed_ms: 0,
-        }
+        Self::from_outcomes(vec![], vec![], vec![], 0)
     }
 
-    pub fn from_violations(
-        violations: Vec<Violation>,
+    /// Build a verdict from collected outcomes.
+    ///
+    /// Status precedence: **Block wins over InternalError** — a confirmed
+    /// policy violation (exit 2) must stop the edit even if an unrelated gate
+    /// crashed. Only when there are no blocks does a crash escalate to
+    /// InternalError (exit 3, adapter fail-open).
+    pub fn from_outcomes(
+        blocks: Vec<Block>,
+        errors: Vec<GateError>,
         passed: Vec<String>,
         elapsed_ms: u64,
     ) -> Self {
-        let has_internal = violations.iter().any(|v| v.engine == Engine::Internal);
-        let has_error = violations
-            .iter()
-            .any(|v| v.engine != Engine::Internal && v.severity == Severity::Error);
-        let status = if has_internal {
-            Status::InternalError
-        } else if has_error {
+        let status = if !blocks.is_empty() {
             Status::Block
-        } else if violations.is_empty() {
-            Status::Pass
+        } else if !errors.is_empty() {
+            Status::InternalError
         } else {
-            Status::Warn
+            Status::Pass
         };
         Self {
             schema_version: SCHEMA_VERSION,
             hector_version: env!("CARGO_PKG_VERSION").to_string(),
             status,
-            violations,
-            passed_checks: passed,
+            blocks,
+            errors,
+            passed,
             elapsed_ms,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_is_pass() {
+        let v = Verdict::from_outcomes(vec![], vec![], vec![], 0);
+        assert_eq!(v.status, Status::Pass);
+    }
+
+    #[test]
+    fn any_block_is_block() {
+        let v = Verdict::from_outcomes(
+            vec![Block {
+                gate: "g".into(),
+                file: "f".into(),
+                message: "m".into(),
+            }],
+            vec![],
+            vec![],
+            0,
+        );
+        assert_eq!(v.status, Status::Block);
+    }
+
+    #[test]
+    fn block_wins_over_internal_error() {
+        let v = Verdict::from_outcomes(
+            vec![Block {
+                gate: "g".into(),
+                file: "f".into(),
+                message: "m".into(),
+            }],
+            vec![GateError {
+                gate: "h".into(),
+                file: "f".into(),
+                reason: "timeout".into(),
+            }],
+            vec![],
+            0,
+        );
+        assert_eq!(
+            v.status,
+            Status::Block,
+            "a confirmed block must not be downgraded to fail-open by an unrelated crash"
+        );
+    }
+
+    #[test]
+    fn errors_only_is_internal_error() {
+        let v = Verdict::from_outcomes(
+            vec![],
+            vec![GateError {
+                gate: "h".into(),
+                file: "f".into(),
+                reason: "not_found".into(),
+            }],
+            vec![],
+            0,
+        );
+        assert_eq!(v.status, Status::InternalError);
+    }
+
+    #[test]
+    fn schema_version_is_4() {
+        assert_eq!(SCHEMA_VERSION, 4);
     }
 }

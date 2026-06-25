@@ -87,17 +87,12 @@ thiserror = "2"
 clap = { version = "4", features = ["derive"] }
 sha2 = "0.10"
 globset = "0.4"
-nix = { version = "0.29", features = ["fs", "mount", "sched", "signal", "user"] }
 tempfile = "3"
 assert_cmd = "2"
 predicates = "3"
 insta = { version = "1", features = ["yaml", "json", "redactions"] }
-ast-grep-core = "0.42"
-ast-grep-language = "0.42"
 chrono = "0.4"
-walkdir = "2"
 fs4 = "0.13"
-regex = "1"
 
 # The profile that 'dist' will build with
 [profile.dist]

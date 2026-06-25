@@ -1,18 +1,37 @@
 use super::types::Config;
 use anyhow::{anyhow, Context, Result};
 
-pub const SUPPORTED_SCHEMAS: &[u32] = &[1, 2];
-
+/// Parse a `.hector.yml` (gates format).
+///
+/// Legacy v1/v2 configs (`schema_version:`, `rules:`, `engine:`) are rejected
+/// with a curated message rather than serde's generic failure — hector 0.3
+/// dropped the engine model. There is no migration path (no install base).
 pub fn parse_str(input: &str) -> Result<Config> {
-    let cfg: Config = serde_yaml::from_str(input).context("parsing hector config")?;
-    if !SUPPORTED_SCHEMAS.contains(&cfg.schema_version) {
+    if let Some(key) = legacy_marker(input) {
         return Err(anyhow!(
-            "unsupported schema_version: {} (supported: {:?})",
-            cfg.schema_version,
-            SUPPORTED_SCHEMAS
+            "this looks like a pre-0.3 config (found `{key}:`). The 0.3 format uses a \
+             top-level `gates:` map of `{{ files, run }}` entries — rewrite it. \
+             See specs/2026-06-15-hector-gates-redesign-design.md"
         ));
     }
+    let cfg: Config = serde_yaml::from_str(input).context("parsing hector config")?;
     Ok(cfg)
+}
+
+/// Return the first top-level legacy marker key present, if any.
+fn legacy_marker(input: &str) -> Option<&'static str> {
+    let value: serde_yaml::Value = serde_yaml::from_str(input).ok()?;
+    let map = value.as_mapping()?;
+    for key in ["schema_version", "rules", "trust"] {
+        if map.contains_key(serde_yaml::Value::String(key.into())) {
+            return Some(match key {
+                "schema_version" => "schema_version",
+                "rules" => "rules",
+                _ => "trust",
+            });
+        }
+    }
+    None
 }
 
 pub fn parse_file(path: &std::path::Path) -> Result<Config> {
@@ -21,24 +40,40 @@ pub fn parse_file(path: &std::path::Path) -> Result<Config> {
     parse_str(&content)
 }
 
-/// Returns true if the parsed config is at the legacy schema (v1, bully).
-/// Callers should log a one-time deprecation warning suggesting `hector migrate`.
-pub fn is_legacy(cfg: &Config) -> bool {
-    cfg.schema_version == 1
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-/// Read just the `schema_version` field without enforcing the full v2 shape.
-///
-/// Used by the runner to detect v1 *before* trust verification so we can emit
-/// a friendly "run `hector migrate`" hint instead of the generic
-/// "trust block missing" error.
-///
-/// Returns `None` for any input that does not have a parseable integer
-/// `schema_version` at the top level — the normal load path will then surface
-/// a proper parse error.
-pub fn peek_schema_version(input: &str) -> Option<u32> {
-    let v: serde_yaml::Value = serde_yaml::from_str(input).ok()?;
-    v.get("schema_version")?
-        .as_u64()
-        .and_then(|n| u32::try_from(n).ok())
+    #[test]
+    fn parses_a_gates_config() {
+        let cfg = parse_str("gates:\n  g:\n    files: \"*.rs\"\n    run: \"true\"\n").unwrap();
+        assert!(cfg.gates.contains_key("g"));
+    }
+
+    #[test]
+    fn rejects_legacy_schema_version() {
+        let err = parse_str("schema_version: 2\nrules: {}\n")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("gates"),
+            "error should point at the gates format: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_legacy_rules_block() {
+        let err = parse_str("rules:\n  r:\n    engine: script\n")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("gates"),
+            "error should point at the gates format: {err}"
+        );
+    }
+
+    #[test]
+    fn missing_gates_key_is_an_error() {
+        assert!(parse_str("extends: []\n").is_err());
+    }
 }

@@ -2,6 +2,42 @@
 
 Notable changes to Hector, newest first. In-flight work lives in `plans/`.
 
+## [Unreleased] — 0.3 gates redesign
+
+### Added
+
+- **Trust:** out-of-repo allow-list at `~/.config/hector/trust.json`; `hector
+  check` fails closed (exit 1) until `hector trust` blesses the config +
+  `.hector/gates/`; `hector init` auto-blesses.
+
+### Breaking
+
+- **Config schema.** The top-level `rules:` key is replaced by `gates:`. Each
+  gate declares `files:` (glob or list of globs) and `run:` (shell command).
+  Old `schema_version`, `engine:`, `severity:`, `skip:`, and `llm:` fields
+  are rejected at parse time.
+- **Exit-code contract.** Exit 2 = Block (≥1 gate returned exit 2); exit 3 =
+  InternalError (engine runtime error); exit 0 = Pass or Warn.
+- **Verdict schema 4 / telemetry schema 3.** `Verdict` no longer carries
+  `deferred_rules`, `engine`, or `severity` fields. Telemetry `LogEntry`
+  drops `semantic_verdict` and `semantic_skipped` variants.
+
+### Removed
+
+- `engine:`, `severity:`, `baseline:` / `hector baseline`, `hector migrate`,
+  `skip:` — all removed; configs using them fail at load with a pointed error.
+- `guide` subcommand folded into `hector explain` (now shows gates in scope
+  for a file and their run commands).
+
+### Changed
+
+- `hector init` success message now advises `hector check --file <path>`
+  after scaffolding (init auto-blesses, so no separate `hector trust` is needed).
+- `Explain` subcommand help reworded to gates vocabulary.
+- `ExecutionConfig.max_workers` removed (dispatch is sequential; only
+  `timeout_secs` is used). Configs that set `execution.max_workers` continue
+  to parse (serde ignores unknown fields).
+
 ## Unreleased — 0.2 wire-format coordination
 
 This release batches all four contract-shaped changes from

@@ -1,39 +1,18 @@
-use std::collections::BTreeMap;
+//! `hector-disable: <gate-id>` line directives.
+//!
+//! A directive anywhere in a checked file's proposed content suppresses that
+//! gate for that file (one gate per directive; the id list ends at whitespace,
+//! `*`, or a comment terminator `//`/`*/`). The matcher is id-agnostic.
 
-/// Maps line number → set of rule_ids disabled on that line.
-#[derive(Debug, Default)]
-pub struct DisableMap {
-    by_line: BTreeMap<u32, Vec<String>>,
-}
-
-impl DisableMap {
-    pub fn from_source(src: &str) -> Self {
-        let mut map = Self::default();
-        for (i, line) in src.lines().enumerate() {
-            let line_no = (i as u32) + 1;
-            for rule_id in parse_disable_directives(line) {
-                map.by_line.entry(line_no).or_default().push(rule_id);
-            }
-        }
-        map
-    }
-
-    pub fn is_disabled(&self, line: u32, rule_id: &str) -> bool {
-        self.by_line
-            .get(&line)
-            .map(|rules| rules.iter().any(|r| r == rule_id))
-            .unwrap_or(false)
-    }
-
-    /// True if any `hector-disable: <rule_id>` directive in the file matches
-    /// `rule_id`, regardless of line. Used for violations with `line: None`
-    /// (file-level findings from `script:` rules) so the
-    /// directive isn't silently ignored.
-    pub fn is_disabled_file_wide(&self, rule_id: &str) -> bool {
-        self.by_line
-            .values()
-            .any(|rules| rules.iter().any(|r| r == rule_id))
-    }
+/// True if any `hector-disable: <gate-id>` directive in `content` names
+/// `gate_id`. File-wide: gates produce one verdict per file, so a directive
+/// anywhere in the file suppresses the gate.
+pub fn is_disabled(content: &str, gate_id: &str) -> bool {
+    content.lines().any(|line| {
+        parse_disable_directives(line)
+            .iter()
+            .any(|id| id == gate_id)
+    })
 }
 
 fn parse_disable_directives(line: &str) -> Vec<String> {
@@ -42,32 +21,24 @@ fn parse_disable_directives(line: &str) -> Vec<String> {
     let mut rest = line;
     while let Some(idx) = rest.find(marker) {
         let after = &rest[idx + marker.len()..];
-        let (ids, consumed) = collect_rule_ids(after);
+        let (ids, consumed) = collect_gate_ids(after);
         out.extend(ids);
         rest = &after[consumed..];
     }
     out
 }
 
-/// Collect comma- or whitespace-separated rule IDs after `hector-disable:`.
-/// Stops at end-of-input, the literal token `reason:`, a bare `*`
-/// (block-comment closer `*/` minus the slash, or a stray `*`), or a `/`
-/// that begins a comment terminator (`//` or `*/...` style `*/`, captured
-/// here as `//` or `/*`).
+/// Collect comma- or whitespace-separated gate IDs after `hector-disable:`.
+/// Stops at end-of-input, the literal token `reason:`, a bare `*`, or a `/`
+/// that begins a comment terminator (`//` or `/*`).
 ///
-/// A `/` only terminates when the next byte is `/` (line-comment opener) or
-/// `*` (block-comment opener) — the patterns that actually close a trailing
-/// comment context. Treating `/` as an unconditional terminator would
-/// truncate namespaced rule IDs like `python/no-print` to `python`.
-///
-/// Returns the rule IDs and the number of bytes consumed from `s` so the
-/// outer loop can continue scanning for additional directives.
-fn collect_rule_ids(s: &str) -> (Vec<String>, usize) {
+/// A `/` only terminates when the next byte is `/` or `*` — treating `/` as an
+/// unconditional terminator would truncate namespaced gate IDs like
+/// `python/no-print` to `python`.
+fn collect_gate_ids(s: &str) -> (Vec<String>, usize) {
     let mut ids = Vec::new();
     let mut i = 0;
     let bytes = s.as_bytes();
-    // A `/` terminates only when followed by `/` or `*`. Used at the
-    // outer-skip layer (between tokens) and inside the token walker.
     let slash_terminates_at = |buf: &[u8], idx: usize| -> bool {
         buf.get(idx).copied() == Some(b'/')
             && matches!(buf.get(idx + 1).copied(), Some(b'/' | b'*'))
@@ -84,7 +55,6 @@ fn collect_rule_ids(s: &str) -> (Vec<String>, usize) {
         if c == '/' && slash_terminates_at(bytes, i) {
             break;
         }
-        // Start of a token. Find its end.
         let start = i;
         while i < bytes.len() {
             let c = bytes[i] as char;
@@ -97,17 +67,57 @@ fn collect_rule_ids(s: &str) -> (Vec<String>, usize) {
             i += 1;
         }
         let token = &s[start..i];
-        // Strip trailing punctuation defensively (e.g. semicolons), though the
-        // walker above already excludes `,` from token bodies.
         let token = token.trim_end_matches([',', ';']);
         if token.is_empty() {
             continue;
         }
-        // The `reason:` keyword terminates the rule-id list. Don't push it.
         if token == "reason:" {
             break;
         }
         ids.push(token.to_string());
     }
     (ids, i)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn disables_named_gate() {
+        assert!(is_disabled("code // hector-disable: no-todo\n", "no-todo"));
+        assert!(!is_disabled("code // hector-disable: other\n", "no-todo"));
+    }
+
+    #[test]
+    fn preserves_namespaced_gate_ids() {
+        assert!(is_disabled(
+            "x // hector-disable: python/no-print\n",
+            "python/no-print"
+        ));
+        assert!(!is_disabled(
+            "x // hector-disable: python/no-print\n",
+            "python"
+        ));
+    }
+
+    #[test]
+    fn stops_at_block_comment_close_and_reason() {
+        assert!(is_disabled("x /* hector-disable: g1 */\n", "g1"));
+        assert!(is_disabled(
+            "x // hector-disable: g1 reason: legacy\n",
+            "g1"
+        ));
+        assert!(!is_disabled(
+            "x // hector-disable: g1 reason: legacy\n",
+            "reason:"
+        ));
+    }
+
+    #[test]
+    fn comma_and_whitespace_separated() {
+        assert!(is_disabled("// hector-disable: a, b c\n", "a"));
+        assert!(is_disabled("// hector-disable: a, b c\n", "b"));
+        assert!(is_disabled("// hector-disable: a, b c\n", "c"));
+    }
 }

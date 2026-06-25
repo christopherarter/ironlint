@@ -1,3 +1,5 @@
+mod common;
+
 use assert_cmd::Command;
 use std::fs;
 use tempfile::tempdir;
@@ -5,14 +7,16 @@ use tempfile::tempdir;
 #[test]
 fn cli_check_loads_engine_exactly_once() {
     let tmp = tempdir().unwrap();
-    let cfg = "schema_version: 2\nrules:\n  r:\n    description: x\n    engine: script\n    scope: [\"*\"]\n    severity: error\n    script: \"true\"\n";
     let cfg_path = tmp.path().join(".hector.yml");
-    fs::write(&cfg_path, cfg).unwrap();
-    let signed =
-        hector_core::trust::write_trust_block(&fs::read_to_string(&cfg_path).unwrap()).unwrap();
-    fs::write(&cfg_path, signed).unwrap();
+    fs::write(
+        &cfg_path,
+        "gates:\n  noop:\n    files: [\"*\"]\n    run: \"true\"\n",
+    )
+    .unwrap();
     let src = tmp.path().join("x.txt");
     fs::write(&src, "x").unwrap();
+
+    let xdg = common::blessed_store(&cfg_path);
 
     let out = Command::cargo_bin("hector")
         .unwrap()
@@ -20,6 +24,7 @@ fn cli_check_loads_engine_exactly_once() {
         .arg(&src)
         .arg("--config")
         .arg(&cfg_path)
+        .env("XDG_CONFIG_HOME", xdg.path())
         .env("HECTOR_DEBUG_LOAD_COUNT", "1")
         .output()
         .unwrap();

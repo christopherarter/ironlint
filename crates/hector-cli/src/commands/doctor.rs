@@ -1,20 +1,26 @@
 //! `hector doctor` diagnostic subcommand.
 //!
-//! Read-only. Walks a fixed list of checks (binary on PATH, config
-//! present, config parses, trust verifies, schema version, scope
-//! globs, engine availability, adapter presence, runtime state) and
-//! prints a checklist by default, or a JSON `Report` under `--format
-//! json`. Exit code: 0 on all-pass-or-warn, 1 on any fail.
+//! Read-only. Walks a fixed list of gate-model static checks and prints a
+//! checklist (human) or JSON report. Exit code: 0 on all-pass-or-warn, 1 on
+//! any fail.
+//!
+//! Checks kept for the gate model:
+//!   1. binary — hector binary + version (always pass once we're running)
+//!   2. adapter — Claude Code PostToolUse hook wired to hector
+//!   3. config  — `.hector.yml` exists
+//!   4. parses  — config parses (extends resolved)
+//!   5. gate_scripts — each gate whose `run` names a single-token path that
+//!      starts with `.hector/` exists and is executable
+//!
+//! Dropped from the old model: trust fingerprint, schema_version probe,
+//! scope_globs (Rule-based), engine/EngineKind availability, capability
+//! sandbox row, baseline/runtime_state.
 
 use crate::cli::OutputFormat;
 use anyhow::Result;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
-/// One row in the doctor report. `name` is the stable check id used in
-/// the JSON output (snake_case, additive-only). `detail` is one short
-/// sentence; `remediation` is the actionable hint shown when the
-/// status is not `Pass`.
 #[derive(Debug, Clone, Serialize)]
 pub struct CheckResult {
     pub name: &'static str,
@@ -31,18 +37,12 @@ pub enum Status {
     Fail,
 }
 
-/// JSON payload emitted by `--format json`. Public contract — see
-/// `docs/operating/diagnostics.md`. New fields land at the end of the struct with
-/// `Option<…>` defaults so the schema stays additive.
 #[derive(Debug, Clone, Serialize)]
 pub struct Report {
     pub hector_version: String,
     pub checks: Vec<CheckResult>,
 }
 
-/// Per-doctor-run inputs shared across every check. Stays small —
-/// each check borrows what it needs and pulls anything else from the
-/// process environment (env vars, fs).
 struct DoctorContext {
     dir: PathBuf,
     config_path: PathBuf,
@@ -55,15 +55,10 @@ pub fn run(dir: &Path, format: OutputFormat) -> Result<i32> {
     };
     let checks: Vec<CheckResult> = vec![
         check_binary(),
+        check_adapter(),
         check_config_present(&ctx),
         check_config_parses(&ctx),
-        check_trust(&ctx),
-        check_schema_version(&ctx),
-        check_scope_globs(&ctx),
-        check_engines(&ctx),
-        check_capabilities(),
-        check_adapter(),
-        check_runtime_state(&ctx),
+        check_gate_scripts(&ctx),
     ];
     let report = Report {
         hector_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -102,9 +97,6 @@ fn emit(report: &Report, format: OutputFormat) -> Result<()> {
     Ok(())
 }
 
-/// Binary on PATH + version. Trivially `pass` once the user reaches us
-/// (we're a binary that ran), but report the resolved path and version
-/// so the human checklist surfaces "which hector am I talking to".
 fn check_binary() -> CheckResult {
     let path = std::env::current_exe()
         .map(|p| p.display().to_string())
@@ -117,8 +109,6 @@ fn check_binary() -> CheckResult {
     }
 }
 
-/// Config file present at `<dir>/.hector.yml`. Hard requirement; without
-/// a config Hector has nothing to do.
 fn check_config_present(ctx: &DoctorContext) -> CheckResult {
     if ctx.config_path.exists() {
         CheckResult {
@@ -137,12 +127,6 @@ fn check_config_present(ctx: &DoctorContext) -> CheckResult {
     }
 }
 
-/// Config parses. We deliberately use the **non-trust-verifying**
-/// resolver so a parses-OK-but-untrusted config reports `parses: pass`
-/// and `trust: fail`, instead of collapsing both into one fail row.
-/// Schema-v1 configs fail here with a clear `hector migrate` hint
-/// (the resolver detects v1 before trust verify — see
-/// `config/extends.rs`).
 fn check_config_parses(ctx: &DoctorContext) -> CheckResult {
     if !ctx.config_path.exists() {
         return CheckResult {
@@ -153,126 +137,31 @@ fn check_config_parses(ctx: &DoctorContext) -> CheckResult {
         };
     }
     match hector_core::config::parse_file_with_extends(&ctx.config_path) {
-        Ok(_) => CheckResult {
+        Ok(cfg) => CheckResult {
             name: "parses",
             status: Status::Pass,
-            detail: "config parses (extends resolved)".into(),
-            remediation: None,
-        },
-        Err(e) => {
-            let msg = format!("{e:#}");
-            // Surface the v1-migration hint verbatim if extends::resolve refused on schema_version: 1.
-            let hint = if msg.contains("schema_version 1") {
-                Some("run `hector migrate` to upgrade `.bully.yml`/v1 config to v2".into())
-            } else {
-                Some("fix the YAML error above and re-run".into())
-            };
-            CheckResult {
-                name: "parses",
-                status: Status::Fail,
-                detail: msg,
-                remediation: hint,
-            }
-        }
-    }
-}
-
-/// Trust fingerprint matches recomputed canonical hash. Skipped (warn)
-/// when parses already failed — there's no fingerprint to verify.
-fn check_trust(ctx: &DoctorContext) -> CheckResult {
-    if !ctx.config_path.exists() {
-        return CheckResult {
-            name: "trust",
-            status: Status::Warn,
-            detail: "skipped (no config)".into(),
-            remediation: None,
-        };
-    }
-    let raw = match std::fs::read_to_string(&ctx.config_path) {
-        Ok(s) => s,
-        Err(e) => {
-            return CheckResult {
-                name: "trust",
-                status: Status::Fail,
-                detail: format!("read failed: {e}"),
-                remediation: Some("ensure the config file is readable".into()),
-            };
-        }
-    };
-    match hector_core::trust::verify(&raw) {
-        Ok(()) => CheckResult {
-            name: "trust",
-            status: Status::Pass,
-            detail: "fingerprint matches".into(),
+            detail: format!("config parses ({} gate(s))", cfg.gates.len()),
             remediation: None,
         },
         Err(e) => CheckResult {
-            name: "trust",
+            name: "parses",
             status: Status::Fail,
             detail: format!("{e:#}"),
-            remediation: Some(
-                "review the diff against the last trusted state, then run `hector trust` to acknowledge".into(),
-            ),
+            remediation: Some("fix the YAML error above and re-run".into()),
         },
     }
 }
 
-/// schema_version is one of `SUPPORTED_SCHEMAS`. v1 is `fail` (legacy
-/// bully); v2 is `pass`; anything else is `fail` with a "this hector
-/// is too old/new" hint.
-fn check_schema_version(ctx: &DoctorContext) -> CheckResult {
-    let raw = match std::fs::read_to_string(&ctx.config_path) {
-        Ok(s) => s,
-        Err(_) => {
-            return CheckResult {
-                name: "schema",
-                status: Status::Warn,
-                detail: "skipped (no config)".into(),
-                remediation: None,
-            };
-        }
-    };
-    match hector_core::config::peek_schema_version(&raw) {
-        Some(2) => CheckResult {
-            name: "schema",
-            status: Status::Pass,
-            detail: "schema_version: 2".into(),
-            remediation: None,
-        },
-        Some(1) => CheckResult {
-            name: "schema",
-            status: Status::Fail,
-            detail: "schema_version: 1 (legacy bully)".into(),
-            remediation: Some("run `hector migrate` to upgrade to schema_version 2".into()),
-        },
-        Some(n) => CheckResult {
-            name: "schema",
-            status: Status::Fail,
-            detail: format!("schema_version: {n} (unsupported)"),
-            remediation: Some(format!(
-                "this hector supports {:?}; upgrade or downgrade hector to match",
-                hector_core::config::SUPPORTED_SCHEMAS
-            )),
-        },
-        None => CheckResult {
-            name: "schema",
-            status: Status::Fail,
-            detail: "schema_version field missing or unparseable".into(),
-            remediation: Some("add `schema_version: 2` at the top of `.hector.yml`".into()),
-        },
-    }
-}
-
-/// Every rule's scope globs construct a valid `ScopeMatcher`. The
-/// runner already validates this at load time, but doctor surfaces it
-/// as its own row so a globset error doesn't masquerade as a generic
-/// parse failure. Skipped (warn) when the config doesn't parse.
-fn check_scope_globs(ctx: &DoctorContext) -> CheckResult {
+/// For each gate whose `run` is a single token (no spaces) that starts with
+/// `.hector/`, check that the path exists and is executable. Inline commands
+/// (e.g. `grep -q TODO && exit 2`) are skipped — detection: `run` contains a
+/// space or doesn't look like a file path.
+fn check_gate_scripts(ctx: &DoctorContext) -> CheckResult {
     let cfg = match hector_core::config::parse_file_with_extends(&ctx.config_path) {
         Ok(c) => c,
         Err(_) => {
             return CheckResult {
-                name: "scope_globs",
+                name: "gate_scripts",
                 status: Status::Warn,
                 detail: "skipped (config does not parse)".into(),
                 remediation: None,
@@ -280,55 +169,61 @@ fn check_scope_globs(ctx: &DoctorContext) -> CheckResult {
         }
     };
     let mut bad: Vec<String> = Vec::new();
-    for (rule_id, rule) in &cfg.rules {
-        if let Err(e) = hector_core::config::scope::ScopeMatcher::new(&rule.scope) {
-            bad.push(format!("{rule_id}: {e:#}"));
+    for (id, gate) in &cfg.gates {
+        if let Some(issue) = check_run_path(&ctx.dir, id, &gate.run) {
+            bad.push(issue);
         }
     }
     if bad.is_empty() {
         CheckResult {
-            name: "scope_globs",
+            name: "gate_scripts",
             status: Status::Pass,
-            detail: format!("{} rule(s) have valid scope", cfg.rules.len()),
+            detail: format!("{} gate(s) checked", cfg.gates.len()),
             remediation: None,
         }
     } else {
         CheckResult {
-            name: "scope_globs",
+            name: "gate_scripts",
             status: Status::Fail,
-            detail: format!("invalid scope on: {}", bad.join("; ")),
-            remediation: Some("fix the listed glob(s) and re-run `hector trust`".into()),
+            detail: format!("missing/non-executable gate script(s): {}", bad.join("; ")),
+            remediation: Some(
+                "ensure gate scripts exist under .hector/gates/ and are executable (chmod +x)"
+                    .into(),
+            ),
         }
     }
 }
 
-/// Engine availability: report on script/ast engine presence.
-/// All supported engines are deterministic; no LLM configuration is
-/// required.
-fn check_engines(ctx: &DoctorContext) -> CheckResult {
-    let cfg = match hector_core::config::parse_file_with_extends(&ctx.config_path) {
-        Ok(c) => c,
-        Err(_) => {
-            return CheckResult {
-                name: "engines",
-                status: Status::Warn,
-                detail: "skipped (config does not parse)".into(),
-                remediation: None,
-            };
-        }
-    };
-    let rule_count = cfg.rules.len();
-    CheckResult {
-        name: "engines",
-        status: Status::Pass,
-        detail: format!("{rule_count} rule(s) — script/ast engines only"),
-        remediation: None,
+/// Returns `Some(problem description)` if `run` looks like a script path that
+/// is missing or not executable; `None` if the command is inline or the script
+/// is fine.
+fn check_run_path(dir: &Path, gate_id: &str, run: &str) -> Option<String> {
+    // Inline command: contains a space → skip.
+    if run.contains(' ') {
+        return None;
     }
+    // Only check paths that look like they're under .hector/
+    if !run.starts_with(".hector/") {
+        return None;
+    }
+    let script = dir.join(run);
+    if !script.exists() {
+        return Some(format!("{gate_id}: {run} not found"));
+    }
+    // Check executable bit (Unix only; on Windows always passes).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = std::fs::metadata(&script) {
+            if meta.permissions().mode() & 0o111 == 0 {
+                return Some(format!("{gate_id}: {run} not executable"));
+            }
+        }
+    }
+    None
 }
 
-/// Locate `~/.claude/settings.json` (honoring `HOME`/`USERPROFILE`).
-/// Returns `None` if the home dir is unresolvable or the file is absent —
-/// caller maps that to a `warn` row.
+/// Locate `~/.claude/settings.json`.
 fn load_claude_settings() -> Option<(PathBuf, serde_json::Value)> {
     let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
     let path = PathBuf::from(home).join(".claude").join("settings.json");
@@ -337,9 +232,6 @@ fn load_claude_settings() -> Option<(PathBuf, serde_json::Value)> {
     Some((path, value))
 }
 
-/// Walk the parsed `~/.claude/settings.json` looking for a PostToolUse
-/// hook whose `command` references `hector` (the binary) or a Hector
-/// adapter `hook.sh`. Returns true on first match.
 fn claude_hook_wired(settings: &serde_json::Value) -> bool {
     let Some(post) = settings
         .get("hooks")
@@ -363,94 +255,6 @@ fn claude_hook_wired(settings: &serde_json::Value) -> bool {
     })
 }
 
-/// `<dir>/.hector/` is writable. Probes by creating the dir if absent,
-/// writing a marker file, then deleting it. We DO create `.hector/` —
-/// that's the same kind of side effect as `init` writing `.hector.yml`,
-/// and "doctor never modifies state" is about *policy* state (configs,
-/// baselines, telemetry), not about the run-state directory itself.
-///
-/// Also reports current sizes of `baseline.json` and `log.jsonl` if
-/// present, so the human checklist surfaces "your
-/// telemetry log has grown to 200MB" without forcing the user to
-/// `du -sh .hector/`.
-fn check_runtime_state(ctx: &DoctorContext) -> CheckResult {
-    let hector_dir = ctx.dir.join(".hector");
-    if let Err(e) = std::fs::create_dir_all(&hector_dir) {
-        return CheckResult {
-            name: "runtime_state",
-            status: Status::Fail,
-            detail: format!("cannot create {}: {e}", hector_dir.display()),
-            remediation: Some(format!(
-                "ensure {} is writable (chmod / ownership)",
-                ctx.dir.display()
-            )),
-        };
-    }
-    let probe = hector_dir.join(".doctor-write-probe");
-    if let Err(e) = std::fs::write(&probe, b"ok") {
-        return CheckResult {
-            name: "runtime_state",
-            status: Status::Fail,
-            detail: format!("cannot write to {}: {e}", hector_dir.display()),
-            remediation: Some(format!("chmod u+w {}", hector_dir.display())),
-        };
-    }
-    let _ = std::fs::remove_file(&probe);
-
-    let mut sizes: Vec<String> = Vec::new();
-    for name in ["baseline.json", "log.jsonl"] {
-        if let Ok(meta) = std::fs::metadata(hector_dir.join(name)) {
-            sizes.push(format!("{name}={}b", meta.len()));
-        }
-    }
-    let detail = if sizes.is_empty() {
-        format!("{} writable (empty)", hector_dir.display())
-    } else {
-        format!("{} writable ({})", hector_dir.display(), sizes.join(", "))
-    };
-    CheckResult {
-        name: "runtime_state",
-        status: Status::Pass,
-        detail,
-        remediation: None,
-    }
-}
-
-/// Surfaces the capability-sandbox story for the running platform.
-///
-/// Linux enforces `network: false` via `CLONE_NEWNET` (best-effort
-/// fallback on EPERM, which still warns at runtime because the user
-/// asked for isolation and didn't get it). macOS and other non-Linux
-/// targets have no equivalent — they run script rules unrestricted.
-///
-/// Status is `warn` (not `fail`) on best-effort platforms because the
-/// limitation is platform reality, not a misconfiguration the user can
-/// remediate. Status is `pass` on Linux.
-fn check_capabilities() -> CheckResult {
-    match hector_core::engine::capability::platform_capability_status() {
-        None => CheckResult {
-            name: "capabilities",
-            status: Status::Pass,
-            detail: "namespace isolation available (CLONE_NEWNET enforces `network: false`)"
-                .into(),
-            remediation: None,
-        },
-        Some(msg) => CheckResult {
-            name: "capabilities",
-            status: Status::Warn,
-            detail: format!("{msg} (see docs/security/capabilities.md)"),
-            remediation: Some(
-                "for adversarial workloads run hector under Linux where namespace isolation enforces `network: false`"
-                    .into(),
-            ),
-        },
-    }
-}
-
-/// Adapter presence is best-effort: missing `~/.claude/settings.json`
-/// is `warn` (not every user runs Claude Code); present-without-hector
-/// is `warn`; wired is `pass`. Never `fail` — hector is editor-agnostic
-/// and the CLI is fully usable without an adapter.
 fn check_adapter() -> CheckResult {
     let Some((path, settings)) = load_claude_settings() else {
         return CheckResult {
@@ -477,7 +281,10 @@ fn check_adapter() -> CheckResult {
         CheckResult {
             name: "adapter",
             status: Status::Warn,
-            detail: format!("{} present but no PostToolUse hook references hector", path.display()),
+            detail: format!(
+                "{} present but no PostToolUse hook references hector",
+                path.display()
+            ),
             remediation: Some(
                 "install the adapter or add a PostToolUse entry calling hector — see docs/adapters/claude-code.md".into(),
             ),
@@ -553,11 +360,7 @@ mod tests {
     #[test]
     fn config_present_pass_when_file_exists() {
         let d = tempdir().unwrap();
-        fs::write(
-            d.path().join(".hector.yml"),
-            "schema_version: 2\nrules: {}\n",
-        )
-        .unwrap();
+        fs::write(d.path().join(".hector.yml"), "gates: {}\n").unwrap();
         let r = check_config_present(&ctx_with(d.path()));
         assert_eq!(r.status, Status::Pass);
     }
@@ -578,86 +381,24 @@ mod tests {
     }
 
     #[test]
-    fn schema_pass_on_v2() {
+    fn parses_pass_on_valid_gates_config() {
         let d = tempdir().unwrap();
         fs::write(
             d.path().join(".hector.yml"),
-            "schema_version: 2\nrules: {}\n",
+            "gates:\n  g:\n    files: \"*.rs\"\n    run: \"true\"\n",
         )
         .unwrap();
-        assert_eq!(
-            check_schema_version(&ctx_with(d.path())).status,
-            Status::Pass
-        );
-    }
-
-    #[test]
-    fn schema_fail_on_v1_with_migrate_hint() {
-        let d = tempdir().unwrap();
-        fs::write(
-            d.path().join(".hector.yml"),
-            "schema_version: 1\nrules: {}\n",
-        )
-        .unwrap();
-        let r = check_schema_version(&ctx_with(d.path()));
-        assert_eq!(r.status, Status::Fail);
-        assert!(r.remediation.unwrap().contains("hector migrate"));
-    }
-
-    #[test]
-    fn schema_fail_on_unsupported_version() {
-        let d = tempdir().unwrap();
-        fs::write(
-            d.path().join(".hector.yml"),
-            "schema_version: 99\nrules: {}\n",
-        )
-        .unwrap();
-        let r = check_schema_version(&ctx_with(d.path()));
-        assert_eq!(r.status, Status::Fail);
-    }
-
-    #[test]
-    fn schema_fail_on_missing_version() {
-        let d = tempdir().unwrap();
-        fs::write(d.path().join(".hector.yml"), "rules: {}\n").unwrap();
-        let r = check_schema_version(&ctx_with(d.path()));
-        assert_eq!(r.status, Status::Fail);
-    }
-
-    #[test]
-    fn trust_warn_when_config_missing() {
-        let d = tempdir().unwrap();
-        let r = check_trust(&ctx_with(d.path()));
-        assert_eq!(r.status, Status::Warn);
-    }
-
-    #[test]
-    fn engines_pass_for_script_config() {
-        let d = tempdir().unwrap();
-        let trusted = hector_core::trust::write_trust_block(
-            "schema_version: 2\nrules:\n  r:\n    description: \"x\"\n    engine: script\n    scope: [\"*\"]\n    severity: error\n    script: \"true\"\n",
-        ).unwrap();
-        fs::write(d.path().join(".hector.yml"), trusted).unwrap();
-        let r = check_engines(&ctx_with(d.path()));
+        let r = check_config_parses(&ctx_with(d.path()));
         assert_eq!(r.status, Status::Pass);
-    }
-
-    #[test]
-    fn scope_globs_pass_on_clean_config() {
-        let d = tempdir().unwrap();
-        let trusted = hector_core::trust::write_trust_block(
-            "schema_version: 2\nrules:\n  r:\n    description: \"x\"\n    engine: script\n    scope: [\"*.rs\"]\n    severity: error\n    script: \"true\"\n",
-        ).unwrap();
-        fs::write(d.path().join(".hector.yml"), trusted).unwrap();
-        let r = check_scope_globs(&ctx_with(d.path()));
-        assert_eq!(r.status, Status::Pass);
+        assert!(r.detail.contains("1 gate(s)"));
     }
 
     #[test]
     fn hook_wired_finds_hector_command() {
         let v: serde_json::Value = serde_json::from_str(
             r#"{"hooks":{"PostToolUse":[{"hooks":[{"type":"command","command":"hector check"}]}]}}"#,
-        ).unwrap();
+        )
+        .unwrap();
         assert!(claude_hook_wired(&v));
     }
 
@@ -665,7 +406,8 @@ mod tests {
     fn hook_wired_finds_adapter_hook_sh() {
         let v: serde_json::Value = serde_json::from_str(
             r#"{"hooks":{"PostToolUse":[{"hooks":[{"type":"command","command":"$ROOT/hooks/hook.sh post"}]}]}}"#,
-        ).unwrap();
+        )
+        .unwrap();
         assert!(claude_hook_wired(&v));
     }
 
@@ -679,79 +421,45 @@ mod tests {
     }
 
     #[test]
-    fn hook_wired_rejects_missing_post_tool_use() {
-        let v: serde_json::Value = serde_json::from_str(r#"{"hooks":{}}"#).unwrap();
-        assert!(!claude_hook_wired(&v));
-    }
-
-    #[test]
     fn hook_wired_rejects_empty_object() {
         let v: serde_json::Value = serde_json::from_str(r"{}").unwrap();
         assert!(!claude_hook_wired(&v));
     }
 
-    // The `capabilities` row reflects the platform's sandbox story.
-    // Linux passes (CLONE_NEWNET enforces network: false); non-Linux warns
-    // (sandbox is best-effort, runtime never blocks the script).
     #[test]
-    fn capabilities_pass_on_linux_warn_elsewhere() {
-        let r = check_capabilities();
-        assert_eq!(r.name, "capabilities");
-        #[cfg(target_os = "linux")]
-        {
-            assert_eq!(r.status, Status::Pass);
-            assert!(r.remediation.is_none(), "pass rows carry no remediation");
-            assert!(
-                r.detail.contains("namespace"),
-                "linux detail should mention namespaces: {}",
-                r.detail
-            );
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            assert_eq!(
-                r.status,
-                Status::Warn,
-                "non-linux platforms must warn (sandbox is best-effort)"
-            );
-            assert!(
-                r.detail.contains("best-effort"),
-                "non-linux detail should mention best-effort: {}",
-                r.detail
-            );
-            assert!(
-                r.detail.contains("docs/security/capabilities.md"),
-                "non-linux detail should point at the security doc: {}",
-                r.detail
-            );
-            assert!(
-                r.remediation.is_some(),
-                "warn rows must carry a remediation hint"
-            );
-        }
+    fn gate_scripts_warn_when_config_missing() {
+        let d = tempdir().unwrap();
+        let r = check_gate_scripts(&ctx_with(d.path()));
+        assert_eq!(r.status, Status::Warn);
     }
 
     #[test]
-    fn runtime_state_pass_creates_hector_dir() {
+    fn gate_scripts_pass_for_inline_commands() {
         let d = tempdir().unwrap();
-        let r = check_runtime_state(&ctx_with(d.path()));
+        fs::write(
+            d.path().join(".hector.yml"),
+            "gates:\n  g:\n    files: \"*.rs\"\n    run: \"grep -q TODO && exit 2 || exit 0\"\n",
+        )
+        .unwrap();
+        let r = check_gate_scripts(&ctx_with(d.path()));
         assert_eq!(r.status, Status::Pass);
-        assert!(
-            d.path().join(".hector").is_dir(),
-            "hector dir created by probe"
-        );
     }
 
     #[test]
-    fn runtime_state_reports_existing_state_files_sizes() {
+    fn check_run_path_skips_inline_commands() {
+        assert!(check_run_path(Path::new("."), "g", "grep -q TODO").is_none());
+    }
+
+    #[test]
+    fn check_run_path_skips_non_hector_paths() {
+        assert!(check_run_path(Path::new("."), "g", "scripts/check.sh").is_none());
+    }
+
+    #[test]
+    fn check_run_path_fails_missing_script() {
         let d = tempdir().unwrap();
-        let h = d.path().join(".hector");
-        fs::create_dir_all(&h).unwrap();
-        fs::write(h.join("baseline.json"), "[]").unwrap();
-        fs::write(h.join("log.jsonl"), "{}\n").unwrap();
-        let r = check_runtime_state(&ctx_with(d.path()));
-        assert_eq!(r.status, Status::Pass);
-        assert!(r.detail.contains("baseline.json"));
-        assert!(r.detail.contains("log.jsonl"));
+        let result = check_run_path(d.path(), "g", ".hector/gates/missing.sh");
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("not found"));
     }
 }

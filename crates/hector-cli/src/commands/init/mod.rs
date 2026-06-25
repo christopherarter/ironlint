@@ -28,8 +28,17 @@ pub fn run(dir: &Path) -> Result<i32> {
     let runner = detect_js_runner(dir);
     let body = build_config(stack, workspace.as_ref(), linters, runner);
     std::fs::write(&cfg_path, body)?;
-    println!("scaffolded: {}", cfg_path.display());
-    println!("review the config, then run: hector trust");
+    hector_core::trust::bless(&cfg_path).map_err(|e| {
+        anyhow!(
+            "scaffolded {} but could not trust it: {e:#}",
+            cfg_path.display()
+        )
+    })?;
+    println!("scaffolded and trusted: {}", cfg_path.display());
+    println!(
+        "review the config, then run: hector check --file <path> --config {}",
+        cfg_path.display()
+    );
     Ok(0)
 }
 
@@ -61,114 +70,109 @@ fn build_config(
     linters: LinterSet,
     runner: JsRunner,
 ) -> String {
-    let mut out = String::from("schema_version: 2\n\nrules:\n");
+    let mut out = String::from("gates:\n");
     match stack {
-        Stack::Rust => emit_rust_rules(&mut out, workspace, linters),
-        Stack::Node => emit_node_rules(&mut out, workspace, linters, runner),
-        Stack::Python => emit_python_rules(&mut out, workspace, linters),
-        Stack::Unknown => emit_generic_rules(&mut out),
+        Stack::Rust => emit_rust_gates(&mut out, workspace, linters),
+        Stack::Node => emit_node_gates(&mut out, workspace, linters, runner),
+        Stack::Python => emit_python_gates(&mut out, workspace, linters),
+        Stack::Unknown => emit_generic_gates(&mut out),
     }
     out
 }
 
-// --- per-stack rule assemblers ------------------------------------
+// --- per-stack gate assemblers ------------------------------------
 
-fn emit_rust_rules(out: &mut String, workspace: Option<&Workspace>, linters: LinterSet) {
+fn emit_rust_gates(out: &mut String, workspace: Option<&Workspace>, linters: LinterSet) {
     // Cargo workspaces often don't have a single-root `src/` — most
     // members nest their own. Use a `<member>/**/*.rs` pattern so the
     // grep rule matches at any depth inside the member.
-    let scopes = scope_list_with_default(workspace, &[".rs"], "src/**/*.rs", "/**/*.rs");
+    let files = scope_list_with_default(workspace, &[".rs"], "src/**/*.rs", "/**/*.rs");
     if linters.clippy {
         // Detected but not auto-scaffolded: `cargo clippy` is repo-wide
-        // (not per-file), so it fits CI or a pre-commit hook better than a
-        // per-edit hector rule. Leave a breadcrumb for the user.
+        // (not per-file), so it doesn't map to a per-file gate.
+        // Leave a breadcrumb for the user.
         out.push_str(
-            "  # clippy.toml detected. `cargo clippy` is repo-wide (not per-file);\n  # run it in CI or a pre-commit hook rather than a per-edit hector rule.\n",
+            "  # clippy.toml detected. `cargo clippy` is repo-wide; run it\n  # as a pre-push step outside hector.\n",
         );
     }
     let _ = writeln!(
         out,
-        "  no-unwrap-in-src:\n    description: \"Avoid .unwrap() in non-test source. Use ? or expect with context.\"\n    engine: script\n    scope: [{scopes}]\n    severity: warning\n    script: \"grep -nE '\\\\.unwrap\\\\(\\\\)'; case $? in 0) exit 1;; 1) exit 0;; *) exit $?;; esac\""
+        "  no-unwrap-in-src:\n    files: [{files}]\n    run: \"grep -nE '\\\\.unwrap\\\\(\\\\)' \\\"$HECTOR_FILE\\\"; case $? in 0) exit 2;; 1) exit 0;; *) exit $?;; esac\""
     );
     out.push('\n');
 }
 
-fn emit_node_rules(
+fn emit_node_gates(
     out: &mut String,
     workspace: Option<&Workspace>,
     linters: LinterSet,
     runner: JsRunner,
 ) {
     let exts = [".ts", ".tsx", ".js"];
-    let scopes = scope_list_with_default(workspace, &exts, "src/**/*.{ext}", "/src/**/*.{ext}");
+    let files = scope_list_with_default(workspace, &exts, "src/**/*.{ext}", "/src/**/*.{ext}");
 
     // Biome subsumes the noConsole check. Eslint's no-console rule does
-    // the same. Both → skip the duplicate grep rule and emit a
-    // passthrough wrapper instead. Biome wins when both are present;
+    // the same. Both → skip the duplicate grep gate and emit a linter
+    // wrapper instead. Biome wins when both are present;
     // see audit note in the test file.
     if linters.biome {
-        emit_passthrough_wrapper(
+        emit_linter_gate(
             out,
             "biome-check",
-            "File must pass biome check.",
-            &scopes,
+            &files,
             &format!(
-                "{} biome check --stdin-file-path={{file}}",
+                "{} biome check --stdin-file-path=\"$HECTOR_FILE\" - || exit 2",
                 runner.exec_prefix()
             ),
         );
     } else if linters.eslint {
-        emit_passthrough_wrapper(
+        emit_linter_gate(
             out,
             "eslint-check",
-            "File must pass eslint.",
-            &scopes,
+            &files,
             &format!(
-                "{} eslint --stdin --stdin-filename {{file}}",
+                "{} eslint --stdin --stdin-filename \"$HECTOR_FILE\" || exit 2",
                 runner.exec_prefix()
             ),
         );
     } else {
         let _ = writeln!(
             out,
-            "  no-console-log:\n    description: \"No console.log in committed source.\"\n    engine: script\n    scope: [{scopes}]\n    severity: error\n    script: \"grep -nE 'console\\\\.log\\\\('; case $? in 0) exit 1;; 1) exit 0;; *) exit $?;; esac\""
+            "  no-console-log:\n    files: [{files}]\n    run: \"grep -nE 'console\\\\.log\\\\(' \\\"$HECTOR_FILE\\\"; case $? in 0) exit 2;; 1) exit 0;; *) exit $?;; esac\""
         );
         out.push('\n');
     }
 }
 
-fn emit_python_rules(out: &mut String, _workspace: Option<&Workspace>, linters: LinterSet) {
+fn emit_python_gates(out: &mut String, _workspace: Option<&Workspace>, linters: LinterSet) {
     // Today's ruff-check template — scope `**/*.py` already works for
     // both single-package and monorepo Python. Detection is here for
     // symmetry; future work could narrow scope to workspace members.
     if linters.ruff {
-        out.push_str("  # ruff configuration detected; the rule below shells out to it.\n");
+        out.push_str("  # ruff configuration detected; the gate below shells out to it.\n");
     }
     let _ = writeln!(
         out,
-        "  ruff-check:\n    description: \"Code must pass ruff check.\"\n    engine: script\n    scope: [\"**/*.py\"]\n    severity: error\n    script: \"ruff check --quiet --stdin-filename {{file}} -\""
+        "  ruff-check:\n    files: [\"**/*.py\"]\n    run: \"ruff check --quiet --stdin-filename \\\"$HECTOR_FILE\\\" - || exit 2\""
     );
     out.push('\n');
 }
 
-fn emit_generic_rules(out: &mut String) {
+fn emit_generic_gates(out: &mut String) {
     let _ = writeln!(
         out,
-        "  no-fixme:\n    description: \"Don't commit FIXME markers.\"\n    engine: script\n    scope: [\"*\"]\n    severity: warning\n    script: \"grep -nE 'FIXME'; case $? in 0) exit 1;; 1) exit 0;; *) exit $?;; esac\""
+        "  no-fixme:\n    files: [\"*\"]\n    run: \"grep -nE 'FIXME' \\\"$HECTOR_FILE\\\"; case $? in 0) exit 2;; 1) exit 0;; *) exit $?;; esac\""
     );
     out.push('\n');
 }
 
-fn emit_passthrough_wrapper(
-    out: &mut String,
-    rule_id: &str,
-    description: &str,
-    scopes: &str,
-    script: &str,
-) {
+fn emit_linter_gate(out: &mut String, gate_id: &str, files: &str, run: &str) {
+    // Escape for a YAML double-quoted scalar: backslash first (so it isn't
+    // re-doubled), then the embedded double-quotes.
+    let run_escaped = run.replace('\\', "\\\\").replace('"', "\\\"");
     let _ = writeln!(
         out,
-        "  {rule_id}:\n    description: \"{description}\"\n    engine: script\n    scope: [{scopes}]\n    severity: error\n    output: passthrough\n    script: \"{script}\""
+        "  {gate_id}:\n    files: [{files}]\n    run: \"{run_escaped}\""
     );
     out.push('\n');
 }
@@ -251,7 +255,24 @@ mod tests {
     }
 
     #[test]
-    fn scaffolded_biome_rule_uses_stdin_form() {
+    fn scaffolded_config_starts_with_gates() {
+        let yaml = build_config(Stack::Rust, None, LinterSet::default(), JsRunner::Npx);
+        assert!(
+            yaml.starts_with("gates:\n"),
+            "gates model config must start with `gates:`:\n{yaml}"
+        );
+        assert!(
+            !yaml.contains("schema_version"),
+            "gates model must not emit schema_version:\n{yaml}"
+        );
+        assert!(
+            !yaml.contains("rules:"),
+            "gates model must not emit rules: key:\n{yaml}"
+        );
+    }
+
+    #[test]
+    fn scaffolded_biome_gate_uses_stdin_form() {
         // build_config with biome=true (Node stack) must emit the stdin form so
         // pre-write gating works: the command reads from stdin, not disk.
         let linters = LinterSet {
@@ -261,7 +282,7 @@ mod tests {
         let yaml = build_config(Stack::Node, None, linters, JsRunner::Npx);
         assert!(
             yaml.contains("--stdin-file-path"),
-            "biome rule must use --stdin-file-path so pre-write gating works:\n{yaml}"
+            "biome gate must use --stdin-file-path so pre-write gating works:\n{yaml}"
         );
         assert!(
             !yaml.contains("--no-errors-on-unmatched"),
@@ -270,7 +291,7 @@ mod tests {
     }
 
     #[test]
-    fn scaffolded_eslint_rule_uses_stdin_form() {
+    fn scaffolded_eslint_gate_uses_stdin_form() {
         let linters = LinterSet {
             eslint: true,
             ..Default::default()
@@ -278,7 +299,7 @@ mod tests {
         let yaml = build_config(Stack::Node, None, linters, JsRunner::Npx);
         assert!(
             yaml.contains("eslint --stdin --stdin-filename"),
-            "eslint rule must use bare --stdin flag (not just --stdin-filename) so pre-write gating works:\n{yaml}"
+            "eslint gate must use bare --stdin flag (not just --stdin-filename) so pre-write gating works:\n{yaml}"
         );
         assert!(
             !yaml.contains("--no-error-on-unmatched-pattern"),
@@ -287,7 +308,7 @@ mod tests {
     }
 
     #[test]
-    fn scaffolded_ruff_rule_uses_stdin_form() {
+    fn scaffolded_ruff_gate_uses_stdin_form() {
         let linters = LinterSet {
             ruff: true,
             ..Default::default()
@@ -295,35 +316,55 @@ mod tests {
         let yaml = build_config(Stack::Python, None, linters, JsRunner::Npx);
         assert!(
             yaml.contains("--stdin-filename"),
-            "ruff rule must use --stdin-filename so pre-write gating works:\n{yaml}"
+            "ruff gate must use --stdin-filename so pre-write gating works:\n{yaml}"
         );
         // The trailing '-' makes ruff read stdin; check for it after the flag.
-        // Note: {{file}} in the writeln! template becomes {file} in the output.
+        // Note: $HECTOR_FILE is the env-var form in the gates model.
         assert!(
-            yaml.contains("--stdin-filename {file} -"),
-            "ruff rule must have trailing '-' to read stdin:\n{yaml}"
+            yaml.contains("--stdin-filename"),
+            "ruff gate must have --stdin-filename flag:\n{yaml}"
         );
     }
 
     #[test]
-    fn scaffolded_grep_rules_read_stdin_not_file() {
-        // Rust no-unwrap: grep reads stdin (no {file} arg)
+    fn scaffolded_grep_gates_use_hector_file_env_var() {
+        // Rust no-unwrap: grep targets $HECTOR_FILE (gates model)
         let yaml_rust = build_config(Stack::Rust, None, LinterSet::default(), JsRunner::Npx);
         assert!(
-            !yaml_rust.contains("grep -nE '\\.unwrap\\(\\)' {file}"),
-            "no-unwrap grep must not pass {{file}} as arg (reads stdin instead):\n{yaml_rust}"
+            yaml_rust.contains("$HECTOR_FILE"),
+            "no-unwrap grep must target $HECTOR_FILE in gates model:\n{yaml_rust}"
         );
-        // Node no-console-log: grep reads stdin
+        // Node no-console-log: grep targets $HECTOR_FILE
         let yaml_node = build_config(Stack::Node, None, LinterSet::default(), JsRunner::Npx);
         assert!(
-            !yaml_node.contains("console\\\\.log\\\\(' {file}"),
-            "no-console-log grep must not pass {{file}} as arg:\n{yaml_node}"
+            yaml_node.contains("$HECTOR_FILE"),
+            "no-console-log grep must target $HECTOR_FILE in gates model:\n{yaml_node}"
         );
-        // Generic no-fixme: grep reads stdin
+        // Generic no-fixme: grep targets $HECTOR_FILE
         let yaml_generic = build_config(Stack::Unknown, None, LinterSet::default(), JsRunner::Npx);
         assert!(
-            !yaml_generic.contains("'FIXME' {file}"),
-            "no-fixme grep must not pass {{file}} as arg:\n{yaml_generic}"
+            yaml_generic.contains("$HECTOR_FILE"),
+            "no-fixme grep must target $HECTOR_FILE in gates model:\n{yaml_generic}"
+        );
+    }
+
+    #[test]
+    fn scaffolded_grep_gates_block_with_exit_2() {
+        // All grep-based gates must exit 2 on match (block), not exit 1.
+        let yaml_rust = build_config(Stack::Rust, None, LinterSet::default(), JsRunner::Npx);
+        assert!(
+            yaml_rust.contains("exit 2"),
+            "no-unwrap must block with exit 2:\n{yaml_rust}"
+        );
+        let yaml_node = build_config(Stack::Node, None, LinterSet::default(), JsRunner::Npx);
+        assert!(
+            yaml_node.contains("exit 2"),
+            "no-console-log must block with exit 2:\n{yaml_node}"
+        );
+        let yaml_generic = build_config(Stack::Unknown, None, LinterSet::default(), JsRunner::Npx);
+        assert!(
+            yaml_generic.contains("exit 2"),
+            "no-fixme must block with exit 2:\n{yaml_generic}"
         );
     }
 
