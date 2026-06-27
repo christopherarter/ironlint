@@ -1,6 +1,7 @@
 //! Harness onboarding: materialize Hector's hook into supported coding agents.
 mod json_settings;
 mod materialize;
+mod ops;
 mod registry;
 
 pub use json_settings::{remove_from_hook_array, sync_hook_array, PatchResult};
@@ -8,6 +9,7 @@ pub use materialize::{
     atomic_write, backup_once, read_sidecar, sha256_hex, sidecar_path, write_sidecar,
     AdapterSidecar,
 };
+pub use ops::{install, status, uninstall, HarnessStatus, InstallOutcome, InstallResult};
 pub use registry::{all_harnesses, JsonHookSpec, PluginSpec};
 
 use std::path::PathBuf;
