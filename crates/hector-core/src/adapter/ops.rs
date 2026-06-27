@@ -290,13 +290,8 @@ fn status_jsonhook(
     let dir = adapters_dir(env).join(name);
     let settings = settings_path(spec, env, scope);
     let registered = settings_has_marker(&settings, spec.array_key, &format!("{}", dir.display()))?;
-    let expected: Vec<(String, String)> = spec
-        .files
-        .iter()
-        .map(|(f, b)| ((*f).to_string(), sha256_hex(b.as_bytes())))
-        .collect();
     let installed = dir.exists();
-    let (intact, current) = sidecar_integrity(&dir, &expected)?;
+    let (intact, current) = sidecar_integrity(&dir)?;
     Ok((installed, registered, intact, current))
 }
 
@@ -307,25 +302,26 @@ fn status_plugin(
 ) -> Result<(bool, bool, Option<bool>, Option<bool>)> {
     let dir = plugin_dir(spec, env, scope);
     let file = dir.join(spec.filename);
-    let expected = vec![(
-        spec.filename.to_string(),
-        sha256_hex(spec.source.as_bytes()),
-    )];
     let installed = file.exists();
     let registered = installed;
-    let (intact, current) = sidecar_integrity(&dir, &expected)?;
+    let (intact, current) = sidecar_integrity(&dir)?;
     Ok((installed, registered, intact, current))
 }
 
-fn sidecar_integrity(
-    sidecar_dir: &Path,
-    expected: &[(String, String)],
-) -> Result<(Option<bool>, Option<bool>)> {
-    match read_sidecar(sidecar_dir)? {
+/// Compare every file recorded in the sidecar against the on-disk bytes in
+/// `dir`. `intact = Some(true)` only when every recorded file is present and
+/// its on-disk sha256 matches the sidecar's recorded hash. A missing file or
+/// a differing hash yields `Some(false)`. No sidecar → `(None, None)`.
+fn sidecar_integrity(dir: &Path) -> Result<(Option<bool>, Option<bool>)> {
+    match read_sidecar(dir)? {
         Some(sc) => {
-            let intact = expected
-                .iter()
-                .all(|(name, hash)| sc.files.get(name) == Some(hash));
+            let intact =
+                sc.files.iter().all(
+                    |(name, recorded_hash)| match std::fs::read(dir.join(name)) {
+                        Ok(bytes) => sha256_hex(&bytes) == *recorded_hash,
+                        Err(_) => false,
+                    },
+                );
             Ok((Some(intact), Some(sc.version == CURRENT_ADAPTER_VERSION)))
         }
         None => Ok((None, None)),
@@ -518,6 +514,25 @@ mod tests {
         assert!(!st.registered);
         assert!(st.intact.is_none());
         assert!(st.current.is_none());
+    }
+
+    #[test]
+    fn status_detects_on_disk_tamper() {
+        let tmp = tempfile::tempdir().unwrap();
+        let e = env(tmp.path());
+        let h = harness("reasonix");
+        install(&h, &e, Scope::Global, false).unwrap();
+        // Tamper with the installed artifact, leaving the sidecar untouched.
+        let hook = e.config_home.join("hector/adapters/reasonix/hook.sh");
+        let mut bytes = std::fs::read(&hook).unwrap();
+        bytes.extend_from_slice(b"\n# tampered\n");
+        std::fs::write(&hook, bytes).unwrap();
+        let st = status(&h, &e, Scope::Global).unwrap();
+        assert_eq!(
+            st.intact,
+            Some(false),
+            "edited on-disk artifact must report intact=false"
+        );
     }
 
     #[test]

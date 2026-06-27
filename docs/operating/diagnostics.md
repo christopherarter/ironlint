@@ -49,7 +49,7 @@ Harness checks follow these rules:
     {
       "name": "claude-code",
       "status": "pass",
-      "detail": "PostToolUse hook registered; artifact sha256 matches",
+      "detail": "installed and registered",
       "remediation": null
     }
   ]
