@@ -270,7 +270,7 @@ fn adapter_verdict(s: &HarnessStatus) -> (Status, String, Option<String>) {
 /// Map one harness's status to a doctor CheckResult. Returns None for a
 /// harness that is neither present nor installed (no signal worth a line).
 fn adapter_check(s: &HarnessStatus) -> Option<CheckResult> {
-    if !s.detected && !s.installed {
+    if !s.detected && !s.installed && !s.registered {
         return None;
     }
     let (status, detail, remediation) = adapter_verdict(s);
@@ -493,6 +493,22 @@ mod tests {
     fn adapter_check_skips_when_neither_detected_nor_installed() {
         let s = harness_status(false, false, false);
         assert!(adapter_check(&s).is_none());
+    }
+
+    #[test]
+    fn adapter_check_reports_registered_but_absent_as_fail() {
+        // registered in settings but artifact gone AND harness dir absent:
+        // must still surface as a broken (Fail) row, not be skipped.
+        let s = hector_core::adapter::HarnessStatus {
+            harness: "reasonix",
+            detected: false,
+            installed: false,
+            registered: true,
+            intact: None,
+            current: None,
+        };
+        let c = adapter_check(&s).expect("registered-but-absent must not be skipped");
+        assert_eq!(c.status, Status::Fail);
     }
 
     #[test]
