@@ -130,7 +130,7 @@ fn config_home_from(xdg: Option<String>, home: Option<String>) -> Option<PathBuf
     home.map(|h| PathBuf::from(h).join(".config"))
 }
 
-fn config_home() -> Option<PathBuf> {
+pub fn config_home() -> Option<PathBuf> {
     config_home_from(
         std::env::var("XDG_CONFIG_HOME").ok(),
         std::env::var("HOME").ok(),
