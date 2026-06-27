@@ -34,10 +34,24 @@ pub struct AdapterEnv {
 impl AdapterEnv {
     /// Resolve from the process environment + a project root (cwd or `--dir`).
     pub fn from_process(project_root: PathBuf) -> anyhow::Result<Self> {
-        let home = std::env::var("HOME")
+        Self::from_parts(
+            std::env::var("HOME").ok(),
+            crate::trust::config_home(),
+            project_root,
+        )
+    }
+
+    /// Pure resolver split out from the env read so the error arms are
+    /// testable without mutating process env (mirrors `trust::config_home_from`).
+    fn from_parts(
+        home: Option<String>,
+        config_home: Option<PathBuf>,
+        project_root: PathBuf,
+    ) -> anyhow::Result<Self> {
+        let home = home
             .map(PathBuf::from)
-            .map_err(|_| anyhow::anyhow!("cannot resolve $HOME"))?;
-        let config_home = crate::trust::config_home().ok_or_else(|| {
+            .ok_or_else(|| anyhow::anyhow!("cannot resolve $HOME"))?;
+        let config_home = config_home.ok_or_else(|| {
             anyhow::anyhow!("cannot resolve config home (set $XDG_CONFIG_HOME or $HOME)")
         })?;
         Ok(Self {
@@ -70,4 +84,47 @@ pub fn detect(env: &AdapterEnv) -> Vec<(&'static str, bool)> {
         .into_iter()
         .map(|h| (h.name, registry::is_detected(&h, env)))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn from_parts_builds_when_both_present() {
+        let e = AdapterEnv::from_parts(
+            Some("/home/u".to_string()),
+            Some(PathBuf::from("/home/u/.config")),
+            PathBuf::from("/proj"),
+        )
+        .unwrap();
+        assert_eq!(e.home, PathBuf::from("/home/u"));
+        assert_eq!(e.config_home, PathBuf::from("/home/u/.config"));
+        assert_eq!(e.project_root, PathBuf::from("/proj"));
+    }
+
+    #[test]
+    fn from_parts_errs_without_home() {
+        assert!(
+            AdapterEnv::from_parts(None, Some(PathBuf::from("/c")), PathBuf::from("/p")).is_err()
+        );
+    }
+
+    #[test]
+    fn from_parts_errs_without_config_home() {
+        assert!(AdapterEnv::from_parts(Some("/h".to_string()), None, PathBuf::from("/p")).is_err());
+    }
+
+    #[test]
+    fn adapters_dir_joins_under_config_home() {
+        let e = AdapterEnv {
+            home: PathBuf::from("/h"),
+            config_home: PathBuf::from("/h/.config"),
+            project_root: PathBuf::from("/p"),
+        };
+        assert_eq!(
+            adapters_dir(&e),
+            PathBuf::from("/h/.config/hector/adapters")
+        );
+    }
 }
