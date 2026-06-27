@@ -145,4 +145,33 @@ mod tests {
             "/h/adapters/claude-code/"
         ));
     }
+
+    #[test]
+    fn sync_coerces_non_object_root() {
+        let mut s = json!("not an object");
+        sync_hook_array(&mut s, "PostToolUse", json!({"x": 1}), "marker");
+        assert!(s.is_object());
+        assert_eq!(s["hooks"]["PostToolUse"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn sync_coerces_non_object_hooks() {
+        let mut s = json!({"hooks": "garbage"});
+        sync_hook_array(&mut s, "PreToolUse", json!({"y": 2}), "marker");
+        assert_eq!(s["hooks"]["PreToolUse"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn sync_coerces_non_array_key_slot() {
+        let mut s = json!({"hooks": {"PostToolUse": "garbage"}});
+        sync_hook_array(&mut s, "PostToolUse", json!({"z": 3}), "marker");
+        assert_eq!(s["hooks"]["PostToolUse"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn contains_marker_false_for_scalars() {
+        assert!(!contains_marker(&json!(30000), "marker"));
+        assert!(!contains_marker(&json!(true), "marker"));
+        assert!(!contains_marker(&json!(null), "marker"));
+    }
 }
