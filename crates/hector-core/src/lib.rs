@@ -2,6 +2,7 @@
 
 #![warn(clippy::cognitive_complexity)]
 
+pub mod adapter;
 pub mod config;
 pub mod diff;
 pub mod disable;
