@@ -14,10 +14,11 @@ use std::path::Path;
 
 /// Telemetry record-set version. Independent of the verdict schema.
 ///
-/// Bumps when this enum's shape changes. Bumped to 4 for the checks pipeline
-/// redesign: per-gate records became per-check (`gate`→`check` field, `step`
-/// added, `event` added to `LogEntry::Check`).
-pub const SCHEMA_VERSION: u32 = 4;
+/// Bumps when this enum's shape changes. Bumped to 5: `LogEntry::Check.file`
+/// became `Option<String>` (absent on pre-commit/set invocations) and
+/// `set_size: Option<usize>` was added (present on pre-commit to record the
+/// number of files in the checked set).
+pub const SCHEMA_VERSION: u32 = 5;
 
 /// Per-check outcome line carried inside a [`LogEntry::Check`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -38,12 +39,20 @@ pub struct PerCheckRecord {
 ///
 /// Discriminator field is `type`; variant payload follows. `Check.checks` is
 /// empty when no check matched the file (file was checked, no check ran).
+///
+/// `file` is present on write-lifecycle invocations (the absolute path of the
+/// file being checked) and absent on pre-commit/set invocations where there is
+/// no single primary target. `set_size` is the inverse: present on pre-commit
+/// with the count of files in the set, absent on per-file write records.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum LogEntry {
     Check {
         ts: String,
-        file: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        file: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        set_size: Option<usize>,
         event: String,
         status: Status,
         elapsed_ms: u64,
@@ -113,13 +122,15 @@ pub fn read_all(path: &Path) -> Result<Vec<LogEntry>> {
 mod tests {
     use super::*;
 
+    /// Write-lifecycle record: `file` is present, `set_size` is absent.
     #[test]
-    fn round_trips_a_check_entry() {
+    fn round_trips_a_write_entry() {
         let dir = tempfile::tempdir().unwrap();
         let log = dir.path().join("log.jsonl");
         let entry = LogEntry::Check {
             ts: "2026-06-15T00:00:00Z".into(),
-            file: "a.rs".into(),
+            file: Some("a.rs".into()),
+            set_size: None,
             event: "edit".into(),
             status: Status::Block,
             elapsed_ms: 3,
@@ -134,10 +145,46 @@ mod tests {
         append(&log, &entry).unwrap();
         let back = read_all(&log).unwrap();
         assert_eq!(back, vec![entry]);
+        // Confirm `file` key is present and `set_size` key is absent in the JSON.
+        let raw = std::fs::read_to_string(&log).unwrap();
+        assert!(raw.contains("\"file\":"), "write record must include file");
+        assert!(
+            !raw.contains("\"set_size\":"),
+            "write record must not include set_size"
+        );
+    }
+
+    /// Pre-commit/set-level record: `file` is absent, `set_size` is present.
+    #[test]
+    fn round_trips_a_pre_commit_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("log.jsonl");
+        let entry = LogEntry::Check {
+            ts: "2026-06-28T00:00:00Z".into(),
+            file: None,
+            set_size: Some(3),
+            event: "pre-commit".into(),
+            status: Status::Pass,
+            elapsed_ms: 5,
+            checks: vec![],
+        };
+        append(&log, &entry).unwrap();
+        let back = read_all(&log).unwrap();
+        assert_eq!(back, vec![entry]);
+        // Confirm `file` key is absent and `set_size` key is present in the JSON.
+        let raw = std::fs::read_to_string(&log).unwrap();
+        assert!(
+            !raw.contains("\"file\":"),
+            "pre-commit record must not include file"
+        );
+        assert!(
+            raw.contains("\"set_size\":3"),
+            "pre-commit record must include set_size"
+        );
     }
 
     #[test]
-    fn schema_version_is_4() {
-        assert_eq!(SCHEMA_VERSION, 4);
+    fn schema_version_is_5() {
+        assert_eq!(SCHEMA_VERSION, 5);
     }
 }

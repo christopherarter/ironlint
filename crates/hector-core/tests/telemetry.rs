@@ -9,7 +9,8 @@ fn append_then_read_all_round_trips() {
     let log = dir.path().join("log.jsonl");
     let entry = LogEntry::Check {
         ts: "2026-06-15T00:00:00Z".into(),
-        file: "src/lib.rs".into(),
+        file: Some("src/lib.rs".into()),
+        set_size: None,
         event: "write".into(),
         status: Status::Block,
         elapsed_ms: 5,
@@ -41,7 +42,8 @@ fn malformed_line_is_dropped_and_good_lines_survive() {
     let log = dir.path().join("log.jsonl");
     let entry = LogEntry::Check {
         ts: "2026-06-15T00:00:00Z".into(),
-        file: "a.rs".into(),
+        file: Some("a.rs".into()),
+        set_size: None,
         event: "write".into(),
         status: Status::Pass,
         elapsed_ms: 1,

@@ -510,6 +510,13 @@ impl HectorEngine {
     /// Checks whose `on:` list excludes the current event are skipped. Checks
     /// with no matching files are skipped. The resulting `Block.file` /
     /// `GateError.file` are `null` because there is no single primary target.
+    ///
+    /// # Disable directives
+    ///
+    /// Inline `hector-disable: <id>` directives are a write-lifecycle,
+    /// per-file feature — they are scanned from the proposed file content
+    /// supplied at write time. In pre-commit/set mode there is no per-file
+    /// content, so inline disable directives are NOT evaluated here.
     pub fn check_set(&self, files: &[PathBuf]) -> Result<Verdict> {
         let start = Instant::now();
         let mut collected = Collected::default();
@@ -550,8 +557,15 @@ impl HectorEngine {
             collected.passed,
             elapsed,
         );
-        // Log telemetry as a set-level invocation; `file` is empty (no single target).
-        self.append_check_log("", verdict.status, verdict.elapsed_ms, collected.records);
+        // Log telemetry as a set-level invocation; `file` is absent (no single
+        // target), `set_size` records how many files were in the checked set.
+        self.append_check_log(
+            None,
+            Some(files.len()),
+            verdict.status,
+            verdict.elapsed_ms,
+            collected.records,
+        );
 
         Ok(verdict)
     }
@@ -584,7 +598,8 @@ impl HectorEngine {
             elapsed,
         );
         self.append_check_log(
-            &file_str,
+            Some(&file_str),
+            None,
             verdict.status,
             verdict.elapsed_ms,
             collected.records,
@@ -599,9 +614,15 @@ impl HectorEngine {
     /// Append one `Check` line to the telemetry log. Best-effort: a failed
     /// append warns to stderr but never fails the check — the log is never the
     /// source of truth.
+    ///
+    /// `file` is `Some` for write-lifecycle (per-file) invocations and `None`
+    /// for pre-commit/set invocations. `set_size` is the inverse: `Some(n)` on
+    /// pre-commit with the number of files in the checked set, `None` on
+    /// per-file records.
     fn append_check_log(
         &self,
-        file: &str,
+        file: Option<&str>,
+        set_size: Option<usize>,
         status: Status,
         elapsed_ms: u64,
         checks: Vec<PerCheckRecord>,
@@ -610,7 +631,8 @@ impl HectorEngine {
             &self.config_dir.join(".hector/log.jsonl"),
             &LogEntry::Check {
                 ts: chrono::Utc::now().to_rfc3339(),
-                file: file.to_string(),
+                file: file.map(|f| f.to_string()),
+                set_size,
                 event: self.options.event.clone(),
                 status,
                 elapsed_ms,
@@ -903,10 +925,11 @@ mod gate_dispatch_tests {
     #[test]
     fn pre_commit_runs_check_once_over_the_set() {
         let dir = tempfile::tempdir().unwrap();
-        // Counter: each run appends one byte; assert exactly 1 byte total.
+        // Counter: each invocation appends one byte to runs.txt via printf.
+        // The Rust assertion below is the single source of truth for run count.
         write_config(
             &dir,
-            "checks:\n  g:\n    files: \"*.rs\"\n    on: [pre-commit]\n    run: \"printf x >> $HECTOR_ROOT/runs.txt; test $(grep -c x $HECTOR_ROOT/runs.txt 2>/dev/null || echo 0) -le 1\"\n",
+            "checks:\n  g:\n    files: \"*.rs\"\n    on: [pre-commit]\n    run: \"printf x >> $HECTOR_ROOT/runs.txt\"\n",
         );
         touch(&dir, "a.rs");
         touch(&dir, "b.rs");
