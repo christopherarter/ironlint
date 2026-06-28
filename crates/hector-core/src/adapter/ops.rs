@@ -1,7 +1,8 @@
 use crate::adapter::materialize::{
     atomic_write, backup_once, read_sidecar, sha256_hex, write_sidecar, AdapterSidecar,
 };
-use crate::adapter::registry::{JsonHookSpec, PluginSpec};
+use crate::adapter::registry::{JsonHookSpec, PluginSpec, SkillSpec};
+use crate::adapter::SKILL_NAME;
 use crate::adapter::{
     adapters_dir, remove_from_hook_array, sync_hook_array, AdapterEnv, Harness, HarnessKind,
     PatchResult, Scope, CURRENT_ADAPTER_VERSION,
@@ -174,6 +175,86 @@ fn install_plugin(
         InstallResult::Updated
     } else {
         InstallResult::Installed
+    })
+}
+
+fn skill_base(spec: &SkillSpec, env: &AdapterEnv, scope: Scope) -> PathBuf {
+    match scope {
+        Scope::Local => (spec.dir_local)(env),
+        Scope::Global => (spec.dir_global)(env),
+    }
+}
+
+pub fn install_skill(
+    h: &Harness,
+    env: &AdapterEnv,
+    scope: Scope,
+    dry_run: bool,
+) -> Result<InstallOutcome> {
+    let dir = skill_base(&h.skill, env, scope).join(SKILL_NAME);
+    let file = dir.join("SKILL.md");
+    let result = install_skill_file(&file, &dir, h.skill.source.as_bytes(), dry_run)?;
+    Ok(InstallOutcome {
+        harness: h.name,
+        result,
+        hint: h.restart_hint,
+    })
+}
+
+fn install_skill_file(
+    file: &Path,
+    dir: &Path,
+    bytes: &[u8],
+    dry_run: bool,
+) -> Result<InstallResult> {
+    if dry_run {
+        return Ok(InstallResult::DryRun(vec![format!(
+            "write {}",
+            file.display()
+        )]));
+    }
+    let existed = file.exists();
+    if existed {
+        if let Ok(cur) = std::fs::read(file) {
+            if cur == bytes {
+                return Ok(InstallResult::AlreadyPresent);
+            }
+        }
+    }
+    atomic_write(file, bytes)?;
+    let mut files = BTreeMap::new();
+    files.insert("SKILL.md".to_string(), sha256_hex(bytes));
+    write_sidecar(
+        dir,
+        &AdapterSidecar {
+            version: CURRENT_ADAPTER_VERSION,
+            files,
+        },
+    )?;
+    Ok(if existed {
+        InstallResult::Updated
+    } else {
+        InstallResult::Installed
+    })
+}
+
+pub fn uninstall_skill(
+    h: &Harness,
+    env: &AdapterEnv,
+    scope: Scope,
+    dry_run: bool,
+) -> Result<InstallOutcome> {
+    let dir = skill_base(&h.skill, env, scope).join(SKILL_NAME);
+    let result = if dry_run {
+        InstallResult::DryRun(vec![format!("remove {}", dir.display())])
+    } else {
+        let _ = std::fs::remove_dir_all(&dir);
+        InstallResult::Installed
+    };
+    Ok(InstallOutcome {
+        harness: h.name,
+        result,
+        hint: h.restart_hint,
     })
 }
 
@@ -544,5 +625,73 @@ mod tests {
         assert!(file.exists());
         uninstall(&harness("opencode"), &e, Scope::Local, false).unwrap();
         assert!(!file.exists(), "uninstall must remove the plugin file");
+    }
+
+    #[test]
+    fn install_skill_writes_skill_md_and_sidecar() {
+        let tmp = tempfile::tempdir().unwrap();
+        let e = env(tmp.path());
+        let out = install_skill(&harness("pi"), &e, Scope::Local, false).unwrap();
+        assert!(matches!(out.result, InstallResult::Installed));
+        let skill = e.project_root.join(".pi/skills/hector-config/SKILL.md");
+        assert!(skill.exists(), "SKILL.md must land at {}", skill.display());
+        assert!(crate::adapter::read_sidecar(skill.parent().unwrap())
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn install_skill_is_idempotent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let e = env(tmp.path());
+        install_skill(&harness("pi"), &e, Scope::Local, false).unwrap();
+        let again = install_skill(&harness("pi"), &e, Scope::Local, false).unwrap();
+        assert!(matches!(again.result, InstallResult::AlreadyPresent));
+    }
+
+    #[test]
+    fn install_skill_changed_content_is_updated() {
+        let tmp = tempfile::tempdir().unwrap();
+        let e = env(tmp.path());
+        install_skill(&harness("pi"), &e, Scope::Local, false).unwrap();
+        let f = e.project_root.join(".pi/skills/hector-config/SKILL.md");
+        std::fs::write(&f, b"// tampered").unwrap();
+        let again = install_skill(&harness("pi"), &e, Scope::Local, false).unwrap();
+        assert!(matches!(again.result, InstallResult::Updated));
+    }
+
+    #[test]
+    fn install_skill_dry_run_writes_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let e = env(tmp.path());
+        let out = install_skill(&harness("pi"), &e, Scope::Local, true).unwrap();
+        assert!(matches!(out.result, InstallResult::DryRun(_)));
+        assert!(!e
+            .project_root
+            .join(".pi/skills/hector-config/SKILL.md")
+            .exists());
+    }
+
+    #[test]
+    fn uninstall_skill_removes_the_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let e = env(tmp.path());
+        install_skill(&harness("pi"), &e, Scope::Local, false).unwrap();
+        let dir = e.project_root.join(".pi/skills/hector-config");
+        assert!(dir.exists());
+        uninstall_skill(&harness("pi"), &e, Scope::Local, false).unwrap();
+        assert!(!dir.exists(), "uninstall must remove the skill dir");
+    }
+
+    #[test]
+    fn install_skill_global_uses_home_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let e = env(tmp.path());
+        install_skill(&harness("pi"), &e, Scope::Global, false).unwrap();
+        // pi global skills dir is ~/.pi/agent/skills
+        assert!(e
+            .home
+            .join(".pi/agent/skills/hector-config/SKILL.md")
+            .exists());
     }
 }

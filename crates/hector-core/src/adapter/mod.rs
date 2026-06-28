@@ -9,7 +9,10 @@ pub use materialize::{
     atomic_write, backup_once, read_sidecar, sha256_hex, sidecar_path, write_sidecar,
     AdapterSidecar,
 };
-pub use ops::{install, status, uninstall, HarnessStatus, InstallOutcome, InstallResult};
+pub use ops::{
+    install, install_skill, status, uninstall, uninstall_skill, HarnessStatus, InstallOutcome,
+    InstallResult,
+};
 pub use registry::{all_harnesses, JsonHookSpec, PluginSpec, SkillSpec, SKILL_NAME};
 
 use std::path::PathBuf;
