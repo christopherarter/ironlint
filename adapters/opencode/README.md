@@ -104,7 +104,7 @@ The plugin honours the `hector` CLI exit-code contract from `commands/check.rs`:
 ## Known gaps at 0.1d
 
 - **No `apply_patch` interception.** OpenCode's multi-file patch tool would need per-file extraction; large refactors via `apply_patch` are not gated. Use `edit` / `write` or run `hector check` manually in CI to cover them.
-- **No skills.** The Claude Code adapter ships `/hector-init`, `/hector-author`, `/hector-review`. Those SKILL.md files live in `adapters/claude-code/skills/` and are written against the Anthropic Skills spec — they'll work in OpenCode once we settle on a shared skills directory or a sidecar install (`malhashemi/opencode-skills`).
+- **Partially ported skills.** `hector init` installs the `hector-config` authoring skill into `.opencode/skills/` today — gate authoring and the fixture-test loop are available in OpenCode. `/hector-init` and `/hector-review` remain Claude Code plugin-only skills and are not yet ported to other harnesses.
 
 ## Diagnostic
 

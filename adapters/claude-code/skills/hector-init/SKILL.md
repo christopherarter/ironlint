@@ -50,7 +50,7 @@ gates:
     run: "ruff check --quiet --stdin-filename \"$HECTOR_FILE\" - || exit 2"
 ```
 
-Test each candidate against a sample file before adding it (see `/hector-author`
+Test each candidate against a sample file before adding it (see `/hector-config`
 for the fixture loop). Only add gates that pass on clean input and block on dirty
 input. Skip repo-wide tools that aren't per-file (e.g. `cargo clippy`) — they
 don't map to a per-file gate; suggest running them as a pre-push step instead.
@@ -78,7 +78,7 @@ block verdict.
 ## Notes
 
 - If `.hector.yml` already exists, do not overwrite it — `hector init` leaves an
-  existing config untouched. Propose edits via `/hector-author` instead.
+  existing config untouched. Propose edits via `/hector-config` instead.
 - There is no migration from older formats; hector rejects a pre-0.3 config
   (`schema_version:`/`rules:`) outright. Write gates fresh.
 - Telemetry lands at `.hector/log.jsonl`, one record per check with a per-gate
