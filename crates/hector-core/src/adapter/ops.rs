@@ -684,6 +684,18 @@ mod tests {
     }
 
     #[test]
+    fn uninstall_skill_dry_run_removes_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let e = env(tmp.path());
+        install_skill(&harness("pi"), &e, Scope::Local, false).unwrap();
+        let dir = e.project_root.join(".pi/skills/hector-config");
+        assert!(dir.exists());
+        let out = uninstall_skill(&harness("pi"), &e, Scope::Local, true).unwrap();
+        assert!(matches!(out.result, InstallResult::DryRun(_)));
+        assert!(dir.exists(), "dry-run uninstall must leave the skill dir");
+    }
+
+    #[test]
     fn install_skill_global_uses_home_dir() {
         let tmp = tempfile::tempdir().unwrap();
         let e = env(tmp.path());
