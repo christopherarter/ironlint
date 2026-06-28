@@ -10,7 +10,7 @@ pub use materialize::{
     AdapterSidecar,
 };
 pub use ops::{install, status, uninstall, HarnessStatus, InstallOutcome, InstallResult};
-pub use registry::{all_harnesses, JsonHookSpec, PluginSpec};
+pub use registry::{all_harnesses, JsonHookSpec, PluginSpec, SkillSpec, SKILL_NAME};
 
 use std::path::PathBuf;
 
@@ -73,6 +73,7 @@ pub struct Harness {
     pub name: &'static str,
     pub kind: HarnessKind,
     pub restart_hint: &'static str,
+    pub skill: SkillSpec,
 }
 
 /// `<config_home>/hector/adapters` — sits beside the trust store.

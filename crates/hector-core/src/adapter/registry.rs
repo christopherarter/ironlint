@@ -9,6 +9,11 @@ const CLAUDE_SYNTH: &str =
 const REASONIX_HOOK: &str = include_str!("../../../../adapters/reasonix/hooks/hook.sh");
 const PI_PLUGIN: &str = include_str!("../../../../adapters/pi/src/index.ts");
 const OPENCODE_PLUGIN: &str = include_str!("../../../../adapters/opencode/src/index.ts");
+const HECTOR_CONFIG_SKILL: &str =
+    include_str!("../../../../adapters/shared/hector-config/SKILL.md");
+
+/// Skill name and install-dir leaf for the authoring skill.
+pub const SKILL_NAME: &str = "hector-config";
 
 #[derive(Clone, Copy)]
 pub struct JsonHookSpec {
@@ -28,6 +33,14 @@ pub struct PluginSpec {
     pub filename: &'static str,
     pub source: &'static str,
     pub detect: fn(&AdapterEnv) -> bool,
+}
+
+/// Where a harness discovers `SKILL.md` files, and the shared skill bytes.
+#[derive(Clone, Copy)]
+pub struct SkillSpec {
+    pub dir_local: fn(&AdapterEnv) -> PathBuf,
+    pub dir_global: fn(&AdapterEnv) -> PathBuf,
+    pub source: &'static str,
 }
 
 // --- per-harness entry builders (also unit-tested directly) ------------------
@@ -85,27 +98,53 @@ const OPENCODE: PluginSpec = PluginSpec {
     },
 };
 
+// --- per-harness skill specs -------------------------------------------------
+const CLAUDE_SKILL: SkillSpec = SkillSpec {
+    dir_local: |e| e.project_root.join(".claude").join("skills"),
+    dir_global: |e| e.home.join(".claude").join("skills"),
+    source: HECTOR_CONFIG_SKILL,
+};
+const REASONIX_SKILL: SkillSpec = SkillSpec {
+    dir_local: |e| e.project_root.join(".reasonix").join("skills"),
+    dir_global: |e| e.home.join(".reasonix").join("skills"),
+    source: HECTOR_CONFIG_SKILL,
+};
+const PI_SKILL: SkillSpec = SkillSpec {
+    dir_local: |e| e.project_root.join(".pi").join("skills"),
+    dir_global: |e| e.home.join(".pi").join("agent").join("skills"),
+    source: HECTOR_CONFIG_SKILL,
+};
+const OPENCODE_SKILL: SkillSpec = SkillSpec {
+    dir_local: |e| e.project_root.join(".opencode").join("skills"),
+    dir_global: |e| e.config_home.join("opencode").join("skills"),
+    source: HECTOR_CONFIG_SKILL,
+};
+
 pub fn all_harnesses() -> Vec<Harness> {
     vec![
         Harness {
             name: "claude-code",
             kind: HarnessKind::JsonHook(CLAUDE),
             restart_hint: "Reload Claude Code (or restart) — it picks up settings.json hooks.",
+            skill: CLAUDE_SKILL,
         },
         Harness {
             name: "reasonix",
             kind: HarnessKind::JsonHook(REASONIX),
             restart_hint: "Restart Reasonix so it reloads settings.",
+            skill: REASONIX_SKILL,
         },
         Harness {
             name: "pi",
             kind: HarnessKind::Plugin(PI),
             restart_hint: "Restart pi so it loads the new extension.",
+            skill: PI_SKILL,
         },
         Harness {
             name: "opencode",
             kind: HarnessKind::Plugin(OPENCODE),
             restart_hint: "Restart opencode so it loads the new plugin.",
+            skill: OPENCODE_SKILL,
         },
     ]
 }
@@ -183,6 +222,69 @@ mod tests {
         assert!(found["pi"]);
         assert!(!found["reasonix"]);
         assert!(!found["opencode"]);
+    }
+
+    #[test]
+    fn skill_dirs_resolve_per_harness() {
+        let env = env_with("/home/u", "/home/u/proj");
+        let by = |name: &str| {
+            all_harnesses()
+                .into_iter()
+                .find(|harness| harness.name == name)
+                .unwrap()
+                .skill
+        };
+        // claude-code
+        let claude = by("claude-code");
+        assert_eq!(
+            (claude.dir_local)(&env),
+            PathBuf::from("/home/u/proj/.claude/skills")
+        );
+        assert_eq!(
+            (claude.dir_global)(&env),
+            PathBuf::from("/home/u/.claude/skills")
+        );
+        // pi
+        let pi = by("pi");
+        assert_eq!(
+            (pi.dir_local)(&env),
+            PathBuf::from("/home/u/proj/.pi/skills")
+        );
+        assert_eq!(
+            (pi.dir_global)(&env),
+            PathBuf::from("/home/u/.pi/agent/skills")
+        );
+        // opencode (global lives under config_home)
+        let opencode = by("opencode");
+        assert_eq!(
+            (opencode.dir_local)(&env),
+            PathBuf::from("/home/u/proj/.opencode/skills")
+        );
+        assert_eq!(
+            (opencode.dir_global)(&env),
+            PathBuf::from("/home/u/.config/opencode/skills")
+        );
+        // reasonix
+        let reasonix = by("reasonix");
+        assert_eq!(
+            (reasonix.dir_local)(&env),
+            PathBuf::from("/home/u/proj/.reasonix/skills")
+        );
+        assert_eq!(
+            (reasonix.dir_global)(&env),
+            PathBuf::from("/home/u/.reasonix/skills")
+        );
+    }
+
+    #[test]
+    fn every_harness_ships_the_same_skill_source() {
+        for h in all_harnesses() {
+            assert!(
+                h.skill.source.contains("name: hector-config"),
+                "{} skill source wrong",
+                h.name
+            );
+        }
     }
 
     #[test]
