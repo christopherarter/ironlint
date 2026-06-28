@@ -447,6 +447,68 @@ fn init_npm_workspaces_object_field() {
     assert!(cfg.contains("apps/**/src/**/*.ts"));
 }
 
+#[test]
+fn init_dry_run_plans_skill_installs_for_explicit_harnesses() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = assert_cmd::Command::cargo_bin("hector")
+        .unwrap()
+        .args([
+            "init",
+            "--dir",
+            dir.path().to_str().unwrap(),
+            "--harness",
+            "pi",
+            "--dry-run",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let s = String::from_utf8_lossy(&out);
+    assert!(
+        s.contains("pi") && s.contains("skill dry-run"),
+        "dry-run must plan the pi skill install:\n{s}"
+    );
+    assert!(
+        s.contains("skills/hector-config/SKILL.md"),
+        "dry-run must name the skill path:\n{s}"
+    );
+}
+
+#[test]
+fn init_dedups_opencode_skill_when_claude_also_selected() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = assert_cmd::Command::cargo_bin("hector")
+        .unwrap()
+        .args([
+            "init",
+            "--dir",
+            dir.path().to_str().unwrap(),
+            "--harness",
+            "claude-code",
+            "--harness",
+            "opencode",
+            "--dry-run",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let s = String::from_utf8_lossy(&out);
+    // Assert on paths (spacing-insensitive): claude's skill is planned;
+    // opencode's own skill dir is not (it reads claude's copy).
+    assert!(
+        s.contains(".claude/skills/hector-config/SKILL.md"),
+        "claude-code skill must be planned:\n{s}"
+    );
+    assert!(
+        !s.contains(".opencode/skills/hector-config"),
+        "opencode skill must be deduped against claude's copy:\n{s}"
+    );
+}
+
 /// `init` auto-blesses, so a `check` against the scaffolded config runs
 /// without a separate `hector trust` step (it is not rejected as untrusted).
 #[test]
