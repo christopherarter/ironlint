@@ -16,7 +16,7 @@ two fields — there are no engines, severities, or output modes:
 gates:
   no-debug:
     files: "**/*.ts"          # glob, or a list of globs
-    run: "! grep -nH 'DEBUG' \"$HECTOR_FILE\" || exit 2"
+    run: "! grep -n 'DEBUG' || exit 2"   # grep reads the proposed content on stdin
 ```
 
 - `files` — the glob(s) the gate watches. A bare pattern with no `/` (e.g.
@@ -24,11 +24,16 @@ gates:
 - `run` — a shell command handed to `sh -c`. The gate **owns the verdict via its
   exit code**: exit `2` blocks the edit; `0` (and any other non-`2` code up to
   125) passes. `126`/`127`/timeout are treated as a broken gate, not a block.
-- The path under check arrives as `$HECTOR_FILE` (absolute). The proposed
-  post-edit content arrives on **stdin**. `$HECTOR_ROOT` (project root) and
-  `$HECTOR_EVENT` (`edit`/`write`/`pre-commit`/`manual`) are also set. There is
-  no path templating — the path travels only as `$HECTOR_FILE`, never spliced
-  into `run`.
+- **Read the proposed content from stdin, not from `$HECTOR_FILE`.** Stdin
+  carries the post-edit content on every harness. `$HECTOR_FILE` is only the
+  absolute path: on harnesses that gate *before* the write lands (e.g. reasonix,
+  pi), the file on disk still holds the OLD content, so reading it misses the
+  very change you mean to gate. Use `$HECTOR_FILE` to hand a tool a filename
+  (e.g. a linter's `--stdin-filename`), never as the content source.
+  `$HECTOR_ROOT` (project root) and `$HECTOR_EVENT`
+  (`edit`/`write`/`pre-commit`/`manual`) are also set. There is no path
+  templating — the path travels only as `$HECTOR_FILE`, never spliced into
+  `run`.
 - On block, the gate's combined stdout+stderr becomes the message the agent
   sees, so make the command print why it blocked.
 
@@ -40,7 +45,7 @@ on a match, `1` when clean, `≥2` on error — map those to the gate contract:
 ```yaml
   no-console-log:
     files: ["src/**/*.ts", "src/**/*.tsx"]
-    run: "grep -nE 'console\\.log\\(' \"$HECTOR_FILE\"; case $? in 0) exit 2;; 1) exit 0;; *) exit $?;; esac"
+    run: "grep -nE 'console\\.log\\(' -; case $? in 0) exit 2;; 1) exit 0;; *) exit $?;; esac"
 ```
 
 **Wrap a linter (stdin).** Feed the proposed content to a linter so the gate runs
@@ -60,7 +65,7 @@ that silently passes:
   guard:
     files: "*.rs"
     run: |
-      grep -q 'FORBIDDEN' "$HECTOR_FILE" && exit 2
+      grep -q 'FORBIDDEN' && exit 2
       exit 0
 ```
 
