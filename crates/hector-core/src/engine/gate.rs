@@ -16,7 +16,7 @@ pub struct GateEnv<'a> {
     pub file: &'a Path,
     /// Project root; also the gate's cwd (`$HECTOR_ROOT`).
     pub root: &'a Path,
-    /// Trigger: `edit` | `write` | `pre-commit` | `manual` (`$HECTOR_EVENT`).
+    /// Trigger: `write` | `pre-commit` (`$HECTOR_EVENT`).
     pub event: &'a str,
 }
 

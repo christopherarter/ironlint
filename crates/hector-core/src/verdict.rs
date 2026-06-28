@@ -1,8 +1,9 @@
 use serde::{Deserialize, Serialize};
 
-/// Verdict JSON schema version. Bumped to 4 for the gates redesign:
-/// `Violation`/`Severity`/`Engine` removed; `blocks`/`errors` added.
-pub const SCHEMA_VERSION: u32 = 4;
+/// Verdict JSON schema version. Bumped to 5 for the checks pipeline redesign:
+/// `Block.gate`→`check`, `GateError.gate`→`check`, both `file` fields
+/// are nullable, and `step: Option<String>` added to both.
+pub const SCHEMA_VERSION: u32 = 5;
 
 /// Floor schema version all current verdicts satisfy.
 pub const MIN_REQUIRED_SCHEMA_VERSION: u32 = 4;
@@ -14,7 +15,7 @@ pub struct Verdict {
     pub status: Status,
     pub blocks: Vec<Block>,
     pub errors: Vec<GateError>,
-    /// Gate ids that ran and passed (for `--explain` / telemetry).
+    /// Check ids that ran and passed (for `--explain` / telemetry).
     pub passed: Vec<String>,
     pub elapsed_ms: u64,
 }
@@ -29,20 +30,28 @@ pub enum Status {
     InternalError,
 }
 
-/// A gate that exited 2 on a file.
+/// A check that exited 2 on a file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Block {
-    pub gate: String,
-    pub file: String,
-    /// Verbatim trimmed stdout+stderr from the gate.
+    pub check: String,
+    /// Step within a multi-step check that blocked. `null` in Phase 1 (single
+    /// `run`); populated in Phase 3 when `steps:` is introduced.
+    pub step: Option<String>,
+    /// File that triggered the block. `null` for run-once checks (e.g.
+    /// `pre-commit` mode in Phase 4); always `Some` in Phase 1.
+    pub file: Option<String>,
+    /// Verbatim trimmed stdout+stderr from the check.
     pub message: String,
 }
 
-/// A gate that crashed (not found / not executable / timeout / signal).
+/// A check that crashed (not found / not executable / timeout / signal).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GateError {
-    pub gate: String,
-    pub file: String,
+    pub check: String,
+    /// Step within a multi-step check that crashed. `null` in Phase 1.
+    pub step: Option<String>,
+    /// File under check. `null` for run-once checks.
+    pub file: Option<String>,
     /// Stable reason string from `InternalReason::as_str`.
     pub reason: String,
 }
@@ -55,7 +64,7 @@ impl Verdict {
     /// Build a verdict from collected outcomes.
     ///
     /// Status precedence: **Block wins over InternalError** — a confirmed
-    /// policy violation (exit 2) must stop the edit even if an unrelated gate
+    /// policy violation (exit 2) must stop the edit even if an unrelated check
     /// crashed. Only when there are no blocks does a crash escalate to
     /// InternalError (exit 3, adapter fail-open).
     pub fn from_outcomes(
@@ -97,8 +106,9 @@ mod tests {
     fn any_block_is_block() {
         let v = Verdict::from_outcomes(
             vec![Block {
-                gate: "g".into(),
-                file: "f".into(),
+                check: "g".into(),
+                step: None,
+                file: Some("f".into()),
                 message: "m".into(),
             }],
             vec![],
@@ -112,13 +122,15 @@ mod tests {
     fn block_wins_over_internal_error() {
         let v = Verdict::from_outcomes(
             vec![Block {
-                gate: "g".into(),
-                file: "f".into(),
+                check: "g".into(),
+                step: None,
+                file: Some("f".into()),
                 message: "m".into(),
             }],
             vec![GateError {
-                gate: "h".into(),
-                file: "f".into(),
+                check: "h".into(),
+                step: None,
+                file: Some("f".into()),
                 reason: "timeout".into(),
             }],
             vec![],
@@ -136,8 +148,9 @@ mod tests {
         let v = Verdict::from_outcomes(
             vec![],
             vec![GateError {
-                gate: "h".into(),
-                file: "f".into(),
+                check: "h".into(),
+                step: None,
+                file: Some("f".into()),
                 reason: "not_found".into(),
             }],
             vec![],
@@ -147,7 +160,20 @@ mod tests {
     }
 
     #[test]
-    fn schema_version_is_4() {
-        assert_eq!(SCHEMA_VERSION, 4);
+    fn schema_version_is_5() {
+        assert_eq!(SCHEMA_VERSION, 5);
+    }
+
+    #[test]
+    fn block_serializes_check_key_not_gate() {
+        let b = Block {
+            check: "rustfmt".into(),
+            step: None,
+            file: Some("a.rs".into()),
+            message: "x".into(),
+        };
+        let j = serde_json::to_string(&b).unwrap();
+        assert!(j.contains("\"check\":\"rustfmt\""), "{j}");
+        assert!(!j.contains("\"gate\""), "{j}");
     }
 }

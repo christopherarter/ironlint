@@ -9,7 +9,7 @@ use tempfile::tempdir;
 
 // A noop gate scoped to every file — proves the failure comes from the read,
 // not from a gate verdict (the gate would pass if it ever ran).
-const GATE_YAML: &str = "gates:\n  noop:\n    files: [\"*\"]\n    run: \"true\"\n";
+const GATE_YAML: &str = "checks:\n  noop:\n    files: [\"*\"]\n    run: \"true\"\n";
 
 // A modification diff for a file that does not exist on disk.
 const DIFF: &str = "--- a/missing.txt\n+++ b/missing.txt\n@@ -1 +1 @@\n-old\n+new\n";

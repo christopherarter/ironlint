@@ -22,7 +22,7 @@ fn canon(p: &Path) -> std::path::PathBuf {
 fn no_extends_returns_just_the_root() {
     let dir = tempdir().unwrap();
     let cfg = dir.path().join(".hector.yml");
-    write(&cfg, "gates:\n  g:\n    files: \"*\"\n    run: \"true\"\n");
+    write(&cfg, "checks:\n  g:\n    files: \"*\"\n    run: \"true\"\n");
 
     let paths = resolve_paths(&cfg).unwrap();
     assert_eq!(paths, vec![canon(&cfg)]);
@@ -34,15 +34,15 @@ fn chain_returns_every_file_sorted_and_deduped() {
     let grand = dir.path().join("grand.yml");
     write(
         &grand,
-        "gates:\n  g:\n    files: \"*\"\n    run: \"true\"\n",
+        "checks:\n  g:\n    files: \"*\"\n    run: \"true\"\n",
     );
     let parent = dir.path().join("parent.yml");
     write(
         &parent,
-        "extends: [\"grand.yml\"]\ngates:\n  p:\n    files: \"*\"\n    run: \"true\"\n",
+        "extends: [\"grand.yml\"]\nchecks:\n  p:\n    files: \"*\"\n    run: \"true\"\n",
     );
     let child = dir.path().join(".hector.yml");
-    write(&child, "extends: [\"parent.yml\"]\ngates: {}\n");
+    write(&child, "extends: [\"parent.yml\"]\nchecks: {}\n");
 
     let paths = resolve_paths(&child).unwrap();
     let mut want = vec![canon(&grand), canon(&parent), canon(&child)];
@@ -56,15 +56,18 @@ fn diamond_dedupes_the_shared_base() {
     // must appear exactly once.
     let dir = tempdir().unwrap();
     let base = dir.path().join("base.yml");
-    write(&base, "gates:\n  b:\n    files: \"*\"\n    run: \"true\"\n");
+    write(
+        &base,
+        "checks:\n  b:\n    files: \"*\"\n    run: \"true\"\n",
+    );
     let left = dir.path().join("left.yml");
-    write(&left, "extends: [\"base.yml\"]\ngates: {}\n");
+    write(&left, "extends: [\"base.yml\"]\nchecks: {}\n");
     let right = dir.path().join("right.yml");
-    write(&right, "extends: [\"base.yml\"]\ngates: {}\n");
+    write(&right, "extends: [\"base.yml\"]\nchecks: {}\n");
     let child = dir.path().join(".hector.yml");
     write(
         &child,
-        "extends: [\"left.yml\", \"right.yml\"]\ngates: {}\n",
+        "extends: [\"left.yml\", \"right.yml\"]\nchecks: {}\n",
     );
 
     let paths = resolve_paths(&child).unwrap();
@@ -82,8 +85,8 @@ fn cycle_is_an_error() {
     let dir = tempdir().unwrap();
     let a = dir.path().join("a.yml");
     let b = dir.path().join("b.yml");
-    write(&a, "extends: [./b.yml]\ngates: {}\n");
-    write(&b, "extends: [./a.yml]\ngates: {}\n");
+    write(&a, "extends: [./b.yml]\nchecks: {}\n");
+    write(&b, "extends: [./a.yml]\nchecks: {}\n");
 
     let err = resolve_paths(&a).unwrap_err().to_string().to_lowercase();
     assert!(err.contains("cycle"), "cycle must be reported: {err}");
@@ -93,7 +96,7 @@ fn cycle_is_an_error() {
 fn missing_extends_target_is_an_error() {
     let dir = tempdir().unwrap();
     let child = dir.path().join(".hector.yml");
-    write(&child, "extends: [\"./nope.yml\"]\ngates: {}\n");
+    write(&child, "extends: [\"./nope.yml\"]\nchecks: {}\n");
 
     assert!(resolve_paths(&child).is_err());
 }

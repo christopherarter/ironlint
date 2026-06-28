@@ -243,7 +243,7 @@ mod tests {
         let cfg = dir.path().join(".hector.yml");
         write(
             &cfg,
-            "gates:\n  g:\n    files: \"*.rs\"\n    run: \"true\"\n",
+            "checks:\n  g:\n    files: \"*.rs\"\n    run: \"true\"\n",
         );
         let a = compute_hash(&cfg).unwrap();
         let b = compute_hash(&cfg).unwrap();
@@ -260,12 +260,12 @@ mod tests {
         let cfg = dir.path().join(".hector.yml");
         write(
             &cfg,
-            "gates:\n  g:\n    files: \"*.rs\"\n    run: \"true\"\n",
+            "checks:\n  g:\n    files: \"*.rs\"\n    run: \"true\"\n",
         );
         let before = compute_hash(&cfg).unwrap();
         write(
             &cfg,
-            "gates:\n  g:\n    files: \"*.rs\"\n    run: \"false\"\n",
+            "checks:\n  g:\n    files: \"*.rs\"\n    run: \"false\"\n",
         );
         let after = compute_hash(&cfg).unwrap();
         assert_ne!(before, after, "a config edit must invalidate the hash");
@@ -277,7 +277,7 @@ mod tests {
         let cfg = dir.path().join(".hector.yml");
         write(
             &cfg,
-            "gates:\n  g:\n    files: \"*.rs\"\n    run: \".hector/gates/g.sh\"\n",
+            "checks:\n  g:\n    files: \"*.rs\"\n    run: \".hector/gates/g.sh\"\n",
         );
         let script = dir.path().join(".hector/gates/g.sh");
         write(&script, "#!/bin/sh\nexit 0\n");
@@ -300,7 +300,7 @@ mod tests {
         // which doubles as a regression lock on the stored-hash encoding.
         let dir = tempfile::tempdir().unwrap();
         let cfg = dir.path().join(".hector.yml");
-        let cfg_body = "gates:\n  g:\n    files: \"*\"\n    run: \"true\"\n";
+        let cfg_body = "checks:\n  g:\n    files: \"*\"\n    run: \"true\"\n";
         write(&cfg, cfg_body);
         write(&dir.path().join(".hector/gates/a.sh"), "a\n");
         write(&dir.path().join(".hector/gates/b.sh"), "b\n");
@@ -337,7 +337,7 @@ mod tests {
         // silently hashing only the local file.
         let dir = tempfile::tempdir().unwrap();
         let cfg = dir.path().join(".hector.yml");
-        write(&cfg, "extends: [\"./nope.yml\"]\ngates: {}\n");
+        write(&cfg, "extends: [\"./nope.yml\"]\nchecks: {}\n");
         let err = compute_hash(&cfg).unwrap_err().to_string();
         assert!(
             err.contains("extends closure"),
@@ -352,7 +352,7 @@ mod tests {
         let cfg = dir.path().join(".hector.yml");
         write(
             &cfg,
-            "gates:\n  g:\n    files: \"*.rs\"\n    run: \"true\"\n",
+            "checks:\n  g:\n    files: \"*.rs\"\n    run: \"true\"\n",
         );
         assert!(compute_hash(&cfg).unwrap().starts_with("sha256:"));
     }
@@ -428,7 +428,7 @@ mod tests {
         let cfg = dir.join(".hector.yml");
         write(
             &cfg,
-            "gates:\n  g:\n    files: \"*\"\n    run: \".hector/gates/g.sh\"\n",
+            "checks:\n  g:\n    files: \"*\"\n    run: \".hector/gates/g.sh\"\n",
         );
         write(&dir.join(".hector/gates/g.sh"), "#!/bin/sh\nexit 0\n");
         cfg
@@ -484,7 +484,7 @@ mod tests {
         let store_path = store.path().join("trust.json");
         let cfg = cfg_with_gate(proj.path());
         bless_in(&cfg, &store_path, "t").unwrap();
-        write(&cfg, "gates:\n  g:\n    files: \"*\"\n    run: \"true\"\n");
+        write(&cfg, "checks:\n  g:\n    files: \"*\"\n    run: \"true\"\n");
         assert!(ensure_trusted_in(&cfg, &store_path).is_err());
     }
 

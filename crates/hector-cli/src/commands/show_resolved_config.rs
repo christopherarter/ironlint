@@ -1,9 +1,9 @@
-//! `hector show-resolved-config` — print the post-extends merged gate set.
+//! `hector show-resolved-config` — print the post-extends merged check set.
 //!
-//! Prints each gate in id order, annotated by the origin file it was defined
-//! in. `tsv` (default) emits `gate_id<TAB>origin<TAB>files(comma-joined)<TAB>run`;
-//! `yaml` and `json` emit a sequence of `{ gate, origin, files, run }`.
-//! Read-only. Does not run any gate.
+//! Prints each check in id order, annotated by the origin file it was defined
+//! in. `tsv` (default) emits `check_id<TAB>origin<TAB>files(comma-joined)<TAB>run`;
+//! `yaml` and `json` emit a sequence of `{ check, origin, files, run }`.
+//! Read-only. Does not run any check.
 
 use crate::cli::ShowFormat;
 use anyhow::Result;
@@ -13,8 +13,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 #[derive(Serialize)]
-struct ResolvedGate {
-    gate: String,
+struct ResolvedCheck {
+    check: String,
     origin: String,
     files: Vec<String>,
     run: String,
@@ -37,33 +37,39 @@ pub fn run(config: &Path, format: ShowFormat) -> Result<i32> {
     Ok(0)
 }
 
-fn build_rows(cfg: &Config, origins: &BTreeMap<String, PathBuf>) -> Vec<ResolvedGate> {
-    cfg.gates
+fn build_rows(cfg: &Config, origins: &BTreeMap<String, PathBuf>) -> Vec<ResolvedCheck> {
+    cfg.checks
         .iter()
-        .map(|(id, gate)| ResolvedGate {
-            gate: id.clone(),
+        .map(|(id, check)| ResolvedCheck {
+            check: id.clone(),
             origin: origins
                 .get(id)
                 .map(|p| p.display().to_string())
                 .unwrap_or_default(),
-            files: gate.files.clone(),
-            run: gate.run.clone(),
+            files: check.files.clone(),
+            run: check.run.clone(),
         })
         .collect()
 }
 
-fn print_tsv(rows: &[ResolvedGate]) {
+fn print_tsv(rows: &[ResolvedCheck]) {
     for r in rows {
-        println!("{}\t{}\t{}\t{}", r.gate, r.origin, r.files.join(","), r.run);
+        println!(
+            "{}\t{}\t{}\t{}",
+            r.check,
+            r.origin,
+            r.files.join(","),
+            r.run
+        );
     }
 }
 
-fn print_yaml(rows: &[ResolvedGate]) -> Result<()> {
+fn print_yaml(rows: &[ResolvedCheck]) -> Result<()> {
     print!("{}", serde_yaml::to_string(rows)?);
     Ok(())
 }
 
-fn print_json(rows: &[ResolvedGate]) -> Result<()> {
+fn print_json(rows: &[ResolvedCheck]) -> Result<()> {
     println!("{}", serde_json::to_string_pretty(rows)?);
     Ok(())
 }

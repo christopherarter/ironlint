@@ -1,6 +1,6 @@
-use crate::config::{Config, Gate};
+use crate::config::{Check, Config};
 use crate::engine::{run_gate, GateEnv, GateOutcome};
-use crate::telemetry::{LogEntry, PerGateRecord};
+use crate::telemetry::{LogEntry, PerCheckRecord};
 use crate::verdict::{Block, GateError, Status, Verdict};
 use anyhow::{Context, Result};
 use std::collections::{BTreeMap, HashSet};
@@ -12,11 +12,11 @@ use std::time::{Duration, Instant};
 /// as knobs are added.
 #[derive(Debug, Clone)]
 pub struct CheckOptions {
-    /// Restrict evaluation to these gate ids. Empty set = run all gates. The
-    /// filter is enforced before the gate runs, so a filtered-out gate never
+    /// Restrict evaluation to these check ids. Empty set = run all checks. The
+    /// filter is enforced before the check runs, so a filtered-out check never
     /// spawns a process.
-    pub gates: HashSet<String>,
-    /// What triggered this check, surfaced to gates as `$HECTOR_EVENT`.
+    pub checks: HashSet<String>,
+    /// What triggered this check, surfaced to checks as `$HECTOR_EVENT`.
     pub event: String,
     /// Allow checking files whose canonical path falls outside `config_dir`.
     /// Off by default so wrappers can't run policy against arbitrary host
@@ -27,7 +27,7 @@ pub struct CheckOptions {
 impl Default for CheckOptions {
     fn default() -> Self {
         Self {
-            gates: HashSet::new(),
+            checks: HashSet::new(),
             event: "manual".to_string(),
             allow_external_paths: false,
         }
@@ -38,17 +38,17 @@ impl Default for CheckOptions {
 /// kept out of the verdict JSON (whose shape is locked).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GateExplain {
-    pub gate_id: String,
+    pub check_id: String,
     pub outcome: ExplainOutcome,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExplainOutcome {
-    /// Gate exited 2 (blocked).
+    /// Check exited 2 (blocked).
     Fire,
-    /// Gate ran and passed.
+    /// Check ran and passed.
     Pass,
-    /// Gate did not run (filtered, out of scope, disabled) or crashed.
+    /// Check did not run (filtered, out of scope, disabled) or crashed.
     Skipped { reason: String },
 }
 
@@ -59,7 +59,7 @@ pub struct CheckReport {
     pub explain: Vec<GateExplain>,
 }
 
-/// Input to a check. Gates evaluate the whole proposed file; the diff is
+/// Input to a check. Checks evaluate the whole proposed file; the diff is
 /// reconstructed by the caller when needed (CLI `--diff` enumerates changed
 /// files into per-file `File` inputs).
 pub enum CheckInput {
@@ -68,87 +68,92 @@ pub enum CheckInput {
 
 pub struct HectorEngine {
     config: Config,
-    /// Directory containing the config file; gate cwd + `$HECTOR_ROOT`.
+    /// Directory containing the config file; check cwd + `$HECTOR_ROOT`.
     config_dir: PathBuf,
     /// Canonical form of `config_dir`, computed once at load time so
-    /// `gate_matches_path` doesn't `canonicalize()` the root on every call.
+    /// `check_matches_path` doesn't `canonicalize()` the root on every call.
     config_dir_canon: PathBuf,
     options: CheckOptions,
-    /// Per-gate `ScopeMatcher` cache, keyed by gate id and built once at load
-    /// time so `gate_matches_path` never rebuilds a GlobSet per (gate, file).
+    /// Per-check `ScopeMatcher` cache, keyed by check id and built once at load
+    /// time so `check_matches_path` never rebuilds a GlobSet per (check, file).
     scope_matchers: BTreeMap<String, crate::config::scope::ScopeMatcher>,
-    /// Per-gate wall-clock budget (`HECTOR_TIMEOUT` env → `execution.timeout_secs`).
+    /// Per-check wall-clock budget (`HECTOR_TIMEOUT` env → `execution.timeout_secs`).
     timeout: Duration,
 }
 
-/// Per-gate run result, before folding into the verdict. Skipped gates carry
-/// a reason and contribute nothing to the verdict; ran gates carry their
+/// Per-check run result, before folding into the verdict. Skipped checks carry
+/// a reason and contribute nothing to the verdict; ran checks carry their
 /// wall-clock so telemetry can record it.
-enum GateStatus {
+enum CheckStatus {
     Skipped(String),
     Pass(u64),
     Block(String, u64),
     Error(String, u64),
 }
 
-/// Folded outcomes across every gate for one file.
+/// Folded outcomes across every check for one file.
 #[derive(Default)]
 struct Collected {
     blocks: Vec<Block>,
     errors: Vec<GateError>,
     passed: Vec<String>,
-    records: Vec<PerGateRecord>,
+    records: Vec<PerCheckRecord>,
     explain: Vec<GateExplain>,
 }
 
 impl Collected {
-    /// Fold one gate's status into the running totals. `collect_explain`
-    /// gates the per-gate explain row; skipped gates contribute only an
+    /// Fold one check's status into the running totals. `collect_explain`
+    /// gates the per-check explain row; skipped checks contribute only an
     /// explain row (no verdict entry, no telemetry record).
-    fn absorb(&mut self, gate_id: &str, file: &str, status: GateStatus, collect_explain: bool) {
+    fn absorb(&mut self, check_id: &str, file: &str, status: CheckStatus, collect_explain: bool) {
         let outcome = match status {
-            GateStatus::Skipped(reason) => ExplainOutcome::Skipped { reason },
-            GateStatus::Pass(elapsed) => {
-                self.passed.push(gate_id.to_string());
-                self.records.push(PerGateRecord {
-                    gate: gate_id.to_string(),
+            CheckStatus::Skipped(reason) => ExplainOutcome::Skipped { reason },
+            CheckStatus::Pass(elapsed) => {
+                self.passed.push(check_id.to_string());
+                self.records.push(PerCheckRecord {
+                    check: check_id.to_string(),
+                    step: None,
                     status: Status::Pass,
                     elapsed_ms: elapsed,
                     reason: None,
                 });
                 ExplainOutcome::Pass
             }
-            GateStatus::Block(message, elapsed) => {
-                // Spec §3: a gate that exits 2 with no output still needs a
-                // human-readable message. The gate layer (`classify`) has no
-                // gate id, so it returns ""; we fill it in here where the id
+            CheckStatus::Block(message, elapsed) => {
+                // Spec §3: a check that exits 2 with no output still needs a
+                // human-readable message. The check layer (`classify`) has no
+                // check id, so it returns ""; we fill it in here where the id
                 // is known.
                 let message = if message.is_empty() {
-                    format!("{gate_id} blocked")
+                    format!("{check_id} blocked")
                 } else {
                     message
                 };
                 self.blocks.push(Block {
-                    gate: gate_id.to_string(),
-                    file: file.to_string(),
+                    check: check_id.to_string(),
+                    step: None,
+                    file: Some(file.to_string()),
                     message,
                 });
-                self.records.push(PerGateRecord {
-                    gate: gate_id.to_string(),
+                self.records.push(PerCheckRecord {
+                    check: check_id.to_string(),
+                    step: None,
                     status: Status::Block,
                     elapsed_ms: elapsed,
                     reason: None,
                 });
                 ExplainOutcome::Fire
             }
-            GateStatus::Error(reason, elapsed) => {
+            CheckStatus::Error(reason, elapsed) => {
                 self.errors.push(GateError {
-                    gate: gate_id.to_string(),
-                    file: file.to_string(),
+                    check: check_id.to_string(),
+                    step: None,
+                    file: Some(file.to_string()),
                     reason: reason.clone(),
                 });
-                self.records.push(PerGateRecord {
-                    gate: gate_id.to_string(),
+                self.records.push(PerCheckRecord {
+                    check: check_id.to_string(),
+                    step: None,
                     status: Status::InternalError,
                     elapsed_ms: elapsed,
                     reason: Some(reason),
@@ -160,16 +165,16 @@ impl Collected {
         };
         if collect_explain {
             self.explain.push(GateExplain {
-                gate_id: gate_id.to_string(),
+                check_id: check_id.to_string(),
                 outcome,
             });
         }
     }
 }
 
-/// Resolve the per-gate timeout: `HECTOR_TIMEOUT` (secs) overrides the config
+/// Resolve the per-check timeout: `HECTOR_TIMEOUT` (secs) overrides the config
 /// value, which defaults to 30. Clamped to `>= 1` (a zero timeout would kill
-/// every gate instantly).
+/// every check instantly).
 fn resolve_timeout(config: &Config) -> Duration {
     let secs = std::env::var("HECTOR_TIMEOUT")
         .ok()
@@ -233,7 +238,7 @@ impl HectorEngineBuilder {
         }
     }
 
-    /// Attach optional per-run knobs (gate filter, event, external paths).
+    /// Attach optional per-run knobs (check filter, event, external paths).
     pub fn with_options(mut self, options: CheckOptions) -> Self {
         self.options = options;
         self
@@ -259,17 +264,17 @@ impl HectorEngine {
         HectorEngineBuilder::new()
     }
 
-    /// Iterator over every gate id in the loaded config. The CLI uses it to
-    /// validate `--gate` arguments at the boundary, before any dispatch.
-    pub fn gate_ids(&self) -> impl Iterator<Item = &str> {
-        self.config.gates.keys().map(|k| k.as_str())
+    /// Iterator over every check id in the loaded config. The CLI uses it to
+    /// validate `--check` arguments at the boundary, before any dispatch.
+    pub fn check_ids(&self) -> impl Iterator<Item = &str> {
+        self.config.checks.keys().map(|k| k.as_str())
     }
 
-    /// Replace the gate-id filter on an already-loaded engine, so the CLI can
-    /// load once, validate `--gate` against the config, then store the
+    /// Replace the check-id filter on an already-loaded engine, so the CLI can
+    /// load once, validate `--check` against the config, then store the
     /// validated set rather than loading twice.
-    pub fn set_gate_filter(&mut self, gates: HashSet<String>) {
-        self.options.gates = gates;
+    pub fn set_check_filter(&mut self, checks: HashSet<String>) {
+        self.options.checks = checks;
     }
 
     fn load_with(config_path: &Path, options: CheckOptions) -> Result<Self> {
@@ -286,13 +291,13 @@ impl HectorEngine {
         // out-of-repo direnv store). `resolve` walks `extends:` without it.
         let config = crate::config::parse_file_with_extends(config_path)?;
 
-        // Validate every gate's file globs by constructing the matcher up
-        // front, and cache it so `gate_matches_path` never rebuilds a GlobSet.
+        // Validate every check's file globs by constructing the matcher up
+        // front, and cache it so `check_matches_path` never rebuilds a GlobSet.
         let mut scope_matchers: BTreeMap<String, crate::config::scope::ScopeMatcher> =
             BTreeMap::new();
-        for (id, gate) in &config.gates {
-            let matcher = crate::config::scope::ScopeMatcher::new(&gate.files)
-                .with_context(|| format!("gate `{id}` has invalid files glob"))?;
+        for (id, check) in &config.checks {
+            let matcher = crate::config::scope::ScopeMatcher::new(&check.files)
+                .with_context(|| format!("check `{id}` has invalid files glob"))?;
             scope_matchers.insert(id.clone(), matcher);
         }
 
@@ -349,11 +354,11 @@ impl HectorEngine {
         Ok(canon_input)
     }
 
-    /// Match a path against a gate's file globs using the load-time matcher
+    /// Match a path against a check's file globs using the load-time matcher
     /// cache. A relative path is matched directly (already config-dir-relative);
     /// an absolute path is stripped against the canonical config dir first.
-    /// An unknown gate id returns `false`.
-    pub fn gate_matches_path(&self, gate_id: &str, file: &Path) -> bool {
+    /// An unknown check id returns `false`.
+    pub fn gate_matches_path(&self, check_id: &str, file: &Path) -> bool {
         let match_path: PathBuf = if file.is_relative() {
             PathBuf::from(file)
         } else {
@@ -364,42 +369,42 @@ impl HectorEngine {
                 .unwrap_or(canon_file)
         };
         self.scope_matchers
-            .get(gate_id)
+            .get(check_id)
             .map(|m| m.matches(&match_path))
             .unwrap_or(false)
     }
 
-    /// The resolved (extends-merged) gate map, in id order. Read-only; for
+    /// The resolved (extends-merged) check map, in id order. Read-only; for
     /// `explain` / `show-resolved-config`.
-    pub fn gates(&self) -> &std::collections::BTreeMap<String, crate::config::Gate> {
-        &self.config.gates
+    pub fn checks(&self) -> &std::collections::BTreeMap<String, crate::config::Check> {
+        &self.config.checks
     }
 
-    /// Why this gate won't run for this file, or `None` if it should run.
-    fn skip_reason(&self, gate_id: &str, match_path: &Path, content: &str) -> Option<String> {
-        if !self.options.gates.is_empty() && !self.options.gates.contains(gate_id) {
+    /// Why this check won't run for this file, or `None` if it should run.
+    fn skip_reason(&self, check_id: &str, match_path: &Path, content: &str) -> Option<String> {
+        if !self.options.checks.is_empty() && !self.options.checks.contains(check_id) {
             return Some("filtered".to_string());
         }
-        if !self.gate_matches_path(gate_id, match_path) {
+        if !self.gate_matches_path(check_id, match_path) {
             return Some("out_of_scope".to_string());
         }
-        if crate::disable::is_disabled(content, gate_id) {
+        if crate::disable::is_disabled(content, check_id) {
             return Some("disabled".to_string());
         }
         None
     }
 
-    /// Run one gate against one file: skip-check, then spawn and classify.
-    fn run_one_gate(
+    /// Run one check against one file: skip-check, then spawn and classify.
+    fn run_one_check(
         &self,
-        gate_id: &str,
-        gate: &Gate,
+        check_id: &str,
+        check: &Check,
         abs: &Path,
         match_path: &Path,
         content: &str,
-    ) -> GateStatus {
-        if let Some(reason) = self.skip_reason(gate_id, match_path, content) {
-            return GateStatus::Skipped(reason);
+    ) -> CheckStatus {
+        if let Some(reason) = self.skip_reason(check_id, match_path, content) {
+            return CheckStatus::Skipped(reason);
         }
         let env = GateEnv {
             file: abs,
@@ -407,34 +412,34 @@ impl HectorEngine {
             event: &self.options.event,
         };
         let start = Instant::now();
-        let outcome = run_gate(&gate.run, &env, Some(content.as_bytes()), self.timeout);
+        let outcome = run_gate(&check.run, &env, Some(content.as_bytes()), self.timeout);
         let elapsed = start.elapsed().as_millis() as u64;
         match outcome {
-            GateOutcome::Pass => GateStatus::Pass(elapsed),
-            GateOutcome::Block { message } => GateStatus::Block(message, elapsed),
-            GateOutcome::Internal(reason) => GateStatus::Error(reason.as_str(), elapsed),
+            GateOutcome::Pass => CheckStatus::Pass(elapsed),
+            GateOutcome::Block { message } => CheckStatus::Block(message, elapsed),
+            GateOutcome::Internal(reason) => CheckStatus::Error(reason.as_str(), elapsed),
         }
     }
 
-    /// Run the loaded gates against `input` and return the verdict.
+    /// Run the loaded checks against `input` and return the verdict.
     pub fn check(&self, input: CheckInput) -> Result<Verdict> {
         self.check_inner(input, false).map(|r| r.verdict)
     }
 
-    /// Like [`Self::check`], but always returns per-gate explain rows. Cheap —
-    /// the rows are a by-product of the same dispatch loop, no extra gate runs.
+    /// Like [`Self::check`], but always returns per-check explain rows. Cheap —
+    /// the rows are a by-product of the same dispatch loop, no extra check runs.
     pub fn check_with_explain(&self, input: CheckInput) -> Result<CheckReport> {
         self.check_inner(input, true)
     }
 
-    /// Central orchestration: resolve the path, run every gate, fold the
+    /// Central orchestration: resolve the path, run every check, fold the
     /// outcomes into a verdict, and log telemetry.
     fn check_inner(&self, input: CheckInput, collect_explain: bool) -> Result<CheckReport> {
         let start = Instant::now();
         let CheckInput::File { path, content } = input;
         let file_str = path.display().to_string();
 
-        // An out-of-config_dir path is an argument/config error, not a gate
+        // An out-of-config_dir path is an argument/config error, not a check
         // outcome: propagate it as `Err` so the CLI maps it to exit 1. Folding
         // it into a synthetic `GateError` would yield exit 3 (InternalError),
         // which makes adapters fail OPEN — silently defeating the guard.
@@ -442,8 +447,8 @@ impl HectorEngine {
         let match_path = relativize(&path, &self.config_dir);
 
         let mut collected = Collected::default();
-        for (id, gate) in &self.config.gates {
-            let status = self.run_one_gate(id, gate, &abs, &match_path, &content);
+        for (id, check) in &self.config.checks {
+            let status = self.run_one_check(id, check, &abs, &match_path, &content);
             collected.absorb(id, &file_str, status, collect_explain);
         }
 
@@ -475,16 +480,17 @@ impl HectorEngine {
         file: &str,
         status: Status,
         elapsed_ms: u64,
-        gates: Vec<PerGateRecord>,
+        checks: Vec<PerCheckRecord>,
     ) {
         if let Err(e) = crate::telemetry::append(
             &self.config_dir.join(".hector/log.jsonl"),
             &LogEntry::Check {
                 ts: chrono::Utc::now().to_rfc3339(),
                 file: file.to_string(),
+                event: self.options.event.clone(),
                 status,
                 elapsed_ms,
-                gates,
+                checks,
             },
         ) {
             eprintln!("hector: telemetry append failed: {e:#}");
@@ -505,12 +511,12 @@ mod gate_dispatch_tests {
     }
 
     #[test]
-    fn matching_gate_that_exits_2_blocks() {
+    fn matching_check_that_exits_2_blocks() {
         let dir = tempfile::tempdir().unwrap();
         write(
             dir.path(),
             ".hector.yml",
-            "gates:\n  no-todo:\n    files: \"**/*.rs\"\n    run: \"grep -q TODO && exit 2 || exit 0\"\n",
+            "checks:\n  no-todo:\n    files: \"**/*.rs\"\n    run: \"grep -q TODO && exit 2 || exit 0\"\n",
         );
         let target = write(dir.path(), "a.rs", "// nothing\n");
         let engine = HectorEngine::load(&dir.path().join(".hector.yml")).unwrap();
@@ -522,16 +528,16 @@ mod gate_dispatch_tests {
             .unwrap();
         assert_eq!(v.status, Status::Block);
         assert_eq!(v.blocks.len(), 1);
-        assert_eq!(v.blocks[0].gate, "no-todo");
+        assert_eq!(v.blocks[0].check, "no-todo");
     }
 
     #[test]
-    fn non_matching_file_passes_with_no_gates_run() {
+    fn non_matching_file_passes_with_no_checks_run() {
         let dir = tempfile::tempdir().unwrap();
         write(
             dir.path(),
             ".hector.yml",
-            "gates:\n  ts-only:\n    files: \"**/*.ts\"\n    run: \"exit 2\"\n",
+            "checks:\n  ts-only:\n    files: \"**/*.ts\"\n    run: \"exit 2\"\n",
         );
         let target = write(dir.path(), "a.rs", "x\n");
         let engine = HectorEngine::load(&dir.path().join(".hector.yml")).unwrap();
@@ -546,12 +552,12 @@ mod gate_dispatch_tests {
     }
 
     #[test]
-    fn broken_gate_is_internal_error() {
+    fn broken_check_is_internal_error() {
         let dir = tempfile::tempdir().unwrap();
         write(
             dir.path(),
             ".hector.yml",
-            "gates:\n  oops:\n    files: \"**/*.rs\"\n    run: \"definitely-not-real-xyz\"\n",
+            "checks:\n  oops:\n    files: \"**/*.rs\"\n    run: \"definitely-not-real-xyz\"\n",
         );
         let target = write(dir.path(), "a.rs", "x\n");
         let engine = HectorEngine::load(&dir.path().join(".hector.yml")).unwrap();
@@ -566,12 +572,12 @@ mod gate_dispatch_tests {
     }
 
     #[test]
-    fn block_with_no_output_uses_gate_id_message() {
+    fn block_with_no_output_uses_check_id_message() {
         let dir = tempfile::tempdir().unwrap();
         write(
             dir.path(),
             ".hector.yml",
-            "gates:\n  no-todo:\n    files: \"**/*.rs\"\n    run: \"exit 2\"\n",
+            "checks:\n  no-todo:\n    files: \"**/*.rs\"\n    run: \"exit 2\"\n",
         );
         let target = write(dir.path(), "a.rs", "x\n");
         let engine = HectorEngine::load(&dir.path().join(".hector.yml")).unwrap();
@@ -586,11 +592,11 @@ mod gate_dispatch_tests {
     }
 
     #[test]
-    fn explain_reports_per_gate_outcome() {
+    fn explain_reports_per_check_outcome() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join(".hector.yml"),
-            "gates:\n  blocker:\n    files: \"**/*.rs\"\n    run: \"exit 2\"\n  passer:\n    files: \"**/*.rs\"\n    run: \"exit 0\"\n",
+            "checks:\n  blocker:\n    files: \"**/*.rs\"\n    run: \"exit 2\"\n  passer:\n    files: \"**/*.rs\"\n    run: \"exit 0\"\n",
         )
         .unwrap();
         let target = dir.path().join("a.rs");
@@ -605,24 +611,29 @@ mod gate_dispatch_tests {
         let outcomes: std::collections::HashMap<_, _> = report
             .explain
             .iter()
-            .map(|r| (r.gate_id.clone(), matches!(r.outcome, ExplainOutcome::Fire)))
+            .map(|r| {
+                (
+                    r.check_id.clone(),
+                    matches!(r.outcome, ExplainOutcome::Fire),
+                )
+            })
             .collect();
         assert!(outcomes["blocker"]);
         assert!(!outcomes["passer"]);
     }
 
     #[test]
-    fn gate_filter_skips_unselected_gates() {
+    fn check_filter_skips_unselected_checks() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join(".hector.yml"),
-            "gates:\n  blocker:\n    files: \"**/*.rs\"\n    run: \"exit 2\"\n  other:\n    files: \"**/*.rs\"\n    run: \"exit 2\"\n",
+            "checks:\n  blocker:\n    files: \"**/*.rs\"\n    run: \"exit 2\"\n  other:\n    files: \"**/*.rs\"\n    run: \"exit 2\"\n",
         )
         .unwrap();
         let target = dir.path().join("a.rs");
         std::fs::write(&target, "x\n").unwrap();
         let mut engine = HectorEngine::load(&dir.path().join(".hector.yml")).unwrap();
-        engine.set_gate_filter(std::iter::once("other".to_string()).collect());
+        engine.set_check_filter(std::iter::once("other".to_string()).collect());
         let v = engine
             .check(CheckInput::File {
                 path: target,
@@ -630,35 +641,35 @@ mod gate_dispatch_tests {
             })
             .unwrap();
         assert_eq!(v.blocks.len(), 1);
-        assert_eq!(v.blocks[0].gate, "other");
+        assert_eq!(v.blocks[0].check, "other");
     }
 
     #[test]
-    fn gates_accessor_returns_loaded_gate_ids() {
+    fn checks_accessor_returns_loaded_check_ids() {
         let dir = tempfile::tempdir().unwrap();
         write(
             dir.path(),
             ".hector.yml",
-            "gates:\n  alpha:\n    files: \"**/*.rs\"\n    run: \"exit 0\"\n  beta:\n    files: \"**/*.ts\"\n    run: \"exit 0\"\n",
+            "checks:\n  alpha:\n    files: \"**/*.rs\"\n    run: \"exit 0\"\n  beta:\n    files: \"**/*.ts\"\n    run: \"exit 0\"\n",
         );
         let engine = HectorEngine::load(&dir.path().join(".hector.yml")).unwrap();
-        let ids: Vec<&str> = engine.gates().keys().map(|k| k.as_str()).collect();
+        let ids: Vec<&str> = engine.checks().keys().map(|k| k.as_str()).collect();
         // BTreeMap iterates in key order
         assert_eq!(ids, vec!["alpha", "beta"]);
     }
 
     #[test]
-    fn hector_file_is_absolute_for_gates() {
-        // ABI lock: `$HECTOR_FILE` handed to a gate is always an absolute path,
-        // so a gate can match it without guessing whether it's relative. The
-        // gate blocks (exit 2) iff `$HECTOR_FILE` is *not* absolute; a Pass
+    fn hector_file_is_absolute_for_checks() {
+        // ABI lock: `$HECTOR_FILE` handed to a check is always an absolute path,
+        // so a check can match it without guessing whether it's relative. The
+        // check blocks (exit 2) iff `$HECTOR_FILE` is *not* absolute; a Pass
         // verdict proves the engine resolved it to an absolute path. Guards the
         // pi-harness report that `$HECTOR_FILE` was unexpectedly relative.
         let dir = tempfile::tempdir().unwrap();
         write(
             dir.path(),
             ".hector.yml",
-            "gates:\n  abs:\n    files: \"**/*.rs\"\n    run: \"case \\\"$HECTOR_FILE\\\" in /*) exit 0;; *) exit 2;; esac\"\n",
+            "checks:\n  abs:\n    files: \"**/*.rs\"\n    run: \"case \\\"$HECTOR_FILE\\\" in /*) exit 0;; *) exit 2;; esac\"\n",
         );
         let target = write(dir.path(), "a.rs", "x\n");
         let engine = HectorEngine::load(&dir.path().join(".hector.yml")).unwrap();
@@ -671,17 +682,17 @@ mod gate_dispatch_tests {
         assert_eq!(
             v.status,
             Status::Pass,
-            "$HECTOR_FILE must be absolute (gate blocks on a non-absolute path): {:?}",
+            "$HECTOR_FILE must be absolute (check blocks on a non-absolute path): {:?}",
             v.blocks
         );
     }
 
     #[test]
-    fn disable_directive_suppresses_a_gate() {
+    fn disable_directive_suppresses_a_check() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join(".hector.yml"),
-            "gates:\n  no-todo:\n    files: \"**/*.rs\"\n    run: \"exit 2\"\n",
+            "checks:\n  no-todo:\n    files: \"**/*.rs\"\n    run: \"exit 2\"\n",
         )
         .unwrap();
         let target = dir.path().join("a.rs");

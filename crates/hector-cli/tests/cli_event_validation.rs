@@ -10,7 +10,7 @@ use assert_cmd::Command;
 use std::fs;
 use tempfile::tempdir;
 
-const PASSING_CONFIG: &str = "gates:\n  g:\n    files: [\"*.rs\"]\n    run: \"true\"\n";
+const PASSING_CONFIG: &str = "checks:\n  g:\n    files: [\"*.rs\"]\n    run: \"true\"\n";
 
 #[test]
 fn event_bogus_is_rejected_and_lists_valid_values() {

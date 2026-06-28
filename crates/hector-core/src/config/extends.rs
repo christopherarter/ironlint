@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 /// Resolve `extends:` recursively.
 ///
-/// Earlier ancestors are inherited; local gates win on collision. Trust is not
+/// Earlier ancestors are inherited; local checks win on collision. Trust is not
 /// verified here — it returns in a later plan as the out-of-repo store.
 pub fn resolve(root: &Path) -> Result<Config> {
     let mut seen = HashSet::new();
@@ -73,17 +73,17 @@ fn collect_paths(
     Ok(())
 }
 
-/// Inherited gates fill in only where the local config doesn't already define
+/// Inherited checks fill in only where the local config doesn't already define
 /// them — local wins on collision.
 fn merge_inherited(local: &mut Config, inherited: Config) {
-    for (id, gate) in inherited.gates {
-        local.gates.entry(id).or_insert(gate);
+    for (id, check) in inherited.checks {
+        local.checks.entry(id).or_insert(check);
     }
 }
 
-/// Resolve `extends:` and return a per-gate origin map.
+/// Resolve `extends:` and return a per-check origin map.
 ///
-/// Attributes every surviving gate id to the canonical path of the file it was
+/// Attributes every surviving check id to the canonical path of the file it was
 /// defined in. Local definitions win on collision and the origin map reflects
 /// that. Read-only inspection (`show-resolved-config`); no trust verification.
 pub fn resolve_with_origin(root: &Path) -> Result<(Config, BTreeMap<String, PathBuf>)> {
@@ -108,7 +108,7 @@ fn resolve_inner_with_origin(
         .with_context(|| format!("reading {}", canonical.display()))?;
     let mut cfg = parse_str(&content)?;
 
-    for id in cfg.gates.keys() {
+    for id in cfg.checks.keys() {
         origins
             .entry(id.clone())
             .or_insert_with(|| canonical.clone());
@@ -134,12 +134,12 @@ fn merge_inherited_with_origin(
     let inherited_canonical = inherited_from
         .canonicalize()
         .unwrap_or_else(|_| inherited_from.to_path_buf());
-    for (id, gate) in inherited.gates {
-        if let std::collections::btree_map::Entry::Vacant(slot) = local.gates.entry(id.clone()) {
+    for (id, check) in inherited.checks {
+        if let std::collections::btree_map::Entry::Vacant(slot) = local.checks.entry(id.clone()) {
             origins
                 .entry(id)
                 .or_insert_with(|| inherited_canonical.clone());
-            slot.insert(gate);
+            slot.insert(check);
         }
     }
 }

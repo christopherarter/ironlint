@@ -8,12 +8,12 @@ pub struct Config {
     pub extends: Vec<String>,
     #[serde(default)]
     pub execution: ExecutionConfig,
-    pub gates: BTreeMap<String, Gate>,
+    pub checks: BTreeMap<String, Check>,
 }
 
 /// Optional execution-tuning block.
 ///
-/// `timeout_secs` bounds each gate's wall-clock; a gate that exceeds it is
+/// `timeout_secs` bounds each check's wall-clock; a check that exceeds it is
 /// killed and reported as InternalError (never a silent pass). The
 /// `HECTOR_TIMEOUT` env var overrides this at run time. Dispatch is
 /// sequential; parallelism tuning is not exposed.
@@ -36,14 +36,14 @@ impl Default for ExecutionConfig {
     }
 }
 
-/// A single gate: match `files`, run `run`, read its exit code.
+/// A single check: match `files`, run `run`, read its exit code.
 ///
 /// `run` is handed to the shell verbatim — no `{file}`/`{path}` templating.
 /// The path under check arrives as `$HECTOR_FILE`; proposed content arrives
 /// on stdin. `run` may be an inline command or a path to a script.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Gate {
+pub struct Check {
     #[serde(deserialize_with = "files_one_or_many")]
     pub files: Vec<String>,
     pub run: String,
@@ -76,12 +76,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_minimal_gate_with_files_list() {
+    fn parses_minimal_check_with_files_list() {
         let cfg: Config = serde_yaml::from_str(
-            "gates:\n  biome:\n    files: [\"**/*.ts\"]\n    run: \"biome check\"\n",
+            "checks:\n  biome:\n    files: [\"**/*.ts\"]\n    run: \"biome check\"\n",
         )
         .unwrap();
-        let g = cfg.gates.get("biome").unwrap();
+        let g = cfg.checks.get("biome").unwrap();
         assert_eq!(g.files, vec!["**/*.ts".to_string()]);
         assert_eq!(g.run, "biome check");
     }
@@ -89,22 +89,22 @@ mod tests {
     #[test]
     fn files_accepts_a_bare_string() {
         let cfg: Config =
-            serde_yaml::from_str("gates:\n  g:\n    files: \"**/*.rs\"\n    run: \"true\"\n")
+            serde_yaml::from_str("checks:\n  g:\n    files: \"**/*.rs\"\n    run: \"true\"\n")
                 .unwrap();
-        assert_eq!(cfg.gates["g"].files, vec!["**/*.rs".to_string()]);
+        assert_eq!(cfg.checks["g"].files, vec!["**/*.rs".to_string()]);
     }
 
     #[test]
     fn execution_timeout_defaults_to_30() {
         let cfg: Config =
-            serde_yaml::from_str("gates:\n  g:\n    files: \"*\"\n    run: \"true\"\n").unwrap();
+            serde_yaml::from_str("checks:\n  g:\n    files: \"*\"\n    run: \"true\"\n").unwrap();
         assert_eq!(cfg.execution.timeout_secs, 30);
     }
 
     #[test]
     fn execution_timeout_is_overridable() {
         let cfg: Config = serde_yaml::from_str(
-            "execution:\n  timeout_secs: 5\ngates:\n  g:\n    files: \"*\"\n    run: \"true\"\n",
+            "execution:\n  timeout_secs: 5\nchecks:\n  g:\n    files: \"*\"\n    run: \"true\"\n",
         )
         .unwrap();
         assert_eq!(cfg.execution.timeout_secs, 5);
@@ -113,7 +113,7 @@ mod tests {
     #[test]
     fn extends_defaults_to_empty() {
         let cfg: Config =
-            serde_yaml::from_str("gates:\n  g:\n    files: \"*\"\n    run: \"true\"\n").unwrap();
+            serde_yaml::from_str("checks:\n  g:\n    files: \"*\"\n    run: \"true\"\n").unwrap();
         assert!(cfg.extends.is_empty());
     }
 }

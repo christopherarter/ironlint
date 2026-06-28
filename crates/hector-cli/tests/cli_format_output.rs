@@ -8,7 +8,7 @@ use assert_cmd::Command;
 use tempfile::tempdir;
 
 const TWO_GATE_BODY: &str =
-    "gates:\n  ts-gate:\n    files: [\"**/*.ts\"]\n    run: \"true\"\n  rs-gate:\n    files: [\"**/*.rs\"]\n    run: \"true\"\n";
+    "checks:\n  ts-gate:\n    files: [\"**/*.ts\"]\n    run: \"true\"\n  rs-gate:\n    files: [\"**/*.rs\"]\n    run: \"true\"\n";
 
 fn write_config(body: &str) -> (tempfile::TempDir, std::path::PathBuf) {
     let dir = tempdir().unwrap();
@@ -42,12 +42,12 @@ fn explain_json_emits_parseable_array() {
     let value: serde_json::Value =
         serde_json::from_slice(&out).expect("explain --format json must emit valid JSON");
     let arr = value.as_array().expect("explain JSON must be an array");
-    assert_eq!(arr.len(), 2, "expected one entry per gate: {value}");
+    assert_eq!(arr.len(), 2, "expected one entry per check: {value}");
 
     // Locate the rs-gate entry and assert the full object shape.
     let rs = arr
         .iter()
-        .find(|e| e["gate"] == "rs-gate")
+        .find(|e| e["check"] == "rs-gate")
         .expect("rs-gate entry must be present");
     assert_eq!(rs["status"], "match", "rs-gate matches a .rs file: {rs}");
     assert_eq!(rs["run"], "true");
@@ -56,7 +56,7 @@ fn explain_json_emits_parseable_array() {
 
     let ts = arr
         .iter()
-        .find(|e| e["gate"] == "ts-gate")
+        .find(|e| e["check"] == "ts-gate")
         .expect("ts-gate entry must be present");
     assert_eq!(ts["status"], "skip", "ts-gate skips a .rs file: {ts}");
 }
@@ -96,9 +96,9 @@ fn explain_human_emits_text_not_json() {
 }
 
 #[test]
-fn show_resolved_config_json_is_structured_per_gate() {
+fn show_resolved_config_json_is_structured_per_check() {
     let (_dir, cfg) = write_config(
-        "gates:\n  no-todo:\n    files: [\"*.rs\", \"*.txt\"]\n    run: \"grep -q TODO && exit 2 || exit 0\"\n",
+        "checks:\n  no-todo:\n    files: [\"*.rs\", \"*.txt\"]\n    run: \"grep -q TODO && exit 2 || exit 0\"\n",
     );
 
     let out = Command::cargo_bin("hector")
@@ -119,23 +119,23 @@ fn show_resolved_config_json_is_structured_per_gate() {
     let value: serde_json::Value = serde_json::from_slice(&out)
         .expect("show-resolved-config --format json must emit valid JSON");
     let arr = value.as_array().expect("must be a JSON array");
-    let gate = &arr[0];
-    assert_eq!(gate["gate"], "no-todo");
+    let check = &arr[0];
+    assert_eq!(check["check"], "no-todo");
     assert!(
-        gate["origin"].as_str().unwrap().contains(".hector.yml"),
-        "origin must reference the config file: {gate}"
+        check["origin"].as_str().unwrap().contains(".hector.yml"),
+        "origin must reference the config file: {check}"
     );
-    assert_eq!(gate["files"][0], "*.rs");
-    assert_eq!(gate["files"][1], "*.txt");
+    assert_eq!(check["files"][0], "*.rs");
+    assert_eq!(check["files"][1], "*.txt");
     assert!(
-        gate["run"].as_str().unwrap().contains("grep -q TODO"),
-        "run must be carried verbatim: {gate}"
+        check["run"].as_str().unwrap().contains("grep -q TODO"),
+        "run must be carried verbatim: {check}"
     );
 }
 
 #[test]
 fn show_resolved_config_yaml_is_parseable() {
-    let (_dir, cfg) = write_config("gates:\n  alpha:\n    files: [\"*.rs\"]\n    run: \"true\"\n");
+    let (_dir, cfg) = write_config("checks:\n  alpha:\n    files: [\"*.rs\"]\n    run: \"true\"\n");
 
     let out = Command::cargo_bin("hector")
         .unwrap()
@@ -159,17 +159,17 @@ fn show_resolved_config_yaml_is_parseable() {
     let first = seq[0].as_mapping().expect("each entry is a mapping");
     assert_eq!(
         first
-            .get(serde_yaml::Value::String("gate".into()))
+            .get(serde_yaml::Value::String("check".into()))
             .and_then(|v| v.as_str()),
         Some("alpha"),
-        "first gate id must be alpha: {stdout}"
+        "first check id must be alpha: {stdout}"
     );
 }
 
 #[test]
 fn show_resolved_config_tsv_rows_are_tab_separated() {
     let (_dir, cfg) =
-        write_config("gates:\n  no-todo:\n    files: [\"*.rs\", \"*.txt\"]\n    run: \"true\"\n");
+        write_config("checks:\n  no-todo:\n    files: [\"*.rs\", \"*.txt\"]\n    run: \"true\"\n");
 
     let out = Command::cargo_bin("hector")
         .unwrap()

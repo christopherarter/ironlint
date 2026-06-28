@@ -1,4 +1,4 @@
-use hector_core::telemetry::{append, read_all, LogEntry, PerGateRecord};
+use hector_core::telemetry::{append, read_all, LogEntry, PerCheckRecord};
 use hector_core::verdict::Status;
 use std::io::Write;
 use tempfile::tempdir;
@@ -10,10 +10,12 @@ fn append_then_read_all_round_trips() {
     let entry = LogEntry::Check {
         ts: "2026-06-15T00:00:00Z".into(),
         file: "src/lib.rs".into(),
+        event: "write".into(),
         status: Status::Block,
         elapsed_ms: 5,
-        gates: vec![PerGateRecord {
-            gate: "no-todo".into(),
+        checks: vec![PerCheckRecord {
+            check: "no-todo".into(),
+            step: None,
             status: Status::Block,
             elapsed_ms: 5,
             reason: None,
@@ -40,9 +42,10 @@ fn malformed_line_is_dropped_and_good_lines_survive() {
     let entry = LogEntry::Check {
         ts: "2026-06-15T00:00:00Z".into(),
         file: "a.rs".into(),
+        event: "write".into(),
         status: Status::Pass,
         elapsed_ms: 1,
-        gates: vec![],
+        checks: vec![],
     };
     append(&log, &entry).unwrap();
     // Inject a corrupt line between two good ones.

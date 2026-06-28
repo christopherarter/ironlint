@@ -145,7 +145,7 @@ fn check_config_parses(ctx: &DoctorContext) -> CheckResult {
         Ok(cfg) => CheckResult {
             name: "parses",
             status: Status::Pass,
-            detail: format!("config parses ({} gate(s))", cfg.gates.len()),
+            detail: format!("config parses ({} check(s))", cfg.checks.len()),
             remediation: None,
         },
         Err(e) => CheckResult {
@@ -157,7 +157,7 @@ fn check_config_parses(ctx: &DoctorContext) -> CheckResult {
     }
 }
 
-/// For each gate whose `run` is a single token (no spaces) that starts with
+/// For each check whose `run` is a single token (no spaces) that starts with
 /// `.hector/`, check that the path exists and is executable. Inline commands
 /// (e.g. `grep -q TODO && exit 2`) are skipped — detection: `run` contains a
 /// space or doesn't look like a file path.
@@ -174,8 +174,8 @@ fn check_gate_scripts(ctx: &DoctorContext) -> CheckResult {
         }
     };
     let mut bad: Vec<String> = Vec::new();
-    for (id, gate) in &cfg.gates {
-        if let Some(issue) = check_run_path(&ctx.dir, id, &gate.run) {
+    for (id, check) in &cfg.checks {
+        if let Some(issue) = check_run_path(&ctx.dir, id, &check.run) {
             bad.push(issue);
         }
     }
@@ -183,16 +183,16 @@ fn check_gate_scripts(ctx: &DoctorContext) -> CheckResult {
         CheckResult {
             name: "gate_scripts",
             status: Status::Pass,
-            detail: format!("{} gate(s) checked", cfg.gates.len()),
+            detail: format!("{} check(s) checked", cfg.checks.len()),
             remediation: None,
         }
     } else {
         CheckResult {
             name: "gate_scripts",
             status: Status::Fail,
-            detail: format!("missing/non-executable gate script(s): {}", bad.join("; ")),
+            detail: format!("missing/non-executable check script(s): {}", bad.join("; ")),
             remediation: Some(
-                "ensure gate scripts exist under .hector/gates/ and are executable (chmod +x)"
+                "ensure check scripts exist under .hector/gates/ and are executable (chmod +x)"
                     .into(),
             ),
         }
@@ -361,7 +361,7 @@ mod tests {
     #[test]
     fn config_present_pass_when_file_exists() {
         let d = tempdir().unwrap();
-        fs::write(d.path().join(".hector.yml"), "gates: {}\n").unwrap();
+        fs::write(d.path().join(".hector.yml"), "checks: {}\n").unwrap();
         let r = check_config_present(&ctx_with(d.path()));
         assert_eq!(r.status, Status::Pass);
     }
@@ -382,16 +382,16 @@ mod tests {
     }
 
     #[test]
-    fn parses_pass_on_valid_gates_config() {
+    fn parses_pass_on_valid_checks_config() {
         let d = tempdir().unwrap();
         fs::write(
             d.path().join(".hector.yml"),
-            "gates:\n  g:\n    files: \"*.rs\"\n    run: \"true\"\n",
+            "checks:\n  g:\n    files: \"*.rs\"\n    run: \"true\"\n",
         )
         .unwrap();
         let r = check_config_parses(&ctx_with(d.path()));
         assert_eq!(r.status, Status::Pass);
-        assert!(r.detail.contains("1 gate(s)"));
+        assert!(r.detail.contains("1 check(s)"));
     }
 
     #[test]
@@ -406,7 +406,7 @@ mod tests {
         let d = tempdir().unwrap();
         fs::write(
             d.path().join(".hector.yml"),
-            "gates:\n  g:\n    files: \"*.rs\"\n    run: \"grep -q TODO && exit 2 || exit 0\"\n",
+            "checks:\n  g:\n    files: \"*.rs\"\n    run: \"grep -q TODO && exit 2 || exit 0\"\n",
         )
         .unwrap();
         let r = check_gate_scripts(&ctx_with(d.path()));

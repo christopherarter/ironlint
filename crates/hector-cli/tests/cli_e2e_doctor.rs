@@ -14,7 +14,7 @@ use tempfile::tempdir;
 fn write_gates_config(dir: &Path) {
     fs::write(
         dir.join(".hector.yml"),
-        "gates:\n  g:\n    files: [\"**/*.rs\"]\n    run: \"true\"\n",
+        "checks:\n  g:\n    files: [\"**/*.rs\"]\n    run: \"true\"\n",
     )
     .unwrap();
 }

@@ -12,18 +12,23 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::Path;
 
-/// Telemetry record-set version. Independent of the verdict schema; bumps
-/// when this enum's shape changes. Bumped to 3 for the gates redesign:
-/// per-rule records became per-gate (no `engine` field).
-pub const SCHEMA_VERSION: u32 = 3;
+/// Telemetry record-set version. Independent of the verdict schema.
+///
+/// Bumps when this enum's shape changes. Bumped to 4 for the checks pipeline
+/// redesign: per-gate records became per-check (`gate`→`check` field, `step`
+/// added, `event` added to `LogEntry::Check`).
+pub const SCHEMA_VERSION: u32 = 4;
 
-/// Per-gate outcome line carried inside a [`LogEntry::Check`].
+/// Per-check outcome line carried inside a [`LogEntry::Check`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PerGateRecord {
-    pub gate: String,
+pub struct PerCheckRecord {
+    pub check: String,
+    /// Step within a multi-step check. `None` in Phase 1.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub step: Option<String>,
     pub status: Status,
     pub elapsed_ms: u64,
-    /// Optional reason: a stable `InternalReason` string for crashed gates.
+    /// Optional reason: a stable `InternalReason` string for crashed checks.
     /// `None` for vanilla pass/block.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
@@ -31,17 +36,18 @@ pub struct PerGateRecord {
 
 /// One line in `.hector/log.jsonl`.
 ///
-/// Discriminator field is `type`; variant payload follows. `Check.gates` is
-/// empty when no gate matched the file (file was checked, no gate ran).
+/// Discriminator field is `type`; variant payload follows. `Check.checks` is
+/// empty when no check matched the file (file was checked, no check ran).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum LogEntry {
     Check {
         ts: String,
         file: String,
+        event: String,
         status: Status,
         elapsed_ms: u64,
-        gates: Vec<PerGateRecord>,
+        checks: Vec<PerCheckRecord>,
     },
 }
 
@@ -108,16 +114,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn round_trips_a_gate_check_entry() {
+    fn round_trips_a_check_entry() {
         let dir = tempfile::tempdir().unwrap();
         let log = dir.path().join("log.jsonl");
         let entry = LogEntry::Check {
             ts: "2026-06-15T00:00:00Z".into(),
             file: "a.rs".into(),
+            event: "edit".into(),
             status: Status::Block,
             elapsed_ms: 3,
-            gates: vec![PerGateRecord {
-                gate: "no-todo".into(),
+            checks: vec![PerCheckRecord {
+                check: "no-todo".into(),
+                step: None,
                 status: Status::Block,
                 elapsed_ms: 3,
                 reason: None,
@@ -129,7 +137,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_version_is_3() {
-        assert_eq!(SCHEMA_VERSION, 3);
+    fn schema_version_is_4() {
+        assert_eq!(SCHEMA_VERSION, 4);
     }
 }

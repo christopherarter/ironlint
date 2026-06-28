@@ -24,8 +24,8 @@ fn init_scaffolds_gates_config_not_rules() {
     run_init(dir.path());
     let cfg = read_cfg(dir.path());
     assert!(
-        cfg.starts_with("gates:\n"),
-        "gates model config must start with `gates:`:\n{cfg}"
+        cfg.starts_with("checks:\n"),
+        "checks model config must start with `checks:`:\n{cfg}"
     );
     assert!(
         !cfg.contains("schema_version"),
@@ -44,7 +44,7 @@ fn init_scaffolds_for_rust_project() {
     run_init(dir.path());
     let cfg = read_cfg(dir.path());
     assert!(cfg.contains("no-unwrap-in-src"));
-    assert!(cfg.contains("gates:"));
+    assert!(cfg.contains("checks:"));
 }
 
 #[test]

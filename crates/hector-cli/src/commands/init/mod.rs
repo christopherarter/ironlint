@@ -98,7 +98,7 @@ fn build_config(
     linters: LinterSet,
     runner: JsRunner,
 ) -> String {
-    let mut out = String::from("gates:\n");
+    let mut out = String::from("checks:\n");
     match stack {
         Stack::Rust => emit_rust_gates(&mut out, workspace, linters),
         Stack::Node => emit_node_gates(&mut out, workspace, linters, runner),
@@ -283,19 +283,19 @@ mod tests {
     }
 
     #[test]
-    fn scaffolded_config_starts_with_gates() {
+    fn scaffolded_config_starts_with_checks() {
         let yaml = build_config(Stack::Rust, None, LinterSet::default(), JsRunner::Npx);
         assert!(
-            yaml.starts_with("gates:\n"),
-            "gates model config must start with `gates:`:\n{yaml}"
+            yaml.starts_with("checks:\n"),
+            "checks model config must start with `checks:`:\n{yaml}"
         );
         assert!(
             !yaml.contains("schema_version"),
-            "gates model must not emit schema_version:\n{yaml}"
+            "checks model must not emit schema_version:\n{yaml}"
         );
         assert!(
             !yaml.contains("rules:"),
-            "gates model must not emit rules: key:\n{yaml}"
+            "checks model must not emit rules: key:\n{yaml}"
         );
     }
 
@@ -443,7 +443,7 @@ mod tests {
     #[test]
     fn run_with_existing_config_and_no_hook_is_ok_not_error() {
         let tmp = tempfile::tempdir().unwrap();
-        std::fs::write(tmp.path().join(".hector.yml"), "gates: {}\n").unwrap();
+        std::fs::write(tmp.path().join(".hector.yml"), "checks: {}\n").unwrap();
         let opts = Options {
             harnesses: vec![],
             global: false,

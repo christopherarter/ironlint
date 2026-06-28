@@ -4,7 +4,7 @@ use std::path::Path;
 pub fn run(config: &Path) -> Result<i32> {
     match hector_core::config::parse_file_with_extends(config) {
         Ok(cfg) => {
-            println!("ok: {} gate(s)", cfg.gates.len());
+            println!("ok: {} check(s)", cfg.checks.len());
             Ok(0)
         }
         Err(e) => {

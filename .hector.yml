@@ -1,13 +1,13 @@
-# Hector's own policy, in the 0.3 gates model. Dogfooded by scripts/ci-dogfood.sh.
+# Hector's own policy, in the 0.4 checks model. Dogfooded by scripts/ci-dogfood.sh.
 #
-# Gates have no severity — every gate blocks (exit 2). The pre-0.3
+# Checks have no severity — every check blocks (exit 2). The pre-0.3
 # `severity: warning` rules (no-unwrap-in-src / no-panic-in-src /
 # no-eprintln-debug) are therefore dropped, not downgraded: hector's own
 # test-heavy src legitimately uses .unwrap()/panic! in #[cfg(test)] code, so a
-# blocking gate would be wrong. The three former `severity: error` rules stay as
-# blocking gates. The old in-YAML `trust:` block is gone — trust now lives in
+# blocking check would be wrong. The three former `severity: error` rules stay as
+# blocking checks. The old in-YAML `trust:` block is gone — trust now lives in
 # the out-of-repo store (`hector trust`).
-gates:
+checks:
   no-todo-in-src:
     files: crates/*/src/**/*.rs
     run: "grep -nE 'todo!\\(' \"$HECTOR_FILE\"; case $? in 0) exit 2;; 1) exit 0;; *) exit $?;; esac"

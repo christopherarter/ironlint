@@ -5,7 +5,7 @@ mod common;
 use assert_cmd::Command;
 use tempfile::tempdir;
 
-const GATE_YAML: &str = "gates:\n  noop:\n    files: [\"*\"]\n    run: \"true\"\n";
+const GATE_YAML: &str = "checks:\n  noop:\n    files: [\"*\"]\n    run: \"true\"\n";
 
 /// A file whose canonical path falls outside the config_dir must be rejected
 /// with exit 1 and a stderr message mentioning "outside" or "external".

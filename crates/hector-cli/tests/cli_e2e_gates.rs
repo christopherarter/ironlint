@@ -7,11 +7,11 @@ fn cfg(dir: &std::path::Path, body: &str) {
 }
 
 #[test]
-fn exit_2_gate_blocks_and_exits_2() {
+fn exit_2_check_blocks_and_exits_2() {
     let dir = tempfile::tempdir().unwrap();
     cfg(
         dir.path(),
-        "gates:\n  no-todo:\n    files: \"**/*.rs\"\n    run: \"grep -q TODO && exit 2 || exit 0\"\n",
+        "checks:\n  no-todo:\n    files: \"**/*.rs\"\n    run: \"grep -q TODO && exit 2 || exit 0\"\n",
     );
     let xdg = common::blessed_store(&dir.path().join(".hector.yml"));
     let file = dir.path().join("a.rs");
@@ -36,7 +36,7 @@ fn clean_file_passes_and_exits_0() {
     let dir = tempfile::tempdir().unwrap();
     cfg(
         dir.path(),
-        "gates:\n  no-todo:\n    files: \"**/*.rs\"\n    run: \"grep -q TODO && exit 2 || exit 0\"\n",
+        "checks:\n  no-todo:\n    files: \"**/*.rs\"\n    run: \"grep -q TODO && exit 2 || exit 0\"\n",
     );
     let xdg = common::blessed_store(&dir.path().join(".hector.yml"));
     let file = dir.path().join("a.rs");
@@ -57,11 +57,11 @@ fn clean_file_passes_and_exits_0() {
 }
 
 #[test]
-fn stdin_content_gates_prewrite() {
+fn stdin_content_checks_prewrite() {
     let dir = tempfile::tempdir().unwrap();
     cfg(
         dir.path(),
-        "gates:\n  no-todo:\n    files: \"**/*.rs\"\n    run: \"grep -q TODO && exit 2 || exit 0\"\n",
+        "checks:\n  no-todo:\n    files: \"**/*.rs\"\n    run: \"grep -q TODO && exit 2 || exit 0\"\n",
     );
     let xdg = common::blessed_store(&dir.path().join(".hector.yml"));
     let file = dir.path().join("a.rs");
@@ -82,11 +82,11 @@ fn stdin_content_gates_prewrite() {
 }
 
 #[test]
-fn broken_gate_exits_3() {
+fn broken_check_exits_3() {
     let dir = tempfile::tempdir().unwrap();
     cfg(
         dir.path(),
-        "gates:\n  oops:\n    files: \"**/*.rs\"\n    run: \"no-such-binary-xyz\"\n",
+        "checks:\n  oops:\n    files: \"**/*.rs\"\n    run: \"no-such-binary-xyz\"\n",
     );
     let xdg = common::blessed_store(&dir.path().join(".hector.yml"));
     let file = dir.path().join("a.rs");
@@ -107,11 +107,11 @@ fn broken_gate_exits_3() {
 }
 
 #[test]
-fn unknown_gate_filter_errors() {
+fn unknown_check_filter_errors() {
     let dir = tempfile::tempdir().unwrap();
     cfg(
         dir.path(),
-        "gates:\n  g:\n    files: \"*\"\n    run: \"true\"\n",
+        "checks:\n  g:\n    files: \"*\"\n    run: \"true\"\n",
     );
     let xdg = common::blessed_store(&dir.path().join(".hector.yml"));
     let file = dir.path().join("a.rs");
@@ -124,7 +124,7 @@ fn unknown_gate_filter_errors() {
             "check",
             "--file",
             file.to_str().unwrap(),
-            "--gate",
+            "--check",
             "nope",
             "--config",
             ".hector.yml",
@@ -159,13 +159,13 @@ fn legacy_config_is_rejected() {
 #[test]
 fn diff_mode_blocks_when_file_contains_todo() {
     let dir = tempfile::tempdir().unwrap();
-    // Gate: grep for TODO; exit 2 on match.
+    // Check: grep for TODO; exit 2 on match.
     cfg(
         dir.path(),
-        "gates:\n  no-todo:\n    files: \"**/*.rs\"\n    run: \"grep -q TODO \\\"$HECTOR_FILE\\\" && exit 2 || exit 0\"\n",
+        "checks:\n  no-todo:\n    files: \"**/*.rs\"\n    run: \"grep -q TODO \\\"$HECTOR_FILE\\\" && exit 2 || exit 0\"\n",
     );
     let xdg = common::blessed_store(&dir.path().join(".hector.yml"));
-    // On-disk file contains TODO — gates read from disk, not from the diff.
+    // On-disk file contains TODO — checks read from disk, not from the diff.
     let file = dir.path().join("a.rs");
     std::fs::write(&file, "// TODO fix this\n").unwrap();
     // Unified diff that references the file.
@@ -192,7 +192,7 @@ fn diff_mode_passes_when_file_is_clean() {
     let dir = tempfile::tempdir().unwrap();
     cfg(
         dir.path(),
-        "gates:\n  no-todo:\n    files: \"**/*.rs\"\n    run: \"grep -q TODO \\\"$HECTOR_FILE\\\" && exit 2 || exit 0\"\n",
+        "checks:\n  no-todo:\n    files: \"**/*.rs\"\n    run: \"grep -q TODO \\\"$HECTOR_FILE\\\" && exit 2 || exit 0\"\n",
     );
     let xdg = common::blessed_store(&dir.path().join(".hector.yml"));
     // On-disk file is clean.
@@ -217,11 +217,11 @@ fn diff_mode_passes_when_file_is_clean() {
 }
 
 #[test]
-fn gate_filter_runs_only_selected() {
+fn check_filter_runs_only_selected() {
     let dir = tempfile::tempdir().unwrap();
     cfg(
         dir.path(),
-        "gates:\n  blocker:\n    files: \"**/*.rs\"\n    run: \"exit 2\"\n  passer:\n    files: \"**/*.rs\"\n    run: \"exit 0\"\n",
+        "checks:\n  blocker:\n    files: \"**/*.rs\"\n    run: \"exit 2\"\n  passer:\n    files: \"**/*.rs\"\n    run: \"exit 0\"\n",
     );
     let xdg = common::blessed_store(&dir.path().join(".hector.yml"));
     let file = dir.path().join("a.rs");
@@ -235,7 +235,7 @@ fn gate_filter_runs_only_selected() {
             "check",
             "--file",
             file.to_str().unwrap(),
-            "--gate",
+            "--check",
             "passer",
             "--config",
             ".hector.yml",

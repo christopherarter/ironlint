@@ -15,7 +15,7 @@ fn check_stays_quiet_on_stderr_for_passing_gate() {
     let cfg = project.join(".hector.yml");
     fs::write(
         &cfg,
-        "gates:\n  ok:\n    files: [\"*.txt\"]\n    run: \"exit 0\"\n",
+        "checks:\n  ok:\n    files: [\"*.txt\"]\n    run: \"exit 0\"\n",
     )
     .unwrap();
 

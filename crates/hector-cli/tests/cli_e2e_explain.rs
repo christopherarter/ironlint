@@ -7,7 +7,7 @@ use assert_cmd::Command;
 use tempfile::tempdir;
 
 const TWO_GATE_BODY: &str =
-    "gates:\n  ts-gate:\n    files: [\"**/*.ts\"]\n    run: \"true\"\n  rs-gate:\n    files: [\"**/*.rs\"]\n    run: \"true\"\n";
+    "checks:\n  ts-gate:\n    files: [\"**/*.ts\"]\n    run: \"true\"\n  rs-gate:\n    files: [\"**/*.rs\"]\n    run: \"true\"\n";
 
 #[test]
 fn explain_shows_match_for_file_matching_gate() {

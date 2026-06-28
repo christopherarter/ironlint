@@ -13,21 +13,21 @@ pub fn run(
     content: Option<String>,
     format: OutputFormat,
     config: &Path,
-    gates: Vec<String>,
+    checks: Vec<String>,
     event: String,
     explain: bool,
     allow_external_paths: bool,
 ) -> Result<i32> {
-    // Trust gate: refuse an unblessed or tampered config/gates before the engine
-    // loads or any gate runs. This hashes the config + `.hector/gates/` now; a
-    // write between here and gate execution is a known, accepted TOCTOU window
+    // Trust gate: refuse an unblessed or tampered config/checks before the engine
+    // loads or any check runs. This hashes the config + `.hector/gates/` now; a
+    // write between here and check execution is a known, accepted TOCTOU window
     // (the direnv-model limitation — no file locking in 0.3).
     if let Err(e) = hector_core::trust::ensure_trusted(config) {
         eprintln!("ERROR: {e:#}");
         return Ok(1);
     }
     let options = CheckOptions {
-        gates: HashSet::new(),
+        checks: HashSet::new(),
         event,
         allow_external_paths,
     };
@@ -38,10 +38,10 @@ pub fn run(
             return Ok(1);
         }
     };
-    if let Some(code) = validate_gate_filter(&engine, &gates) {
+    if let Some(code) = validate_check_filter(&engine, &checks) {
         return Ok(code);
     }
-    engine.set_gate_filter(gates.into_iter().collect());
+    engine.set_check_filter(checks.into_iter().collect());
 
     match (file, diff) {
         (Some(f), None) => run_file(&engine, f, content, format, explain),
@@ -84,8 +84,8 @@ fn run_file(
     Ok(exit_code(&report.verdict))
 }
 
-/// Check every non-deleted changed file in a unified diff. Gates read each
-/// file's current on-disk content (gates don't consume diffs).
+/// Check every non-deleted changed file in a unified diff. Checks read each
+/// file's current on-disk content (checks don't consume diffs).
 fn run_diff(
     engine: &HectorEngine,
     diff: &Path,
@@ -110,7 +110,7 @@ fn run_diff(
     for f in targets {
         // A changed file we can't read (deleted between diff-gen and check,
         // permissions, non-UTF-8 bytes) is a hard error: fabricating empty
-        // content would run every gate against "" and let a real violation
+        // content would run every check against "" and let a real violation
         // pass vacuously. Surface it as exit 1, never a silent empty pass.
         let content = match std::fs::read_to_string(&f.path) {
             Ok(c) => c,
@@ -146,12 +146,12 @@ fn run_diff(
     Ok(exit_code(&verdict))
 }
 
-fn validate_gate_filter(engine: &HectorEngine, gates: &[String]) -> Option<i32> {
-    if gates.is_empty() {
+fn validate_check_filter(engine: &HectorEngine, checks: &[String]) -> Option<i32> {
+    if checks.is_empty() {
         return None;
     }
-    let known: HashSet<&str> = engine.gate_ids().collect();
-    let unknown: Vec<&str> = gates
+    let known: HashSet<&str> = engine.check_ids().collect();
+    let unknown: Vec<&str> = checks
         .iter()
         .map(|s| s.as_str())
         .filter(|id| !known.contains(id))
@@ -159,7 +159,7 @@ fn validate_gate_filter(engine: &HectorEngine, gates: &[String]) -> Option<i32> 
     if unknown.is_empty() {
         None
     } else {
-        eprintln!("ERROR: unknown gate id(s): {}", unknown.join(", "));
+        eprintln!("ERROR: unknown check id(s): {}", unknown.join(", "));
         Some(1)
     }
 }
@@ -171,7 +171,7 @@ fn print_explain(rows: &[GateExplain]) {
             ExplainOutcome::Pass => "pass".to_string(),
             ExplainOutcome::Skipped { reason } => format!("skipped {reason}"),
         };
-        eprintln!("{} {}", row.gate_id, outcome);
+        eprintln!("{} {}", row.check_id, outcome);
     }
 }
 
@@ -188,11 +188,16 @@ fn emit(v: &Verdict, format: OutputFormat) -> Result<()> {
         OutputFormat::Json => println!("{}", serde_json::to_string_pretty(v)?),
         OutputFormat::Human => {
             for b in &v.blocks {
-                eprintln!("block: [{}] {}", b.gate, b.file);
+                eprintln!("block: [{}] {}", b.check, b.file.as_deref().unwrap_or(""));
                 eprintln!("  {}", b.message);
             }
             for e in &v.errors {
-                eprintln!("error: [{}] {} ({})", e.gate, e.file, e.reason);
+                eprintln!(
+                    "error: [{}] {} ({})",
+                    e.check,
+                    e.file.as_deref().unwrap_or(""),
+                    e.reason
+                );
             }
             println!(
                 "{}",

@@ -1,10 +1,10 @@
-//! `hector explain <file>` — read-only gate applicability report.
+//! `hector explain <file>` — read-only check applicability report.
 //!
-//! For each gate in the resolved config (BTreeMap id order), reports whether
-//! the gate's file globs apply to the given path (`match`) or not (`skip`).
-//! `human` (default) prints one line per gate
-//! `<gate-id>  <match|skip>  files=<globs>  run=<run>`; `json` prints an array
-//! of `{ gate, status, files, run }` objects. No gate logic is executed.
+//! For each check in the resolved config (BTreeMap id order), reports whether
+//! the check's file globs apply to the given path (`match`) or not (`skip`).
+//! `human` (default) prints one line per check
+//! `<check-id>  <match|skip>  files=<globs>  run=<run>`; `json` prints an array
+//! of `{ check, status, files, run }` objects. No check logic is executed.
 //! Errors go to stderr; exit 1.
 
 use crate::cli::OutputFormat;
@@ -15,14 +15,14 @@ use std::path::Path;
 
 #[derive(Serialize)]
 struct ExplainEntry<'a> {
-    gate: &'a str,
+    check: &'a str,
     status: &'static str,
     files: &'a [String],
     run: &'a str,
 }
 
-fn status_for(engine: &HectorEngine, gate_id: &str, file: &Path) -> &'static str {
-    if engine.gate_matches_path(gate_id, file) {
+fn status_for(engine: &HectorEngine, check_id: &str, file: &Path) -> &'static str {
+    if engine.gate_matches_path(check_id, file) {
         "match"
     } else {
         "skip"
@@ -45,22 +45,22 @@ pub fn run(file: &Path, format: OutputFormat, config: &Path) -> Result<i32> {
 }
 
 fn print_human(engine: &HectorEngine, file: &Path) {
-    for (id, gate) in engine.gates() {
+    for (id, check) in engine.checks() {
         let status = status_for(engine, id, file);
-        let files = gate.files.join(",");
-        println!("{id}  {status}  files={files}  run={}", gate.run);
+        let files = check.files.join(",");
+        println!("{id}  {status}  files={files}  run={}", check.run);
     }
 }
 
 fn print_json(engine: &HectorEngine, file: &Path) -> Result<()> {
     let entries: Vec<ExplainEntry<'_>> = engine
-        .gates()
+        .checks()
         .iter()
-        .map(|(id, gate)| ExplainEntry {
-            gate: id,
+        .map(|(id, check)| ExplainEntry {
+            check: id,
             status: status_for(engine, id, file),
-            files: &gate.files,
-            run: &gate.run,
+            files: &check.files,
+            run: &check.run,
         })
         .collect();
     println!("{}", serde_json::to_string_pretty(&entries)?);

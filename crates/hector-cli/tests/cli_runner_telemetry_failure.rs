@@ -20,7 +20,7 @@ fn telemetry_failure_warns_to_stderr() {
     let cfg = dir.path().join(".hector.yml");
     fs::write(
         &cfg,
-        "gates:\n  noop:\n    files: [\"*.txt\"]\n    run: \"true\"\n",
+        "checks:\n  noop:\n    files: [\"*.txt\"]\n    run: \"true\"\n",
     )
     .unwrap();
 

@@ -72,14 +72,14 @@ fn hector_author_skill_is_retired() {
 }
 
 #[test]
-fn runtime_skill_describes_the_gates_verdict_shape() {
+fn runtime_skill_describes_the_checks_verdict_shape() {
     let body = read("adapters/claude-code/skills/hector/SKILL.md");
     assert!(
         body.contains("blocks"),
         "hector/SKILL.md must describe the `blocks` verdict array"
     );
     assert!(
-        body.contains("\"gate\""),
-        "hector/SKILL.md must key a block by `gate`"
+        body.contains("\"check\""),
+        "hector/SKILL.md must key a block by `check`"
     );
 }

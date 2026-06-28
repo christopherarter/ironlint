@@ -9,7 +9,7 @@ fn trust_writes_a_store_entry() {
     let cfg = proj.path().join(".hector.yml");
     fs::write(
         &cfg,
-        "gates:\n  g:\n    files: \"*.rs\"\n    run: \"true\"\n",
+        "checks:\n  g:\n    files: \"*.rs\"\n    run: \"true\"\n",
     )
     .unwrap();
 
@@ -60,7 +60,7 @@ fn unblessed_config_check_exits_1() {
     let cfg = proj.path().join(".hector.yml");
     fs::write(
         &cfg,
-        "gates:\n  g:\n    files: \"*.rs\"\n    run: \"exit 0\"\n",
+        "checks:\n  g:\n    files: \"*.rs\"\n    run: \"exit 0\"\n",
     )
     .unwrap();
     let target = proj.path().join("a.rs");
@@ -79,10 +79,10 @@ fn unblessed_config_check_exits_1() {
         .stderr(predicates::str::contains("not trusted"));
 }
 
-/// After `trust`, `check` admits the config and actually runs its gates — not
-/// a vacuous exit 0. A blocking gate yields exit 2, which is only reachable if
-/// trust passed AND the gate executed to its verdict (an untrusted config would
-/// exit 1; a config whose gate never ran would exit 0).
+/// After `trust`, `check` admits the config and actually runs its checks — not
+/// a vacuous exit 0. A blocking check yields exit 2, which is only reachable if
+/// trust passed AND the check executed to its verdict (an untrusted config would
+/// exit 1; a config whose check never ran would exit 0).
 #[test]
 fn blessed_config_check_runs() {
     let proj = tempfile::tempdir().unwrap();
@@ -90,7 +90,7 @@ fn blessed_config_check_runs() {
     let cfg = proj.path().join(".hector.yml");
     fs::write(
         &cfg,
-        "gates:\n  g:\n    files: \"*.rs\"\n    run: \"exit 2\"\n",
+        "checks:\n  g:\n    files: \"*.rs\"\n    run: \"exit 2\"\n",
     )
     .unwrap();
     let target = proj.path().join("a.rs");
@@ -116,15 +116,15 @@ fn blessed_config_check_runs() {
         .code(2);
 }
 
-/// Editing a gate script after blessing revokes trust → check exits 1.
+/// Editing a check script after blessing revokes trust → check exits 1.
 #[test]
-fn editing_gate_after_bless_blocks_check() {
+fn editing_check_after_bless_blocks_check() {
     let proj = tempfile::tempdir().unwrap();
     let xdg = tempfile::tempdir().unwrap();
     let cfg = proj.path().join(".hector.yml");
     fs::write(
         &cfg,
-        "gates:\n  g:\n    files: \"*.rs\"\n    run: \".hector/gates/g.sh\"\n",
+        "checks:\n  g:\n    files: \"*.rs\"\n    run: \".hector/gates/g.sh\"\n",
     )
     .unwrap();
     let gates = proj.path().join(".hector/gates");

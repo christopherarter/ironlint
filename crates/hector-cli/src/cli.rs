@@ -35,10 +35,10 @@ pub enum Command {
         format: OutputFormat,
         #[arg(long, default_value = ".hector.yml")]
         config: PathBuf,
-        /// Evaluate only this gate id. Repeatable; multiple flags OR'd.
-        #[arg(long = "gate", action = clap::ArgAction::Append)]
-        gates: Vec<String>,
-        /// What triggered this check, surfaced to gates as $HECTOR_EVENT.
+        /// Evaluate only this check id. Repeatable; multiple flags OR'd.
+        #[arg(long = "check", action = clap::ArgAction::Append)]
+        checks: Vec<String>,
+        /// What triggered this check, surfaced to checks as $HECTOR_EVENT.
         /// Restricted to the four ABI values; an unknown value is rejected
         /// at the arg layer so typos never reach `$HECTOR_EVENT`.
         #[arg(
@@ -107,9 +107,9 @@ pub enum Command {
         #[arg(long, default_value = "human")]
         format: OutputFormat,
     },
-    /// Show which gates apply to `<file>` and their run commands.
+    /// Show which checks apply to `<file>` and their run commands.
     ///
-    /// Read-only — no gate runs, no telemetry is written.
+    /// Read-only — no check runs, no telemetry is written.
     Explain {
         /// Path to inspect. Relative to cwd.
         file: PathBuf,
@@ -118,9 +118,9 @@ pub enum Command {
         #[arg(long, default_value = ".hector.yml")]
         config: PathBuf,
     },
-    /// Print the post-extends merged gate set.
+    /// Print the post-extends merged check set.
     ///
-    /// Read-only. Does not run any gate. Default format prints each gate
+    /// Read-only. Does not run any check. Default format prints each check
     /// with its files glob(s) and run command, annotated by origin.
     ShowResolvedConfig {
         #[arg(long, default_value = ".hector.yml")]

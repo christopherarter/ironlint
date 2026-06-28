@@ -1,5 +1,5 @@
 //! Origin tracking on the post-extends merge. The walker must attribute
-//! every gate to the file it was defined in, with local definitions winning
+//! every check to the file it was defined in, with local definitions winning
 //! on collision (matching `resolve`'s merge semantics).
 
 use hector_core::config::extends::resolve_with_origin;
@@ -16,20 +16,20 @@ fn origin_map_attributes_each_gate_to_its_defining_file() {
     let parent = dir.path().join("parent.yml");
     write(
         &parent,
-        "gates:\n  inherited:\n    files: \"**/*.txt\"\n    run: \"exit 0\"\n  overridden:\n    files: \"**/*.txt\"\n    run: \"exit 0\"\n",
+        "checks:\n  inherited:\n    files: \"**/*.txt\"\n    run: \"exit 0\"\n  overridden:\n    files: \"**/*.txt\"\n    run: \"exit 0\"\n",
     );
     let child = dir.path().join(".hector.yml");
     write(
         &child,
-        "extends: [\"parent.yml\"]\ngates:\n  local:\n    files: \"**/*.md\"\n    run: \"exit 0\"\n  overridden:\n    files: \"**/*.ts\"\n    run: \"exit 0\"\n",
+        "extends: [\"parent.yml\"]\nchecks:\n  local:\n    files: \"**/*.md\"\n    run: \"exit 0\"\n  overridden:\n    files: \"**/*.ts\"\n    run: \"exit 0\"\n",
     );
 
     let (cfg, origins) = resolve_with_origin(&child).unwrap();
 
-    assert_eq!(cfg.gates.len(), 3, "merged gate count");
+    assert_eq!(cfg.checks.len(), 3, "merged check count");
     assert_eq!(
-        cfg.gates["overridden"].run, "exit 0",
-        "local gate wins on collision"
+        cfg.checks["overridden"].run, "exit 0",
+        "local check wins on collision"
     );
 
     let canon_child: PathBuf = child.canonicalize().unwrap();
@@ -49,15 +49,15 @@ fn origin_map_records_transitive_grandparent() {
     let grand = dir.path().join("grand.yml");
     write(
         &grand,
-        "gates:\n  from-grand:\n    files: \"**/*.rs\"\n    run: \"exit 0\"\n",
+        "checks:\n  from-grand:\n    files: \"**/*.rs\"\n    run: \"exit 0\"\n",
     );
     let parent = dir.path().join("parent.yml");
-    write(&parent, "extends: [\"grand.yml\"]\ngates: {}\n");
+    write(&parent, "extends: [\"grand.yml\"]\nchecks: {}\n");
     let child = dir.path().join(".hector.yml");
-    write(&child, "extends: [\"parent.yml\"]\ngates: {}\n");
+    write(&child, "extends: [\"parent.yml\"]\nchecks: {}\n");
 
     let (cfg, origins) = resolve_with_origin(&child).unwrap();
-    assert_eq!(cfg.gates.len(), 1);
+    assert_eq!(cfg.checks.len(), 1);
     assert_eq!(
         origins.get("from-grand").unwrap(),
         &grand.canonicalize().unwrap()

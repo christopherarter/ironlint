@@ -10,7 +10,7 @@ fn cli_check_loads_engine_exactly_once() {
     let cfg_path = tmp.path().join(".hector.yml");
     fs::write(
         &cfg_path,
-        "gates:\n  noop:\n    files: [\"*\"]\n    run: \"true\"\n",
+        "checks:\n  noop:\n    files: [\"*\"]\n    run: \"true\"\n",
     )
     .unwrap();
     let src = tmp.path().join("x.txt");

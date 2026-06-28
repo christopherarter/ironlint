@@ -1,19 +1,19 @@
-//! End-to-end coverage for `hector show-resolved-config` (gates model).
+//! End-to-end coverage for `hector show-resolved-config` (checks model).
 //!
 //! Default output format (from show_resolved_config.rs) is TSV — one
-//! tab-separated row per gate:
-//!   gate_id<TAB>origin<TAB>files(comma-joined)<TAB>run
+//! tab-separated row per check:
+//!   check_id<TAB>origin<TAB>files(comma-joined)<TAB>run
 
 use assert_cmd::Command;
 use tempfile::tempdir;
 
 #[test]
-fn show_resolved_config_default_tsv_row_per_gate() {
+fn show_resolved_config_default_tsv_row_per_check() {
     let dir = tempdir().unwrap();
     let cfg = dir.path().join(".hector.yml");
     std::fs::write(
         &cfg,
-        "gates:\n  no-todo:\n    files: [\"*.rs\", \"*.txt\"]\n    run: \"grep -q TODO && exit 2 || exit 0\"\n",
+        "checks:\n  no-todo:\n    files: [\"*.rs\", \"*.txt\"]\n    run: \"grep -q TODO && exit 2 || exit 0\"\n",
     )
     .unwrap();
 
@@ -37,7 +37,7 @@ fn show_resolved_config_default_tsv_row_per_gate() {
         4,
         "TSV row must be 4 tab-separated columns: {line:?}"
     );
-    assert_eq!(cols[0], "no-todo", "col 1 is the gate id");
+    assert_eq!(cols[0], "no-todo", "col 1 is the check id");
     assert!(
         cols[1].contains(".hector.yml"),
         "col 2 (origin) must reference the config file: {line:?}"
@@ -53,12 +53,12 @@ fn show_resolved_config_default_tsv_row_per_gate() {
 }
 
 #[test]
-fn show_resolved_config_lists_multiple_gates() {
+fn show_resolved_config_lists_multiple_checks() {
     let dir = tempdir().unwrap();
     let cfg = dir.path().join(".hector.yml");
     std::fs::write(
         &cfg,
-        "gates:\n  alpha:\n    files: [\"*.rs\"]\n    run: \"true\"\n  beta:\n    files: [\"*.ts\"]\n    run: \"true\"\n",
+        "checks:\n  alpha:\n    files: [\"*.rs\"]\n    run: \"true\"\n  beta:\n    files: [\"*.ts\"]\n    run: \"true\"\n",
     )
     .unwrap();
 
@@ -72,8 +72,8 @@ fn show_resolved_config_lists_multiple_gates() {
         .clone();
     let stdout = String::from_utf8_lossy(&out);
 
-    assert!(stdout.contains("alpha"), "must show alpha gate: {stdout}");
-    assert!(stdout.contains("beta"), "must show beta gate: {stdout}");
+    assert!(stdout.contains("alpha"), "must show alpha check: {stdout}");
+    assert!(stdout.contains("beta"), "must show beta check: {stdout}");
 }
 
 #[test]

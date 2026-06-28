@@ -2,12 +2,12 @@ use assert_cmd::Command;
 use tempfile::tempdir;
 
 #[test]
-fn validate_accepts_valid_gates_config() {
+fn validate_accepts_valid_checks_config() {
     let dir = tempdir().unwrap();
     let cfg = dir.path().join(".hector.yml");
     std::fs::write(
         &cfg,
-        "gates:\n  g:\n    files: [\"**/*.rs\"]\n    run: \"true\"\n",
+        "checks:\n  g:\n    files: [\"**/*.rs\"]\n    run: \"true\"\n",
     )
     .unwrap();
     let out = Command::cargo_bin("hector")
@@ -21,18 +21,18 @@ fn validate_accepts_valid_gates_config() {
     let s = String::from_utf8_lossy(&out);
     assert!(s.contains("ok"), "validate must print ok on success: {s}");
     assert!(
-        s.contains("1 gate(s)") || s.contains("1 gate"),
-        "validate must print gate count: {s}"
+        s.contains("1 check(s)") || s.contains("1 check"),
+        "validate must print check count: {s}"
     );
 }
 
 #[test]
-fn validate_accepts_multi_gate_config() {
+fn validate_accepts_multi_check_config() {
     let dir = tempdir().unwrap();
     let cfg = dir.path().join(".hector.yml");
     std::fs::write(
         &cfg,
-        "gates:\n  a:\n    files: [\"*.rs\"]\n    run: \"true\"\n  b:\n    files: [\"*.ts\"]\n    run: \"true\"\n",
+        "checks:\n  a:\n    files: [\"*.rs\"]\n    run: \"true\"\n  b:\n    files: [\"*.ts\"]\n    run: \"true\"\n",
     )
     .unwrap();
     let out = Command::cargo_bin("hector")
@@ -45,8 +45,8 @@ fn validate_accepts_multi_gate_config() {
         .clone();
     let s = String::from_utf8_lossy(&out);
     assert!(
-        s.contains("2 gate(s)") || s.contains("2 gate"),
-        "validate must print gate count: {s}"
+        s.contains("2 check(s)") || s.contains("2 check"),
+        "validate must print check count: {s}"
     );
 }
 
@@ -64,15 +64,15 @@ fn validate_rejects_legacy_rules_config() {
 }
 
 #[test]
-fn validate_rejects_unknown_gate_field() {
-    // `exclude:` was a real field in the pre-0.3 engine model; a 0.3 gate is
+fn validate_rejects_unknown_check_field() {
+    // `exclude:` was a real field in the pre-0.3 engine model; a 0.4 check is
     // exactly `{ files, run }`. A stale/typo'd field must hard-error at validate
     // time (exit 1) and name the offending field — never be silently dropped.
     let dir = tempdir().unwrap();
     let cfg = dir.path().join(".hector.yml");
     std::fs::write(
         &cfg,
-        "gates:\n  g:\n    files: \"*.ts\"\n    exclude: \"*.test.ts\"\n    run: \"true\"\n",
+        "checks:\n  g:\n    files: \"*.ts\"\n    exclude: \"*.test.ts\"\n    run: \"true\"\n",
     )
     .unwrap();
     let out = Command::cargo_bin("hector")
@@ -94,13 +94,13 @@ fn validate_rejects_unknown_gate_field() {
 #[test]
 fn validate_rejects_run_with_no_executable_content() {
     // A `run:` that collapses to a single `#` comment (the folded-YAML-scalar
-    // footgun) is a gate that silently passes everything. validate must reject
-    // it with exit 1 rather than bless a no-op gate.
+    // footgun) is a check that silently passes everything. validate must reject
+    // it with exit 1 rather than bless a no-op check.
     let dir = tempdir().unwrap();
     let cfg = dir.path().join(".hector.yml");
     std::fs::write(
         &cfg,
-        "gates:\n  g:\n    files: \"*\"\n    run: \"# todo: write this gate\"\n",
+        "checks:\n  g:\n    files: \"*\"\n    run: \"# todo: write this check\"\n",
     )
     .unwrap();
     Command::cargo_bin("hector")
