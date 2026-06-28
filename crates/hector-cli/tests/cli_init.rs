@@ -450,8 +450,10 @@ fn init_npm_workspaces_object_field() {
 #[test]
 fn init_dry_run_plans_skill_installs_for_explicit_harnesses() {
     let dir = tempfile::tempdir().unwrap();
+    let xdg = tempfile::tempdir().unwrap();
     let out = assert_cmd::Command::cargo_bin("hector")
         .unwrap()
+        .env("XDG_CONFIG_HOME", xdg.path())
         .args([
             "init",
             "--dir",
@@ -483,8 +485,10 @@ fn init_dry_run_plans_skill_installs_for_explicit_harnesses() {
 #[test]
 fn init_dedups_opencode_skill_when_claude_also_selected() {
     let dir = tempfile::tempdir().unwrap();
+    let xdg = tempfile::tempdir().unwrap();
     let out = assert_cmd::Command::cargo_bin("hector")
         .unwrap()
+        .env("XDG_CONFIG_HOME", xdg.path())
         .args([
             "init",
             "--dir",
