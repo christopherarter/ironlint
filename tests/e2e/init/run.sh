@@ -76,6 +76,15 @@ exists "$PROJ_DIR/.pi/extensions/.hector-adapter.json" "pi sidecar present"
 exists "$PROJ_DIR/.opencode/plugins/hector.ts" "opencode plugin hector.ts"
 exists "$PROJ_DIR/.opencode/plugins/.hector-adapter.json" "opencode sidecar present"
 
+# Authoring skill: hector init installs hector-config/SKILL.md into each wired
+# agent's skills dir (project-local; claude-code excluded so opencode is not
+# deduped here).
+exists "$PROJ_DIR/.reasonix/skills/hector-config/SKILL.md" "reasonix authoring skill"
+exists "$PROJ_DIR/.pi/skills/hector-config/SKILL.md" "pi authoring skill"
+exists "$PROJ_DIR/.opencode/skills/hector-config/SKILL.md" "opencode authoring skill"
+contains "$PROJ_DIR/.pi/skills/hector-config/SKILL.md" "name: hector-config" "pi skill has frontmatter"
+exists "$PROJ_DIR/.pi/skills/hector-config/.hector-adapter.json" "pi skill sidecar"
+
 # init itself: scaffolded + blessed config.
 exists "$PROJ_DIR/.hector.yml" "scaffolded .hector.yml"
 exists "$HOME_DIR/.config/hector/trust.json" "blessed trust.json"
