@@ -1,6 +1,6 @@
 # Hector's own policy, in the 0.4 checks model. Dogfooded by scripts/ci-dogfood.sh.
 #
-# Checks have no severity — every check blocks (exit 2). The pre-0.3
+# Checks have no severity — any nonzero exit (1–125) blocks. The pre-0.3
 # `severity: warning` rules (no-unwrap-in-src / no-panic-in-src /
 # no-eprintln-debug) are therefore dropped, not downgraded: hector's own
 # test-heavy src legitimately uses .unwrap()/panic! in #[cfg(test)] code, so a
@@ -10,10 +10,10 @@
 checks:
   no-todo-in-src:
     files: crates/*/src/**/*.rs
-    run: "grep -nE 'todo!\\(' \"$HECTOR_FILE\"; case $? in 0) exit 2;; 1) exit 0;; *) exit $?;; esac"
+    run: '! grep -nE "todo!\(" "$HECTOR_FILE"'
   no-unimplemented-in-src:
     files: crates/*/src/**/*.rs
-    run: "grep -nE 'unimplemented!\\(' \"$HECTOR_FILE\"; case $? in 0) exit 2;; 1) exit 0;; *) exit $?;; esac"
+    run: '! grep -nE "unimplemented!\(" "$HECTOR_FILE"'
   no-dbg-in-src:
     files: crates/*/src/**/*.rs
-    run: "grep -nE 'dbg!\\(' \"$HECTOR_FILE\"; case $? in 0) exit 2;; 1) exit 0;; *) exit $?;; esac"
+    run: '! grep -nE "dbg!\(" "$HECTOR_FILE"'
