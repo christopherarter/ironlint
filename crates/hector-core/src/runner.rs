@@ -113,7 +113,16 @@ impl Collected {
     /// Fold one check's status into the running totals. `collect_explain`
     /// gates the per-check explain row; skipped checks contribute only an
     /// explain row (no verdict entry, no telemetry record).
-    fn absorb(&mut self, check_id: &str, file: &str, status: CheckStatus, collect_explain: bool) {
+    ///
+    /// `file` is `None` for set-level (pre-commit) invocations — the
+    /// resulting `Block.file` / `GateError.file` will be `null` in the JSON.
+    fn absorb(
+        &mut self,
+        check_id: &str,
+        file: Option<&str>,
+        status: CheckStatus,
+        collect_explain: bool,
+    ) {
         let outcome = match status {
             CheckStatus::Skipped(reason) => ExplainOutcome::Skipped { reason },
             CheckStatus::Pass(elapsed) => {
@@ -144,7 +153,7 @@ impl Collected {
                 self.blocks.push(Block {
                     check: check_id.to_string(),
                     step: step.clone(),
-                    file: Some(file.to_string()),
+                    file: file.map(|f| f.to_string()),
                     message,
                 });
                 self.records.push(PerCheckRecord {
@@ -164,7 +173,7 @@ impl Collected {
                 self.errors.push(GateError {
                     check: check_id.to_string(),
                     step: step.clone(),
-                    file: Some(file.to_string()),
+                    file: file.map(|f| f.to_string()),
                     reason: reason.clone(),
                 });
                 self.records.push(PerCheckRecord {
@@ -197,6 +206,18 @@ fn resolve_timeout(config: &Config) -> Duration {
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(config.execution.timeout_secs);
     Duration::from_secs(secs.max(1))
+}
+
+/// Map the current event string to a [`Lifecycle`] variant for the `on:` filter.
+///
+/// The CLI value_parser guarantees only `write` and `pre-commit` reach the
+/// engine; everything else (e.g. `manual` in tests) maps to `Write` so
+/// existing tests that don't set an event still run write-subscribed checks.
+fn event_lifecycle(event: &str) -> crate::config::Lifecycle {
+    match event {
+        "pre-commit" => crate::config::Lifecycle::PreCommit,
+        _ => crate::config::Lifecycle::Write,
+    }
 }
 
 /// Canonicalize `path` if it exists; otherwise walk up to the deepest existing
@@ -397,7 +418,15 @@ impl HectorEngine {
     }
 
     /// Why this check won't run for this file, or `None` if it should run.
-    fn skip_reason(&self, check_id: &str, match_path: &Path, content: &str) -> Option<String> {
+    ///
+    /// Checks in order: check-id filter → scope → disable directive → `on:` lifecycle.
+    fn skip_reason(
+        &self,
+        check_id: &str,
+        check: &Check,
+        match_path: &Path,
+        content: &str,
+    ) -> Option<String> {
         if !self.options.checks.is_empty() && !self.options.checks.contains(check_id) {
             return Some("filtered".to_string());
         }
@@ -407,31 +436,18 @@ impl HectorEngine {
         if crate::disable::is_disabled(content, check_id) {
             return Some("disabled".to_string());
         }
+        if !check.on.contains(&event_lifecycle(&self.options.event)) {
+            return Some("event".to_string());
+        }
         None
     }
 
-    /// Run one check against one file: skip-check, then spawn and classify.
-    fn run_one_check(
-        &self,
-        check_id: &str,
-        check: &Check,
-        abs: &Path,
-        match_path: &Path,
-        content: &str,
-    ) -> CheckStatus {
-        if let Some(reason) = self.skip_reason(check_id, match_path, content) {
-            return CheckStatus::Skipped(reason);
-        }
-        let abs_buf = abs.to_path_buf();
-        let env = GateEnv {
-            file: Some(abs),
-            files: std::slice::from_ref(&abs_buf),
-            root: &self.config_dir,
-            event: &self.options.event,
-        };
+    /// Execute a check's step pipeline against `env` with optional `content` on
+    /// stdin. Fails fast on the first Block or Internal — never panics.
+    fn run_steps(&self, check: &Check, env: &GateEnv, content: Option<&[u8]>) -> CheckStatus {
         let start = Instant::now();
         for step in check.effective_steps() {
-            match run_gate(&step.run, &env, Some(content.as_bytes()), self.timeout) {
+            match run_gate(&step.run, env, content, self.timeout) {
                 GateOutcome::Pass => {}
                 GateOutcome::Block { message } => {
                     let elapsed = start.elapsed().as_millis() as u64;
@@ -455,6 +471,28 @@ impl HectorEngine {
         CheckStatus::Pass(elapsed)
     }
 
+    /// Run one check against one file: skip-check, build env, then run steps.
+    fn run_one_check(
+        &self,
+        check_id: &str,
+        check: &Check,
+        abs: &Path,
+        match_path: &Path,
+        content: &str,
+    ) -> CheckStatus {
+        if let Some(reason) = self.skip_reason(check_id, check, match_path, content) {
+            return CheckStatus::Skipped(reason);
+        }
+        let abs_buf = abs.to_path_buf();
+        let env = GateEnv {
+            file: Some(abs),
+            files: std::slice::from_ref(&abs_buf),
+            root: &self.config_dir,
+            event: &self.options.event,
+        };
+        self.run_steps(check, &env, Some(content.as_bytes()))
+    }
+
     /// Run the loaded checks against `input` and return the verdict.
     pub fn check(&self, input: CheckInput) -> Result<Verdict> {
         self.check_inner(input, false).map(|r| r.verdict)
@@ -464,6 +502,58 @@ impl HectorEngine {
     /// the rows are a by-product of the same dispatch loop, no extra check runs.
     pub fn check_with_explain(&self, input: CheckInput) -> Result<CheckReport> {
         self.check_inner(input, true)
+    }
+
+    /// Pre-commit (run-once) dispatch: run each check **once** over the subset
+    /// of `files` that match its scope, with `$HECTOR_FILES` and empty stdin.
+    ///
+    /// Checks whose `on:` list excludes the current event are skipped. Checks
+    /// with no matching files are skipped. The resulting `Block.file` /
+    /// `GateError.file` are `null` because there is no single primary target.
+    pub fn check_set(&self, files: &[PathBuf]) -> Result<Verdict> {
+        let start = Instant::now();
+        let mut collected = Collected::default();
+
+        for (check_id, check) in &self.config.checks {
+            // Check-id filter (same gate as per-file mode).
+            if !self.options.checks.is_empty() && !self.options.checks.contains(check_id) {
+                continue;
+            }
+            // Lifecycle filter: only run checks subscribed to the current event.
+            if !check.on.contains(&event_lifecycle(&self.options.event)) {
+                continue;
+            }
+            // Scope: compute the subset of `files` this check cares about.
+            let matched: Vec<PathBuf> = files
+                .iter()
+                .filter(|f| self.check_matches_path(check_id, f))
+                .cloned()
+                .collect();
+            if matched.is_empty() {
+                continue;
+            }
+            // Run the check once over the matched set; stdin is closed (None).
+            let env = GateEnv {
+                file: None,
+                files: &matched,
+                root: &self.config_dir,
+                event: &self.options.event,
+            };
+            let status = self.run_steps(check, &env, None);
+            collected.absorb(check_id, None, status, false);
+        }
+
+        let elapsed = start.elapsed().as_millis() as u64;
+        let verdict = Verdict::from_outcomes(
+            collected.blocks,
+            collected.errors,
+            collected.passed,
+            elapsed,
+        );
+        // Log telemetry as a set-level invocation; `file` is empty (no single target).
+        self.append_check_log("", verdict.status, verdict.elapsed_ms, collected.records);
+
+        Ok(verdict)
     }
 
     /// Central orchestration: resolve the path, run every check, fold the
@@ -483,7 +573,7 @@ impl HectorEngine {
         let mut collected = Collected::default();
         for (id, check) in &self.config.checks {
             let status = self.run_one_check(id, check, &abs, &match_path, &content);
-            collected.absorb(id, &file_str, status, collect_explain);
+            collected.absorb(id, Some(&file_str), status, collect_explain);
         }
 
         let elapsed = start.elapsed().as_millis() as u64;
@@ -536,12 +626,46 @@ impl HectorEngine {
 mod gate_dispatch_tests {
     use super::*;
     use std::io::Write;
+    use tempfile::TempDir;
 
     fn write(dir: &Path, name: &str, body: &str) -> PathBuf {
         let p = dir.join(name);
         let mut f = std::fs::File::create(&p).unwrap();
         f.write_all(body.as_bytes()).unwrap();
         p
+    }
+
+    // --- Phase 4 test helpers ---
+
+    fn write_config(dir: &TempDir, body: &str) {
+        std::fs::write(dir.path().join(".hector.yml"), body).unwrap();
+    }
+
+    fn load_with_event(dir: &TempDir, event: &str) -> HectorEngine {
+        HectorEngine::builder()
+            .with_options(CheckOptions {
+                event: event.to_string(),
+                ..Default::default()
+            })
+            .load(&dir.path().join(".hector.yml"))
+            .unwrap()
+    }
+
+    fn file_input(dir: &TempDir, name: &str, content: &str) -> CheckInput {
+        let path = dir.path().join(name);
+        std::fs::write(&path, content).unwrap();
+        CheckInput::File {
+            path,
+            content: content.to_string(),
+        }
+    }
+
+    fn touch(dir: &TempDir, name: &str) {
+        std::fs::write(dir.path().join(name), "").unwrap();
+    }
+
+    fn abs(dir: &TempDir, name: &str) -> PathBuf {
+        dir.path().join(name)
     }
 
     #[test]
@@ -740,6 +864,63 @@ mod gate_dispatch_tests {
             .unwrap();
         assert_eq!(v.status, Status::Pass);
         assert!(v.blocks.is_empty());
+    }
+
+    // --- Phase 4: on: filter + pre-commit run-once ---
+
+    #[test]
+    fn on_filter_skips_write_only_check_at_pre_commit() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(
+            &dir,
+            "checks:\n  g:\n    files: \"*\"\n    run: \"exit 2\"\n",
+        ); // on defaults to [write]
+        let engine = load_with_event(&dir, "pre-commit");
+        let v = engine.check(file_input(&dir, "x.txt", "b")).unwrap();
+        assert_eq!(
+            v.status,
+            Status::Pass,
+            "write-only check must not run at pre-commit"
+        );
+    }
+
+    #[test]
+    fn on_filter_runs_check_subscribed_to_event() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(
+            &dir,
+            "checks:\n  g:\n    files: \"*\"\n    on: [pre-commit]\n    run: \"exit 2\"\n",
+        );
+        let engine = load_with_event(&dir, "pre-commit");
+        let v = engine.check(file_input(&dir, "x.txt", "b")).unwrap();
+        assert_eq!(
+            v.status,
+            Status::Block,
+            "a pre-commit check must run at pre-commit"
+        );
+    }
+
+    #[test]
+    fn pre_commit_runs_check_once_over_the_set() {
+        let dir = tempfile::tempdir().unwrap();
+        // Counter: each run appends one byte; assert exactly 1 byte total.
+        write_config(
+            &dir,
+            "checks:\n  g:\n    files: \"*.rs\"\n    on: [pre-commit]\n    run: \"printf x >> $HECTOR_ROOT/runs.txt; test $(grep -c x $HECTOR_ROOT/runs.txt 2>/dev/null || echo 0) -le 1\"\n",
+        );
+        touch(&dir, "a.rs");
+        touch(&dir, "b.rs");
+        let engine = load_with_event(&dir, "pre-commit");
+        let v = engine
+            .check_set(&[abs(&dir, "a.rs"), abs(&dir, "b.rs")])
+            .unwrap();
+        let runs = std::fs::read_to_string(dir.path().join("runs.txt")).unwrap_or_default();
+        assert_eq!(
+            runs.len(),
+            1,
+            "check must run exactly once over the set, got {runs:?}"
+        );
+        assert_eq!(v.status, Status::Pass);
     }
 
     // --- Phase 2: steps fail-fast ---
