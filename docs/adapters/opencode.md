@@ -88,7 +88,7 @@ Once the package is published, you can add it to a project's `opencode.json` and
 A few edits still fall outside the adapter. Cover them by running `hector check` in CI:
 
 - **Multi-file `apply_patch` edits.** OpenCode's batch patch tool bundles several files into one call, and the adapter does not split it apart. Use the `edit` and `write` tools for changes you want gated.
-- **Skills.** The [policy skills](README.md#managing-policy-from-inside-the-agent) (`hector-config`, `/hector-init`, `/hector-review`) are not wired into OpenCode yet. `hector init` will install `hector-config` into `.opencode/skills/` once skill-discovery settles; `/hector-init` and `/hector-review` follow from the Claude Code plugin. Until then, run the CLI directly: `hector init`, then edit `.hector.yml` by hand.
+- **Skills.** `hector init` installs the `hector-config` authoring skill into `.opencode/skills/hector-config/SKILL.md` today — the agent can author and fix gates immediately; `hector schema` prints the same guide on demand. `/hector-init` and `/hector-review` are Claude Code plugin skills and are not ported to OpenCode.
 
 ## When edits aren't being gated
 
@@ -120,7 +120,7 @@ The two adapters share the same contract: shell out to `hector`, gate edits on e
 |--------|-------------|----------|
 | Language | bash + `jq` | TypeScript on Bun |
 | Reject an edit | `PostToolUse` exit `2` | `tool.execute.before` throw |
-| Skills | three shipped (plugin) | not ported yet |
+| Skills | `hector-config` (via `hector init`) + `/hector-init`, `/hector-review` (plugin) | `hector-config` (via `hector init`) |
 
 ## See also
 
