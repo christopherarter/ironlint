@@ -48,7 +48,10 @@ fn print_human(engine: &HectorEngine, file: &Path) {
     for (id, check) in engine.checks() {
         let status = status_for(engine, id, file);
         let files = check.files.join(",");
-        println!("{id}  {status}  files={files}  run={}", check.run);
+        println!(
+            "{id}  {status}  files={files}  run={}",
+            check.run.as_deref().unwrap_or("(steps)")
+        );
     }
 }
 
@@ -60,7 +63,7 @@ fn print_json(engine: &HectorEngine, file: &Path) -> Result<()> {
             check: id,
             status: status_for(engine, id, file),
             files: &check.files,
-            run: &check.run,
+            run: check.run.as_deref().unwrap_or("(steps)"),
         })
         .collect();
     println!("{}", serde_json::to_string_pretty(&entries)?);

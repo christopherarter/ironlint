@@ -40,7 +40,11 @@ fn extends_local_gate_wins_on_collision() {
         "extends: [\"parent.yml\"]\nchecks:\n  shared:\n    files: \"**/*.ts\"\n    run: \"echo child\"\n",
     );
     let cfg = parse_file_with_extends(&child).expect("parse");
-    assert_eq!(cfg.checks["shared"].run, "echo child", "local check wins");
+    assert_eq!(
+        cfg.checks["shared"].run,
+        Some("echo child".to_string()),
+        "local check wins"
+    );
 }
 
 #[test]

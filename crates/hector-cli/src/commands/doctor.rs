@@ -175,8 +175,10 @@ fn check_script_paths(ctx: &DoctorContext) -> CheckResult {
     };
     let mut bad: Vec<String> = Vec::new();
     for (id, check) in &cfg.checks {
-        if let Some(issue) = check_run_path(&ctx.dir, id, &check.run) {
-            bad.push(issue);
+        for step in check.effective_steps() {
+            if let Some(issue) = check_run_path(&ctx.dir, id, &step.run) {
+                bad.push(issue);
+            }
         }
     }
     if bad.is_empty() {

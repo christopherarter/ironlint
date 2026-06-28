@@ -47,7 +47,7 @@ fn build_rows(cfg: &Config, origins: &BTreeMap<String, PathBuf>) -> Vec<Resolved
                 .map(|p| p.display().to_string())
                 .unwrap_or_default(),
             files: check.files.clone(),
-            run: check.run.clone(),
+            run: check.run.clone().unwrap_or_default(),
         })
         .collect()
 }

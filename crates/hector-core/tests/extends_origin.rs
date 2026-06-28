@@ -28,7 +28,8 @@ fn origin_map_attributes_each_gate_to_its_defining_file() {
 
     assert_eq!(cfg.checks.len(), 3, "merged check count");
     assert_eq!(
-        cfg.checks["overridden"].run, "exit 0",
+        cfg.checks["overridden"].run,
+        Some("exit 0".to_string()),
         "local check wins on collision"
     );
 

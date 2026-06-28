@@ -36,17 +36,62 @@ impl Default for ExecutionConfig {
     }
 }
 
-/// A single check: match `files`, run `run`, read its exit code.
+/// When a check runs: `write` (on file edit) or `pre-commit` (on commit).
+/// Defaults to `[write]` when omitted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Lifecycle {
+    Write,
+    PreCommit,
+}
+
+fn default_on() -> Vec<Lifecycle> {
+    vec![Lifecycle::Write]
+}
+
+/// One step in a check's pipeline: an optional label and a shell command.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Step {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub run: String,
+}
+
+/// A single check: files + (run xor steps) + on + name.
 ///
-/// `run` is handed to the shell verbatim — no `{file}`/`{path}` templating.
-/// The path under check arrives as `$HECTOR_FILE`; proposed content arrives
-/// on stdin. `run` may be an inline command or a path to a script.
+/// `run` is one-step sugar: `run: "cmd"` is equivalent to `steps: [{run: "cmd"}]`.
+/// `on` defaults to `[write]`. The parser validates that exactly one of `run`
+/// or `steps` is set. The path under check arrives as `$HECTOR_FILE`; proposed
+/// content arrives on stdin. Commands are handed to `sh -c` verbatim.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Check {
     #[serde(deserialize_with = "files_one_or_many")]
     pub files: Vec<String>,
-    pub run: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steps: Option<Vec<Step>>,
+    #[serde(default = "default_on")]
+    pub on: Vec<Lifecycle>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+impl Check {
+    /// The check's work as a step list. `run` is one-step sugar.
+    /// Parser validation guarantees exactly one of run/steps is set.
+    pub fn effective_steps(&self) -> Vec<Step> {
+        if let Some(run) = &self.run {
+            vec![Step {
+                name: None,
+                run: run.clone(),
+            }]
+        } else {
+            self.steps.clone().unwrap_or_default()
+        }
+    }
 }
 
 /// Accept either a single glob string or a list of globs for `files`.
@@ -83,7 +128,7 @@ mod tests {
         .unwrap();
         let g = cfg.checks.get("biome").unwrap();
         assert_eq!(g.files, vec!["**/*.ts".to_string()]);
-        assert_eq!(g.run, "biome check");
+        assert_eq!(g.run, Some("biome check".to_string()));
     }
 
     #[test]
@@ -115,5 +160,48 @@ mod tests {
         let cfg: Config =
             serde_yaml::from_str("checks:\n  g:\n    files: \"*\"\n    run: \"true\"\n").unwrap();
         assert!(cfg.extends.is_empty());
+    }
+
+    // --- Phase 2: steps / on / name ---
+
+    #[test]
+    fn on_defaults_to_write() {
+        let cfg: Config =
+            serde_yaml::from_str("checks:\n  g:\n    files: \"*\"\n    run: \"true\"\n").unwrap();
+        assert_eq!(cfg.checks["g"].on, vec![Lifecycle::Write]);
+    }
+
+    #[test]
+    fn lifecycle_parses_kebab_pre_commit() {
+        let cfg: Config = serde_yaml::from_str(
+            "checks:\n  g:\n    files: \"*\"\n    run: \"true\"\n    on: [write, pre-commit]\n",
+        )
+        .unwrap();
+        assert_eq!(
+            cfg.checks["g"].on,
+            vec![Lifecycle::Write, Lifecycle::PreCommit]
+        );
+    }
+
+    #[test]
+    fn run_normalizes_to_one_step() {
+        let cfg: Config =
+            serde_yaml::from_str("checks:\n  g:\n    files: \"*\"\n    run: \"rustfmt\"\n")
+                .unwrap();
+        let steps = cfg.checks["g"].effective_steps();
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].run, "rustfmt");
+    }
+
+    #[test]
+    fn steps_list_parses_with_names() {
+        let cfg: Config = serde_yaml::from_str(
+            "checks:\n  g:\n    files: \"*\"\n    steps:\n      - name: a\n        run: \"true\"\n      - run: \"false\"\n",
+        )
+        .unwrap();
+        let steps = cfg.checks["g"].effective_steps();
+        assert_eq!(steps.len(), 2);
+        assert_eq!(steps[0].name.as_deref(), Some("a"));
+        assert_eq!(steps[1].name, None);
     }
 }

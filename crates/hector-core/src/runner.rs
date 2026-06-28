@@ -87,8 +87,16 @@ pub struct HectorEngine {
 enum CheckStatus {
     Skipped(String),
     Pass(u64),
-    Block(String, u64),
-    Error(String, u64),
+    Block {
+        step: Option<String>,
+        message: String,
+        elapsed: u64,
+    },
+    Error {
+        step: Option<String>,
+        reason: String,
+        elapsed: u64,
+    },
 }
 
 /// Folded outcomes across every check for one file.
@@ -119,7 +127,11 @@ impl Collected {
                 });
                 ExplainOutcome::Pass
             }
-            CheckStatus::Block(message, elapsed) => {
+            CheckStatus::Block {
+                step,
+                message,
+                elapsed,
+            } => {
                 // Spec §3: a check that exits 2 with no output still needs a
                 // human-readable message. The check layer (`classify`) has no
                 // check id, so it returns ""; we fill it in here where the id
@@ -131,29 +143,33 @@ impl Collected {
                 };
                 self.blocks.push(Block {
                     check: check_id.to_string(),
-                    step: None,
+                    step: step.clone(),
                     file: Some(file.to_string()),
                     message,
                 });
                 self.records.push(PerCheckRecord {
                     check: check_id.to_string(),
-                    step: None,
+                    step,
                     status: Status::Block,
                     elapsed_ms: elapsed,
                     reason: None,
                 });
                 ExplainOutcome::Fire
             }
-            CheckStatus::Error(reason, elapsed) => {
+            CheckStatus::Error {
+                step,
+                reason,
+                elapsed,
+            } => {
                 self.errors.push(GateError {
                     check: check_id.to_string(),
-                    step: None,
+                    step: step.clone(),
                     file: Some(file.to_string()),
                     reason: reason.clone(),
                 });
                 self.records.push(PerCheckRecord {
                     check: check_id.to_string(),
-                    step: None,
+                    step,
                     status: Status::InternalError,
                     elapsed_ms: elapsed,
                     reason: Some(reason),
@@ -412,13 +428,29 @@ impl HectorEngine {
             event: &self.options.event,
         };
         let start = Instant::now();
-        let outcome = run_gate(&check.run, &env, Some(content.as_bytes()), self.timeout);
-        let elapsed = start.elapsed().as_millis() as u64;
-        match outcome {
-            GateOutcome::Pass => CheckStatus::Pass(elapsed),
-            GateOutcome::Block { message } => CheckStatus::Block(message, elapsed),
-            GateOutcome::Internal(reason) => CheckStatus::Error(reason.as_str(), elapsed),
+        for step in check.effective_steps() {
+            match run_gate(&step.run, &env, Some(content.as_bytes()), self.timeout) {
+                GateOutcome::Pass => {}
+                GateOutcome::Block { message } => {
+                    let elapsed = start.elapsed().as_millis() as u64;
+                    return CheckStatus::Block {
+                        step: step.name.clone(),
+                        message,
+                        elapsed,
+                    };
+                }
+                GateOutcome::Internal(reason) => {
+                    let elapsed = start.elapsed().as_millis() as u64;
+                    return CheckStatus::Error {
+                        step: step.name.clone(),
+                        reason: reason.as_str(),
+                        elapsed,
+                    };
+                }
+            }
         }
+        let elapsed = start.elapsed().as_millis() as u64;
+        CheckStatus::Pass(elapsed)
     }
 
     /// Run the loaded checks against `input` and return the verdict.
@@ -706,5 +738,33 @@ mod gate_dispatch_tests {
             .unwrap();
         assert_eq!(v.status, Status::Pass);
         assert!(v.blocks.is_empty());
+    }
+
+    // --- Phase 2: steps fail-fast ---
+
+    #[test]
+    fn steps_fail_fast_on_first_blocking_step() {
+        // step 1 passes (exit 0), step 2 blocks (exit 2),
+        // step 3 must NOT run. Use a sentinel file to prove step 3 was skipped.
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            ".hector.yml",
+            "checks:\n  g:\n    files: \"*\"\n    steps:\n      - run: \"true\"\n      - name: blocker\n        run: \"echo nope; exit 2\"\n      - run: \"touch ran3.txt\"\n",
+        );
+        let target = write(dir.path(), "x.txt", "body");
+        let engine = HectorEngine::load(&dir.path().join(".hector.yml")).unwrap();
+        let v = engine
+            .check(CheckInput::File {
+                path: target,
+                content: "body".into(),
+            })
+            .unwrap();
+        assert_eq!(v.status, Status::Block);
+        assert_eq!(v.blocks[0].step.as_deref(), Some("blocker"));
+        assert!(
+            !dir.path().join("ran3.txt").exists(),
+            "step 3 ran after a block"
+        );
     }
 }

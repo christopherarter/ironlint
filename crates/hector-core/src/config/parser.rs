@@ -22,13 +22,24 @@ pub fn parse_str(input: &str) -> Result<Config> {
     }
     let cfg: Config = serde_yaml::from_str(input).context("parsing hector config")?;
     for (id, check) in &cfg.checks {
-        if !run_has_executable_content(&check.run) {
-            return Err(anyhow!(
-                "check `{id}` has a `run` with no executable command (only blank or `#` comment \
-                 lines). For a multi-line script use a YAML block scalar (`run: |`); a plain or \
-                 folded (`>`) scalar collapses newlines and can turn the whole script into a \
-                 single comment that silently passes everything."
-            ));
+        match (&check.run, &check.steps) {
+            (Some(_), Some(_)) => {
+                return Err(anyhow!(
+                    "check `{id}` has both `run` and `steps` — use one \
+                     (a single `run` is one-step sugar)"
+                ))
+            }
+            (None, None) => {
+                return Err(anyhow!(
+                    "check `{id}` has neither `run` nor `steps` — a check must do something"
+                ))
+            }
+            (Some(run), None) => guard_run(id, None, run)?,
+            (None, Some(steps)) => {
+                for (i, step) in steps.iter().enumerate() {
+                    guard_run(id, Some(i), &step.run)?;
+                }
+            }
         }
     }
     Ok(cfg)
@@ -50,6 +61,28 @@ fn run_has_executable_content(run: &str) -> bool {
         let trimmed = line.trim();
         !trimmed.is_empty() && !trimmed.starts_with('#')
     })
+}
+
+/// Validate that a `run` string contains at least one executable line.
+///
+/// `step_idx` names the step position when validating inside `steps` (None for
+/// the top-level `run` field). Wraps `run_has_executable_content` and emits a
+/// location-aware error so the author knows exactly which check (and which step)
+/// is broken.
+fn guard_run(id: &str, step_idx: Option<usize>, run: &str) -> anyhow::Result<()> {
+    if !run_has_executable_content(run) {
+        let location = match step_idx {
+            None => format!("check `{id}`"),
+            Some(i) => format!("check `{id}` step {i}"),
+        };
+        return Err(anyhow!(
+            "{location} has a `run` with no executable command (only blank or `#` comment \
+             lines). For a multi-line script use a YAML block scalar (`run: |`); a plain or \
+             folded (`>`) scalar collapses newlines and can turn the whole script into a \
+             single comment that silently passes everything."
+        ));
+    }
+    Ok(())
 }
 
 /// Return the first top-level legacy marker key present, if any.
@@ -191,7 +224,7 @@ mod tests {
             "checks:\n  g:\n    files: \"*.py\"\n    run: |\n      # check\n      grep -q FORBIDDEN && exit 2\n      exit 0\n",
         )
         .unwrap();
-        let run = &cfg.checks["g"].run;
+        let run = cfg.checks["g"].run.as_deref().unwrap();
         assert!(
             run.contains('\n'),
             "block scalar must preserve newlines: {run:?}"
@@ -200,5 +233,37 @@ mod tests {
             run.contains("grep -q FORBIDDEN && exit 2"),
             "real command lines must survive intact: {run:?}"
         );
+    }
+
+    // --- Phase 2: run-xor-steps + per-step validation ---
+
+    #[test]
+    fn rejects_check_with_both_run_and_steps() {
+        let err = parse_str(
+            "checks:\n  g:\n    files: \"*\"\n    run: \"true\"\n    steps:\n      - run: \"true\"\n",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("`g`") && err.contains("run") && err.contains("steps"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn rejects_check_with_neither_run_nor_steps() {
+        let err = parse_str("checks:\n  g:\n    files: \"*\"\n")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("`g`"), "{err}");
+    }
+
+    #[test]
+    fn rejects_step_with_comment_only_run() {
+        let err =
+            parse_str("checks:\n  g:\n    files: \"*\"\n    steps:\n      - run: \"# nope\"\n")
+                .unwrap_err()
+                .to_string();
+        assert!(err.contains("`g`"), "{err}");
     }
 }
