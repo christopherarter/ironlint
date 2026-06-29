@@ -11,3 +11,4 @@ pub mod runner;
 pub mod telemetry;
 pub mod trust;
 pub mod verdict;
+pub mod watch;
