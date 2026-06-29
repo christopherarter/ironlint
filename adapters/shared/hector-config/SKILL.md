@@ -63,6 +63,8 @@ On block, the check's combined stdout+stderr becomes the message the agent sees,
     run: "npx @biomejs/biome check \"$HECTOR_TMPFILE\""
 ```
 
+**Limitation:** `$HECTOR_TMPFILE` has a synthetic name (`hector-tmp-…`), so tools that select behaviour by *filename glob* — e.g. ESLint `overrides` scoped to `*.test.ts`, or Biome `include`/`ignore` patterns — won't match it the way they'd match the real file. Language detection (by extension) and nearest-config resolution (the temp file sits beside `$HECTOR_FILE`) do work. When a tool needs the real filename for its config, pass `$HECTOR_FILE` for that and `$HECTOR_TMPFILE` only for the content.
+
 **Multi-step check.** Use `steps` when you want to run multiple commands in sequence — all must exit 0:
 
 ```yaml
