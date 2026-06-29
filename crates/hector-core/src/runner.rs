@@ -22,6 +22,10 @@ pub struct CheckOptions {
     /// Off by default so wrappers can't run policy against arbitrary host
     /// files.
     pub allow_external_paths: bool,
+    /// Suppress the `out_of_scope` skip for explicitly named (`checks`) ids, so
+    /// an ad-hoc `--file` outside a check's glob still runs it. Scope-only:
+    /// lifecycle and disable directives still apply.
+    pub force: bool,
 }
 
 impl Default for CheckOptions {
@@ -30,6 +34,7 @@ impl Default for CheckOptions {
             checks: HashSet::new(),
             event: "write".to_string(),
             allow_external_paths: false,
+            force: false,
         }
     }
 }
@@ -477,7 +482,10 @@ impl HectorEngine {
             return Some("filtered".to_string());
         }
         if !self.check_matches_path(check_id, match_path) {
-            return Some("out_of_scope".to_string());
+            let forced = self.options.force && self.options.checks.contains(check_id);
+            if !forced {
+                return Some("out_of_scope".to_string());
+            }
         }
         if crate::disable::is_disabled(content, check_id) {
             return Some("disabled".to_string());
@@ -1176,5 +1184,61 @@ mod gate_dispatch_tests {
         // restore perms so TempDir cleanup works
         std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert_eq!(verdict.status, Status::InternalError);
+    }
+
+    #[test]
+    fn force_runs_out_of_scope_named_check() {
+        let dir = TempDir::new().unwrap();
+        write_config(
+            &dir,
+            "checks:\n  only-src:\n    files: \"src/**/*.rs\"\n    run: \"! grep -q BAD\"\n",
+        );
+        // File path is OUTSIDE the src/**/*.rs glob.
+        let path = dir.path().join("fixtures").join("x.rs");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "BAD").unwrap();
+        let engine = HectorEngine::builder()
+            .with_options(CheckOptions {
+                checks: std::iter::once("only-src".to_string()).collect(),
+                event: "write".to_string(),
+                allow_external_paths: false,
+                force: true,
+            })
+            .load(&dir.path().join(".hector.yml"))
+            .unwrap();
+        let report = engine
+            .check_with_explain(CheckInput::File {
+                path,
+                content: "BAD".into(),
+            })
+            .unwrap();
+        // Without force it would be skipped out_of_scope → Pass. With force it fires → Block.
+        assert_eq!(report.verdict.status, Status::Block);
+    }
+
+    #[test]
+    fn force_does_not_bypass_disable_directive() {
+        let dir = TempDir::new().unwrap();
+        write_config(
+            &dir,
+            "checks:\n  only-src:\n    files: \"src/**/*.rs\"\n    run: \"! grep -q BAD\"\n",
+        );
+        let path = dir.path().join("x.rs");
+        std::fs::write(&path, "BAD").unwrap();
+        let engine = HectorEngine::builder()
+            .with_options(CheckOptions {
+                checks: std::iter::once("only-src".to_string()).collect(),
+                event: "write".to_string(),
+                allow_external_paths: false,
+                force: true,
+            })
+            .load(&dir.path().join(".hector.yml"))
+            .unwrap();
+        // Inline disable suppresses the check even under --force.
+        let content = "BAD\n// hector-disable: only-src\n".to_string();
+        let report = engine
+            .check_with_explain(CheckInput::File { path, content })
+            .unwrap();
+        assert_eq!(report.verdict.status, Status::Pass);
     }
 }

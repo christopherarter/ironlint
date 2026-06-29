@@ -56,6 +56,10 @@ pub enum Command {
         /// arbitrary host files.
         #[arg(long, default_value_t = false)]
         allow_external_paths: bool,
+        /// Run the named `--check` id(s) against `--file` even if the path is
+        /// outside their `files` glob. Scope-only; requires `--check`.
+        #[arg(long, default_value_t = false)]
+        force: bool,
     },
     /// Bless this config + its `.hector/gates/` scripts in the out-of-repo trust store.
     Trust {

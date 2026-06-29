@@ -20,6 +20,7 @@ fn main() -> Result<()> {
             event,
             explain,
             allow_external_paths,
+            force,
         } => commands::check::run(
             file,
             diff,
@@ -30,6 +31,7 @@ fn main() -> Result<()> {
             event,
             explain,
             allow_external_paths,
+            force,
         )?,
         Command::Trust { config } => commands::trust::run(&config)?,
         Command::Validate { config } => commands::validate::run(&config)?,

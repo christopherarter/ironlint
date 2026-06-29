@@ -17,7 +17,12 @@ pub fn run(
     event: String,
     explain: bool,
     allow_external_paths: bool,
+    force: bool,
 ) -> Result<i32> {
+    if force && checks.is_empty() {
+        eprintln!("ERROR: --force requires at least one --check <id>");
+        return Ok(1);
+    }
     // Trust gate: refuse an unblessed or tampered config/checks before the engine
     // loads or any check runs. This hashes the config + `.hector/gates/` now; a
     // write between here and check execution is a known, accepted TOCTOU window
@@ -30,6 +35,7 @@ pub fn run(
         checks: HashSet::new(),
         event,
         allow_external_paths,
+        force,
     };
     let mut engine = match HectorEngine::builder().with_options(options).load(config) {
         Ok(e) => e,

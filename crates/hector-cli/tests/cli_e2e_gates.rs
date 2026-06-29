@@ -317,3 +317,27 @@ fn diff_pre_commit_runs_check_once_over_set() {
         .assert()
         .code(2);
 }
+
+#[test]
+fn force_without_check_is_usage_error() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join(".hector.yml"),
+        "checks:\n  g:\n    files: \"src/**/*.rs\"\n    run: \"true\"\n",
+    )
+    .unwrap();
+    Command::cargo_bin("hector")
+        .unwrap()
+        .current_dir(dir.path())
+        .args([
+            "check",
+            "--file",
+            "x.rs",
+            "--force",
+            "--config",
+            ".hector.yml",
+        ])
+        .assert()
+        .failure()
+        .code(1);
+}
