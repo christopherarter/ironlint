@@ -23,6 +23,10 @@ fn schema_prints_the_authoring_guide() {
         s.contains("nonzero"),
         "guide must mention the nonzero-blocks contract:\n{s}"
     );
+    assert!(
+        s.contains("$HECTOR_TMPFILE"),
+        "guide must mention $HECTOR_TMPFILE:\n{s}"
+    );
 }
 
 #[test]

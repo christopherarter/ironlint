@@ -267,6 +267,43 @@ fn relativize(path: &Path, root: &Path) -> PathBuf {
         .unwrap_or(canon_path)
 }
 
+/// Removes its temp file on drop — covers normal return, error, timeout, and
+/// panic-unwind. Only a SIGKILL of hector itself leaks the file.
+struct TmpFileGuard {
+    path: PathBuf,
+}
+
+impl Drop for TmpFileGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// True iff any of the check's steps reference the `$HECTOR_TMPFILE` token.
+fn check_references_tmpfile(check: &Check) -> bool {
+    check
+        .effective_steps()
+        .iter()
+        .any(|s| s.run.contains("HECTOR_TMPFILE"))
+}
+
+/// A collision-resistant temp-file name mirroring `ext` (no `rng` dependency).
+fn unique_tmp_name(ext: Option<&str>) -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
+    match ext {
+        Some(e) => format!("hector-tmp-{pid}-{n}-{nanos}.{e}"),
+        None => format!("hector-tmp-{pid}-{n}-{nanos}"),
+    }
+}
+
 pub struct HectorEngineBuilder {
     options: CheckOptions,
 }
@@ -451,6 +488,28 @@ impl HectorEngine {
         None
     }
 
+    /// Materialize `$HECTOR_TMPFILE` for a `write` check that references it.
+    /// `Ok(None)` = not needed; `Ok(Some)` = created (guard owns cleanup);
+    /// `Err` = the write failed (caller surfaces it as an internal error so a
+    /// tmpfile-dependent check never silently runs without its file).
+    fn maybe_materialize_tmpfile(
+        &self,
+        check: &Check,
+        abs: &Path,
+        content: &str,
+    ) -> std::io::Result<Option<TmpFileGuard>> {
+        if self.options.event != "write" || !check_references_tmpfile(check) {
+            return Ok(None);
+        }
+        let Some(parent) = abs.parent() else {
+            return Ok(None);
+        };
+        let name = unique_tmp_name(abs.extension().and_then(|e| e.to_str()));
+        let path = parent.join(name);
+        std::fs::write(&path, content)?;
+        Ok(Some(TmpFileGuard { path }))
+    }
+
     /// Execute a check's step pipeline against `env` with optional `content` on
     /// stdin. Fails fast on the first Block or Internal — never panics.
     fn run_steps(&self, check: &Check, env: &GateEnv, content: Option<&[u8]>) -> CheckStatus {
@@ -492,15 +551,26 @@ impl HectorEngine {
         if let Some(reason) = self.skip_reason(check_id, check, match_path, content) {
             return CheckStatus::Skipped(reason);
         }
+        let tmp = match self.maybe_materialize_tmpfile(check, abs, content) {
+            Ok(t) => t,
+            Err(e) => {
+                return CheckStatus::Error {
+                    step: Some("<tmpfile>".to_string()),
+                    reason: format!("tmpfile_write_failed:{e}"),
+                    elapsed: 0,
+                }
+            }
+        };
         let abs_buf = abs.to_path_buf();
         let env = GateEnv {
             file: Some(abs),
             files: std::slice::from_ref(&abs_buf),
             root: &self.config_dir,
             event: &self.options.event,
-            tmpfile: None,
+            tmpfile: tmp.as_ref().map(|g| g.path.as_path()),
         };
         self.run_steps(check, &env, Some(content.as_bytes()))
+        // `tmp` drops here → temp file removed.
     }
 
     /// Run the loaded checks against `input` and return the verdict.
@@ -1005,5 +1075,106 @@ mod gate_dispatch_tests {
             !dir.path().join("ran3.txt").exists(),
             "step 3 ran after a block"
         );
+    }
+
+    // --- HECTOR_TMPFILE materialization ---
+
+    #[test]
+    fn tmpfile_materialized_with_content_ext_and_cleaned() {
+        let dir = TempDir::new().unwrap();
+        // Check copies $HECTOR_TMPFILE to a stable capture path, asserts the .rs ext, then passes.
+        write_config(&dir,
+            "checks:\n  cap:\n    files: \"**/*.rs\"\n    run: \"case \\\"$HECTOR_TMPFILE\\\" in *.rs) cat \\\"$HECTOR_TMPFILE\\\" > \\\"$HECTOR_ROOT/captured.txt\\\"; exit 0;; *) exit 2;; esac\"\n");
+        let engine = load_with_event(&dir, "write");
+        let path = dir.path().join("src").join("a.rs");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "OLD").unwrap();
+        let report = engine
+            .check_with_explain(CheckInput::File {
+                path: path.clone(),
+                content: "PROPOSED-NEW".to_string(),
+            })
+            .unwrap();
+        assert_eq!(report.verdict.status, Status::Pass);
+        // The captured bytes are the PROPOSED content (not the OLD on-disk bytes).
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("captured.txt")).unwrap(),
+            "PROPOSED-NEW"
+        );
+        // The temp file is gone (cleanup), but its sibling source file remains.
+        let leftovers: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().starts_with("hector-tmp-"))
+            .collect();
+        assert!(leftovers.is_empty(), "temp file leaked: {leftovers:?}");
+    }
+
+    #[test]
+    fn tmpfile_not_created_when_unreferenced() {
+        let dir = TempDir::new().unwrap();
+        write_config(
+            &dir,
+            "checks:\n  g:\n    files: \"**/*.rs\"\n    run: \"! grep -q TODO\"\n",
+        );
+        let engine = load_with_event(&dir, "write");
+        let path = dir.path().join("a.rs");
+        std::fs::write(&path, "fine").unwrap();
+        let _ = engine
+            .check_with_explain(CheckInput::File {
+                path: path.clone(),
+                content: "fine".into(),
+            })
+            .unwrap();
+        let any_tmp = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .any(|e| e.file_name().to_string_lossy().starts_with("hector-tmp-"));
+        assert!(
+            !any_tmp,
+            "no temp file should exist for an unreferenced check"
+        );
+    }
+
+    #[test]
+    fn tmpfile_unset_on_pre_commit() {
+        let dir = TempDir::new().unwrap();
+        // On pre-commit the var must be empty even though the check references it.
+        write_config(&dir, "checks:\n  pc:\n    files: \"**/*.rs\"\n    on: [pre-commit]\n    run: \"test -z \\\"$HECTOR_TMPFILE\\\"\"\n");
+        let engine = load_with_event(&dir, "pre-commit");
+        let path = dir.path().join("a.rs");
+        std::fs::write(&path, "x").unwrap();
+        let verdict = engine.check_set(&[path]).unwrap();
+        assert_eq!(
+            verdict.status,
+            Status::Pass,
+            "HECTOR_TMPFILE must be unset on pre-commit"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn tmpfile_write_failure_is_internal_error() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new().unwrap();
+        write_config(
+            &dir,
+            "checks:\n  cap:\n    files: \"**/*.rs\"\n    run: \"cat \\\"$HECTOR_TMPFILE\\\"\"\n",
+        );
+        let engine = load_with_event(&dir, "write");
+        let sub = dir.path().join("ro");
+        std::fs::create_dir(&sub).unwrap();
+        let path = sub.join("a.rs");
+        std::fs::write(&path, "x").unwrap();
+        std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let verdict = engine
+            .check(CheckInput::File {
+                path,
+                content: "x".into(),
+            })
+            .unwrap();
+        // restore perms so TempDir cleanup works
+        std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(verdict.status, Status::InternalError);
     }
 }

@@ -244,6 +244,35 @@ fn check_filter_runs_only_selected() {
         .code(0);
 }
 
+#[test]
+fn content_flag_materializes_tmpfile() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join(".hector.yml"),
+        "checks:\n  cap:\n    files: \"**/*.rs\"\n    run: \"case \\\"$HECTOR_TMPFILE\\\" in *.rs) cat \\\"$HECTOR_TMPFILE\\\" > \\\"$HECTOR_ROOT/cap.txt\\\"; exit 0;; *) exit 2;; esac\"\n",
+    ).unwrap();
+    let target = dir.path().join("a.rs");
+    std::fs::write(&target, "OLD").unwrap();
+    let xdg = common::blessed_store(&dir.path().join(".hector.yml"));
+    let mut cmd = Command::cargo_bin("hector").unwrap();
+    cmd.current_dir(dir.path())
+        .env("XDG_CONFIG_HOME", xdg.path())
+        .args([
+            "check",
+            "--file",
+            "a.rs",
+            "--content",
+            "-",
+            "--config",
+            ".hector.yml",
+        ]);
+    cmd.write_stdin("NEWBYTES").assert().success();
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("cap.txt")).unwrap(),
+        "NEWBYTES"
+    );
+}
+
 /// `--diff --event pre-commit` must call `check_set` once with all changed
 /// files, not loop per-file. Proof: the check blocks iff `$HECTOR_FILES`
 /// contains a newline (= ≥2 files in one invocation). With per-file dispatch

@@ -30,6 +30,7 @@ checks:
 - `$HECTOR_FILES` — newline-joined list of all files under check (single entry for `write`; all staged files for `pre-commit`).
 - `$HECTOR_ROOT` — project root (the check's cwd).
 - `$HECTOR_EVENT` — `write` or `pre-commit`.
+- `$HECTOR_TMPFILE` — **write only**, set only when your `run` mentions it: an absolute path to a temp file holding the proposed content, placed beside `$HECTOR_FILE` with the same extension and auto-cleaned. Use it for tools that need a real file on disk (Biome, ESLint file-mode, `tsc`, ruff) instead of stdin. Unset on `pre-commit` (files are already on disk at `$HECTOR_FILES`).
 - **stdin** — proposed post-edit file content (`write`) or empty (`pre-commit`).
 
 **Read proposed content from stdin, not from `$HECTOR_FILE`.** On harnesses that gate before the write lands (e.g. reasonix, pi), the file on disk still holds the OLD content, so reading it misses the very change you mean to check. Use `$HECTOR_FILE` to hand a tool a filename (e.g. a linter's `--stdin-filename`), never as the content source.
@@ -52,6 +53,14 @@ On block, the check's combined stdout+stderr becomes the message the agent sees,
   ruff-check:
     files: ["**/*.py"]
     run: "ruff check --quiet --stdin-filename \"$HECTOR_FILE\" -"
+```
+
+**Wrap a file-oriented linter (temp file).** Tools that won't read stdin cleanly get a real path:
+
+```yaml
+  biome-check:
+    files: ["src/**/*.{ts,tsx,js,jsx}"]
+    run: "npx @biomejs/biome check \"$HECTOR_TMPFILE\""
 ```
 
 **Multi-step check.** Use `steps` when you want to run multiple commands in sequence — all must exit 0:

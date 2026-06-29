@@ -51,5 +51,6 @@ mod tests {
         // The real guide starts with frontmatter; the printed body must not.
         assert!(!strip_frontmatter(GUIDE).starts_with("---"));
         assert!(strip_frontmatter(GUIDE).contains("$HECTOR_FILE"));
+        assert!(strip_frontmatter(GUIDE).contains("$HECTOR_TMPFILE"));
     }
 }
