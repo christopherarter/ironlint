@@ -2,20 +2,7 @@
 
 Notable changes to Hector, newest first. In-flight work lives in `plans/`.
 
-## [Unreleased]
-
-### Added
-
-- **`hector watch`** — a read-only live TUI over `.hector/log.jsonl` with a
-  Stream (newest-first run feed) and an Explorer (per-check health ranked by
-  blocks). Built on existing telemetry; no schema change.
-- **`hector update`.** Self-update to the latest GitHub release. Reads the
-  cargo-dist install receipt and, when a newer release exists, downloads and
-  re-runs the same installer the binary was installed with, then self-replaces.
-  A no-op when already current; exits `1` with channel-specific guidance for
-  non-installer builds (Homebrew / `cargo install` / source).
-
-## [0.4.0] — 2026-06-28 — checks pipeline redesign
+## [0.4.0] — 2026-06-29 — checks pipeline redesign
 
 ### Breaking
 
@@ -43,6 +30,14 @@ Notable changes to Hector, newest first. In-flight work lives in `plans/`.
 
 ### Added
 
+- **`hector watch`** — a read-only live TUI over `.hector/log.jsonl` with a
+  Stream (newest-first run feed) and an Explorer (per-check health ranked by
+  blocks). Built on existing telemetry; no schema change.
+- **`hector update`.** Self-update to the latest GitHub release. Reads the
+  cargo-dist install receipt and, when a newer release exists, downloads and
+  re-runs the same installer the binary was installed with, then self-replaces.
+  A no-op when already current; exits `1` with channel-specific guidance for
+  non-installer builds (Homebrew / `cargo install` / source).
 - **`hector schema`.** Prints the `hector-config` authoring skill to stdout —
   the same guide that `hector init` installs for each coding agent.
 - **`hector init` harness onboarding.** `hector init` now installs hector's
