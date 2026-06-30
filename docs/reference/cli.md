@@ -11,7 +11,7 @@ Run the checks against a file or diff.
 ```
 hector check [--file <path>] [--diff <path>] [--content <string|->]
              [--format human|json] [--config <path>] [--check <id>]...
-             [--event write|pre-commit] [--explain]
+             [--event write|pre-commit] [--force] [--explain]
              [--allow-external-paths]
 ```
 
@@ -24,6 +24,7 @@ hector check [--file <path>] [--diff <path>] [--content <string|->]
 | `--config <path>` | `.hector.yml` | Config file to load. |
 | `--check <id>` | — | Run only this check. Repeatable; multiple flags are OR'd. |
 | `--event` | `write` | What triggered the check, surfaced to checks as `$HECTOR_EVENT`. One of `write`, `pre-commit`. |
+| `--force` | off | Bypass scope matching (`files:` globs) for checks named with `--check`, so an ad-hoc `--file` outside a check's glob still runs that check. Lifecycle and `hector-disable:` directives still apply. Requires at least one `--check`; exits `1` if used without `--check`. |
 | `--explain` | off | Print a per-check outcome report to stderr after the verdict. |
 | `--allow-external-paths` | off | Allow checking files whose canonical path falls outside the config's directory. |
 

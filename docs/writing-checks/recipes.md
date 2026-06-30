@@ -35,6 +35,19 @@ biome check --stdin-file-path "$HECTOR_FILE"
 
 `biome check` exits non-zero when it finds problems; the nonzero exit blocks the edit. Because it reads stdin, it sees the edit the agent is *proposing*, not whatever is currently on disk. Make the script executable: `chmod +x .hector/gates/biome.sh`.
 
+## Run a file-oriented linter (temp file)
+
+Some tools refuse to read stdin and require a real file path. Reference `$HECTOR_TMPFILE` in your `run` and Hector writes the proposed content to a temp file beside `$HECTOR_FILE` with the same extension, then removes it after the check:
+
+```yaml
+checks:
+  biome-file:
+    files: ["src/**/*.ts", "src/**/*.tsx"]
+    run: "npx @biomejs/biome check \"$HECTOR_TMPFILE\""
+```
+
+**Limitation:** `$HECTOR_TMPFILE` has a synthetic name (`hector-tmp-…`), so filename-glob configuration in tools — ESLint `overrides` scoped to `*.test.ts`, Biome `include`/`ignore` patterns — may not match it. Language detection by extension and nearest-config resolution (the temp file sits beside `$HECTOR_FILE`) work correctly. When a tool needs the real filename for its config lookup, pass `$HECTOR_FILE` for that argument and `$HECTOR_TMPFILE` for the content.
+
 ## Run a whole-tree tool
 
 Some checks need a real, consistent file tree — a dependency-graph rule, a typechecker that resolves imports. These ignore stdin and read the on-disk tree from `$HECTOR_ROOT`:

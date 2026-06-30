@@ -21,7 +21,7 @@ flowchart LR
 
     subgraph AdapterLayer["Adapter layer"]
         Hooks["Edit hooks<br/>capture proposed content"]
-        ABI["Stable ABI<br/>$HECTOR_FILE, $HECTOR_ROOT, $HECTOR_EVENT, stdin"]
+        ABI["Stable ABI<br/>$HECTOR_FILE, $HECTOR_ROOT, $HECTOR_EVENT, $HECTOR_TMPFILE, stdin"]
     end
 
     subgraph Hector["Hector"]

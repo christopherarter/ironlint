@@ -26,6 +26,7 @@ Every adapter normalizes its host into the same ABI, so one check command runs u
 | `$HECTOR_FILE` | Absolute path to the file under check. |
 | `$HECTOR_ROOT` | Project root — also the check's working directory. |
 | `$HECTOR_EVENT` | `write` or `pre-commit`. |
+| `$HECTOR_TMPFILE` | **write only** — set only when the check's `run` references it: absolute path to a temp file holding the proposed content, placed beside `$HECTOR_FILE` with the same extension. Auto-cleaned after the check. Unset on `pre-commit`. |
 | stdin | The proposed post-edit content. |
 
 The adapter only shells out to the `hector` binary. It doesn't reimplement any policy logic.

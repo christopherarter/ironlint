@@ -41,7 +41,7 @@ checks:
 | `files` | string or list of strings | yes | Glob(s) the check matches. A bare string is treated as a one-element list. A pattern without `/` matches at any depth — `*.ts` is equivalent to `**/*.ts`. See [Targeting files](../configuring/targeting-files.md). |
 | `run` | string | yes | A shell command, handed to `sh -c` verbatim. Any nonzero exit (1–125) blocks. See [Anatomy of a check](../writing-checks/README.md). |
 
-`run` receives no string templating — there is no `{file}`. The path under check arrives as `$HECTOR_FILE`, the project root as `$HECTOR_ROOT`, the trigger as `$HECTOR_EVENT`, and the proposed post-edit content on stdin. `run` may be an inline command or a path to a script under `.hector/gates/`; the shell makes no distinction.
+`run` receives no string templating — there is no `{file}`. The path under check arrives as `$HECTOR_FILE`, the project root as `$HECTOR_ROOT`, the trigger as `$HECTOR_EVENT`, and the proposed post-edit content on stdin. For `write` checks whose `run` references it, `$HECTOR_TMPFILE` holds the absolute path to a temp file beside `$HECTOR_FILE` containing the proposed content (same extension, auto-cleaned). `run` may be an inline command or a path to a script under `.hector/gates/`; the shell makes no distinction.
 
 ## Execution
 

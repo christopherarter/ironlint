@@ -49,6 +49,7 @@ Hector hands each check the same four things. Nothing is spliced into the comman
 | `$HECTOR_FILE` | Absolute path to the file under check. |
 | `$HECTOR_ROOT` | Project root — also the check's working directory. |
 | `$HECTOR_EVENT` | What triggered the check: `write` or `pre-commit`. |
+| `$HECTOR_TMPFILE` | **write only** — set only when your `run` references it: absolute path to a temp file beside `$HECTOR_FILE` holding the proposed content (same extension, auto-cleaned). Use for tools that won't read stdin. Unset on `pre-commit`. |
 | stdin | The proposed post-edit content of the file (may be empty). |
 
 There is no `{file}` token. The path travels only as `$HECTOR_FILE`.
