@@ -512,6 +512,22 @@ impl HectorEngine {
         let Some(parent) = abs.parent() else {
             return Ok(None);
         };
+        // Containment: never write proposed content outside the project root
+        // unless the caller opted into external paths. `resolve_input_path`'s
+        // guard is bypassed for not-yet-canonicalizable (new-file) paths — the
+        // common pre-write case — so re-check the parent here before writing.
+        if !self.options.allow_external_paths {
+            let parent_canon = parent.canonicalize()?;
+            if !parent_canon.starts_with(&self.config_dir_canon) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    format!(
+                        "refusing to materialize $HECTOR_TMPFILE outside the project root: {}",
+                        parent_canon.display()
+                    ),
+                ));
+            }
+        }
         let name = unique_tmp_name(abs.extension().and_then(|e| e.to_str()));
         let path = parent.join(name);
         std::fs::write(&path, content)?;
@@ -1184,6 +1200,100 @@ mod gate_dispatch_tests {
         // restore perms so TempDir cleanup works
         std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert_eq!(verdict.status, Status::InternalError);
+    }
+
+    #[test]
+    fn tmpfile_refuses_to_write_outside_project_root() {
+        // Config dir A; separate tempdir B simulates an out-of-project path.
+        // resolve_input_path bypasses its containment guard when the target
+        // file doesn't exist yet (pre-write). maybe_materialize_tmpfile must
+        // catch this and refuse to write the tmpfile.
+        let dir_a = TempDir::new().unwrap();
+        let dir_b = TempDir::new().unwrap();
+        write_config(
+            &dir_a,
+            "checks:\n  chk:\n    files: \"**/*.rs\"\n    run: \"cat \\\"$HECTOR_TMPFILE\\\"\"\n",
+        );
+        let engine = HectorEngine::builder()
+            .with_options(CheckOptions {
+                checks: std::iter::once("chk".to_string()).collect(),
+                event: "write".to_string(),
+                allow_external_paths: false,
+                force: true,
+            })
+            .load(&dir_a.path().join(".hector.yml"))
+            .unwrap();
+        // Target does NOT exist — triggers the bypass branch in resolve_input_path.
+        let evil = dir_b.path().join("evil.rs");
+        let verdict = engine
+            .check(CheckInput::File {
+                path: evil,
+                content: "x".into(),
+            })
+            .unwrap();
+        assert_eq!(
+            verdict.status,
+            Status::InternalError,
+            "should refuse to materialize tmpfile outside project root"
+        );
+        // No hector-tmp-* file should have been written in dir_b.
+        let leaked: Vec<_> = std::fs::read_dir(dir_b.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().starts_with("hector-tmp-"))
+            .collect();
+        assert!(
+            leaked.is_empty(),
+            "tmpfile leaked into external dir: {leaked:?}"
+        );
+    }
+
+    #[test]
+    fn tmpfile_allows_outside_write_with_allow_external_paths() {
+        // Same topology as above, but allow_external_paths: true. The tmpfile
+        // should be written, the check should run and see the proposed content,
+        // and cleanup should leave no hector-tmp-* in dir_b.
+        let dir_a = TempDir::new().unwrap();
+        let dir_b = TempDir::new().unwrap();
+        // Check copies $HECTOR_TMPFILE content to a capture path inside $HECTOR_ROOT.
+        write_config(
+            &dir_a,
+            "checks:\n  chk:\n    files: \"**/*.rs\"\n    run: \"cat \\\"$HECTOR_TMPFILE\\\" > \\\"$HECTOR_ROOT/captured.txt\\\"\"\n",
+        );
+        let engine = HectorEngine::builder()
+            .with_options(CheckOptions {
+                checks: std::iter::once("chk".to_string()).collect(),
+                event: "write".to_string(),
+                allow_external_paths: true,
+                force: true,
+            })
+            .load(&dir_a.path().join(".hector.yml"))
+            .unwrap();
+        let evil = dir_b.path().join("evil.rs");
+        let verdict = engine
+            .check(CheckInput::File {
+                path: evil,
+                content: "proposed".into(),
+            })
+            .unwrap();
+        assert_eq!(
+            verdict.status,
+            Status::Pass,
+            "allow_external_paths=true should permit the tmpfile write"
+        );
+        // The check captured the proposed content via $HECTOR_TMPFILE.
+        let captured = std::fs::read_to_string(dir_a.path().join("captured.txt")).unwrap();
+        assert_eq!(captured, "proposed");
+        // The tmpfile was cleaned up — no hector-tmp-* leftover in dir_b.
+        let leaked: Vec<_> = std::fs::read_dir(dir_b.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().starts_with("hector-tmp-"))
+            .collect();
+        assert!(
+            leaked.is_empty(),
+            "tmpfile leaked after cleanup: {leaked:?}"
+        );
     }
 
     #[test]
