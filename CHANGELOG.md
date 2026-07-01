@@ -2,6 +2,24 @@
 
 Notable changes to Hector, newest first. In-flight work lives in `plans/`.
 
+## [0.6.0] — 2026-07-01 — init onboarding plan preview
+
+### Changed
+
+- **`hector init` previews what it installs, then confirms.** Harness
+  onboarding now renders a per-file plan — grouped per harness and tagged
+  `detected` (found on this machine) or `requested` (named with `--harness`) —
+  showing every hook/plugin file it writes, the settings key it patches, and the
+  `hector-config` authoring skill it installs, then prompts `Proceed? [Y/n]`.
+  This replaces the terse "Install hector hooks into …" prompt, which
+  understated the footprint (it also installs a skill) and named no paths. The
+  two entry paths are unified: explicit `--harness` previously installed
+  silently with no preview — it now shows the same plan and confirms. `--yes`
+  skips the prompt; `--dry-run` renders the plan and installs nothing. Paths
+  display home- and project-relative, and color is applied only when stdout is a
+  terminal (piped/CI output stays plain). The `hector init --dry-run` output is
+  now this plan tree rather than the former flat `write <path>` list.
+
 ## [0.5.0] — 2026-06-30 — temp files, `--force`, stack-agnostic init
 
 ### Added
