@@ -15,6 +15,66 @@ fn hash_entry(hasher: &mut Sha256, label: &str, bytes: &[u8]) {
     hasher.update(bytes);
 }
 
+/// Filesystem classification of a path in the gates hash walk, computed via
+/// `symlink_metadata` (which does **not** follow symlinks) rather than
+/// `is_dir()`/`is_file()` (which do).
+#[derive(Debug)]
+enum EntryKind {
+    Dir,
+    File,
+    Missing,
+}
+
+/// Classify `path` for the gates hash walk without ever following a
+/// symlink. This walk runs on **unblessed** repo content before the trust
+/// verdict is decided — it is the security boundary — so an unusual entry
+/// is a hard error rather than a silent skip: a skipped file is un-hashed
+/// and thus not trust-covered, which is worse than refusing to proceed.
+/// Concretely this refuses:
+/// - a symlink (a self-referencing symlink would otherwise recurse
+///   indefinitely; a symlink to a FIFO would block a later `fs::read`
+///   forever; a symlink to a device could read unbounded data), and
+/// - any other non-regular file (FIFO, socket, device, ...).
+///
+/// A missing path is not an error — the caller decides what "missing"
+/// means for its position in the walk (e.g. an absent gates dir has
+/// nothing to hash). A path whose parent isn't even a directory (e.g. a
+/// plain file sits where `.ironlint/` should be) is treated the same as
+/// missing: there is nothing there to hash, and this isn't the
+/// symlink/non-regular-file class of problem the walk is guarding against.
+fn classify_entry(path: &Path) -> Result<EntryKind> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) => {
+            let file_type = meta.file_type();
+            if file_type.is_symlink() {
+                anyhow::bail!(
+                    "gates dir contains a symlink ({}); refuse to hash — replace it with a regular file",
+                    path.display()
+                );
+            }
+            if file_type.is_dir() {
+                return Ok(EntryKind::Dir);
+            }
+            if file_type.is_file() {
+                return Ok(EntryKind::File);
+            }
+            anyhow::bail!(
+                "gates dir contains a non-regular file ({}); refuse to hash",
+                path.display()
+            );
+        }
+        Err(e)
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
+            Ok(EntryKind::Missing)
+        }
+        Err(e) => Err(e).with_context(|| format!("reading metadata for {}", path.display())),
+    }
+}
+
 /// Recursively collect `(relative-path, bytes)` for every file under `dir`,
 /// with `/`-separated relative paths for cross-platform determinism.
 fn collect_gate_files(dir: &Path) -> Result<Vec<(String, Vec<u8>)>> {
@@ -28,19 +88,26 @@ fn collect_into(root: &Path, dir: &Path, out: &mut Vec<(String, Vec<u8>)>) -> Re
     for entry in std::fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
         let entry = entry?;
         let path = entry.path();
-        if path.is_dir() {
-            collect_into(root, &path, out)?;
-        } else {
-            let rel = path
-                .strip_prefix(root)
-                .expect("walked path must live under the gates root")
-                .components()
-                .map(|c| c.as_os_str().to_string_lossy())
-                .collect::<Vec<_>>()
-                .join("/");
-            let bytes =
-                std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
-            out.push((rel, bytes));
+        match classify_entry(&path)? {
+            EntryKind::Dir => collect_into(root, &path, out)?,
+            EntryKind::File => {
+                let rel = path
+                    .strip_prefix(root)
+                    .expect("walked path must live under the gates root")
+                    .components()
+                    .map(|c| c.as_os_str().to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join("/");
+                let bytes =
+                    std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+                out.push((rel, bytes));
+            }
+            EntryKind::Missing => {
+                // TOCTOU: read_dir just enumerated this entry, so it should
+                // exist. If it vanished between listing and stat, fail
+                // loudly rather than silently under-hashing the gates dir.
+                anyhow::bail!("gates dir entry disappeared mid-walk ({})", path.display());
+            }
         }
     }
     Ok(())
@@ -87,12 +154,21 @@ pub fn compute_hash(config_path: &Path) -> Result<String> {
     gate_dirs.dedup();
 
     for gates_dir in &gate_dirs {
-        if gates_dir.is_dir() {
-            for (rel, bytes) in collect_gate_files(gates_dir)? {
-                hash_entry(
-                    &mut hasher,
-                    &format!("gates\0{}\0{rel}", gates_dir.display()),
-                    &bytes,
+        match classify_entry(gates_dir)? {
+            EntryKind::Dir => {
+                for (rel, bytes) in collect_gate_files(gates_dir)? {
+                    hash_entry(
+                        &mut hasher,
+                        &format!("gates\0{}\0{rel}", gates_dir.display()),
+                        &bytes,
+                    );
+                }
+            }
+            EntryKind::Missing => {}
+            EntryKind::File => {
+                anyhow::bail!(
+                    "expected {} to be a directory (gates dir)",
+                    gates_dir.display()
                 );
             }
         }
@@ -461,6 +537,126 @@ mod tests {
             "checks:\n  g:\n    files: \"*.rs\"\n    run: \"true\"\n",
         );
         assert!(compute_hash(&cfg).unwrap().starts_with("sha256:"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn gates_dir_symlink_loop_is_a_clear_error_not_a_hang() {
+        // A self-referencing symlink inside the gates dir must not be
+        // followed. Before the fix, `is_dir()` follows the symlink and the
+        // walk recurses through it; the OS eventually caps total symlink
+        // resolutions and returns a raw ELOOP, so this terminates promptly
+        // either way — but the *message* must call out the symlink, not
+        // leak a raw OS error, and (after the fix) the walk must refuse the
+        // symlink on first sight rather than ever recursing into it.
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = dir.path().join(".ironlint.yml");
+        write(&cfg, "checks:\n  g:\n    files: \"*\"\n    run: \"true\"\n");
+        let gates = dir.path().join(".ironlint/gates");
+        fs::create_dir_all(&gates).unwrap();
+        write(&gates.join("g.sh"), "#!/bin/sh\nexit 0\n");
+        std::os::unix::fs::symlink(&gates, gates.join("loop")).unwrap();
+
+        let err = compute_hash(&cfg).unwrap_err().to_string();
+        assert!(
+            err.contains("symlink"),
+            "error should call out the symlink, not a raw OS ELOOP: {err}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn classify_entry_refuses_a_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target.txt");
+        fs::write(&target, "hi").unwrap();
+        let link = dir.path().join("link.txt");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let err = classify_entry(&link).unwrap_err().to_string();
+        assert!(err.contains("symlink"), "error: {err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn classify_entry_refuses_a_fifo() {
+        let dir = tempfile::tempdir().unwrap();
+        let fifo = dir.path().join("fifo");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .expect("mkfifo must be available for this test");
+        assert!(status.success(), "mkfifo failed");
+        let err = classify_entry(&fifo).unwrap_err().to_string();
+        assert!(err.contains("non-regular"), "error: {err}");
+    }
+
+    #[test]
+    fn classify_entry_missing_path_is_missing_kind() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("nope");
+        assert!(matches!(
+            classify_entry(&missing).unwrap(),
+            EntryKind::Missing
+        ));
+    }
+
+    #[test]
+    fn classify_entry_dir_and_file_kinds() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("sub");
+        fs::create_dir_all(&sub).unwrap();
+        let file = dir.path().join("f.txt");
+        fs::write(&file, "x").unwrap();
+        assert!(matches!(classify_entry(&sub).unwrap(), EntryKind::Dir));
+        assert!(matches!(classify_entry(&file).unwrap(), EntryKind::File));
+    }
+
+    #[test]
+    fn gate_files_recurse_into_subdirectories() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = dir.path().join(".ironlint.yml");
+        write(&cfg, "checks:\n  g:\n    files: \"*\"\n    run: \"true\"\n");
+        write(&dir.path().join(".ironlint/gates/top.sh"), "top\n");
+        write(
+            &dir.path().join(".ironlint/gates/sub/nested.sh"),
+            "nested\n",
+        );
+        let before = compute_hash(&cfg).unwrap();
+        write(
+            &dir.path().join(".ironlint/gates/sub/nested.sh"),
+            "nested changed\n",
+        );
+        let after = compute_hash(&cfg).unwrap();
+        assert_ne!(
+            before, after,
+            "editing a nested gate file must change the hash"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn gates_dir_itself_as_symlink_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = dir.path().join(".ironlint.yml");
+        write(&cfg, "checks:\n  g:\n    files: \"*\"\n    run: \"true\"\n");
+        let real_gates = dir.path().join("real_gates");
+        fs::create_dir_all(&real_gates).unwrap();
+        write(&real_gates.join("g.sh"), "#!/bin/sh\nexit 0\n");
+        fs::create_dir_all(dir.path().join(".ironlint")).unwrap();
+        std::os::unix::fs::symlink(&real_gates, dir.path().join(".ironlint/gates")).unwrap();
+
+        let err = compute_hash(&cfg).unwrap_err().to_string();
+        assert!(err.contains("symlink"), "error: {err}");
+    }
+
+    #[test]
+    fn gates_dir_path_is_a_plain_file_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = dir.path().join(".ironlint.yml");
+        write(&cfg, "checks:\n  g:\n    files: \"*\"\n    run: \"true\"\n");
+        fs::create_dir_all(dir.path().join(".ironlint")).unwrap();
+        fs::write(dir.path().join(".ironlint/gates"), "not a dir").unwrap();
+        assert!(compute_hash(&cfg).is_err());
     }
 
     #[test]
