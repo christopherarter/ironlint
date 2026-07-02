@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Feed one labeled blob into the hasher with length prefixes on both the
 /// label and the content, so no two distinct (label, bytes) pairs can collide
@@ -158,17 +159,96 @@ pub fn read_store(path: &Path) -> Result<TrustStore> {
     }
 }
 
-/// Write the store atomically: serialize to a sibling temp file, then rename.
+/// A sibling temp path unique to this call: `json.tmp.<pid>.<counter>`. Two
+/// writers targeting the same `path` (different processes, or different
+/// threads within one process racing the same store) never share a temp
+/// file, so one writer's write+rename can never clobber or be clobbered by
+/// another's mid-flight. The counter alone (no clock read) is enough:
+/// per-process it's strictly increasing, and across processes a stale
+/// leftover temp file at a reused pid+counter pair is simply overwritten
+/// before anyone reads it, since only the final `rename` target is load
+/// bearing.
+fn unique_tmp_path(path: &Path) -> PathBuf {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    path.with_extension(format!("json.tmp.{}.{n}", std::process::id()))
+}
+
+/// Write the store atomically: serialize to a sibling, per-write-unique temp
+/// file, then rename over the target.
 pub fn write_store(path: &Path, store: &TrustStore) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating {}", parent.display()))?;
     }
     let json = serde_json::to_string_pretty(store)?;
-    let tmp = path.with_extension("json.tmp");
+    let tmp = unique_tmp_path(path);
     std::fs::write(&tmp, json).with_context(|| format!("writing {}", tmp.display()))?;
     std::fs::rename(&tmp, path).with_context(|| format!("renaming into {}", path.display()))?;
     Ok(())
+}
+
+/// Sibling lock-file path used to serialize concurrent `bless_in`
+/// read-modify-writes against the same store.
+fn lock_path(store_path: &Path) -> PathBuf {
+    store_path.with_extension("lock")
+}
+
+/// RAII guard for the exclusive store lock: dropping it releases the flock
+/// (closing the underlying fd releases a POSIX `flock`, so an explicit
+/// `unlock` call isn't needed here — unlike `telemetry::append`, which
+/// unlocks eagerly to shrink its critical section).
+#[cfg(unix)]
+struct StoreLock {
+    _file: std::fs::File,
+}
+
+#[cfg(unix)]
+fn acquire_store_lock(store_path: &Path) -> Result<StoreLock> {
+    use fs4::fs_std::FileExt;
+    if let Some(parent) = store_path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+    }
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(lock_path(store_path))
+        .with_context(|| format!("opening lock file for {}", store_path.display()))?;
+    FileExt::lock_exclusive(&file).with_context(|| format!("locking {}", store_path.display()))?;
+    Ok(StoreLock { _file: file })
+}
+
+/// No file-locking primitive is wired up for non-unix targets yet (tracked
+/// alongside the broader Windows-support gap); blessing still works, just
+/// without cross-process serialization.
+#[cfg(not(unix))]
+struct StoreLock;
+
+#[cfg(not(unix))]
+fn acquire_store_lock(store_path: &Path) -> Result<StoreLock> {
+    if let Some(parent) = store_path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+    }
+    Ok(StoreLock)
+}
+
+/// Read the store for a bless. Unlike [`read_store`], an unparseable or
+/// otherwise unreadable existing store is treated as **empty** (with a
+/// warning to stderr) rather than propagated as an error, so a corrupt or
+/// half-written store can self-heal the next time someone runs
+/// `ironlint trust`. [`ensure_trusted_in`] deliberately does **not** use this
+/// path — a corrupt store must keep `check` failing closed.
+fn read_store_for_bless(store_path: &Path) -> TrustStore {
+    read_store(store_path).unwrap_or_else(|_| {
+        eprintln!(
+            "warning: trust store at {} was unreadable; rewriting",
+            store_path.display()
+        );
+        TrustStore::default()
+    })
 }
 
 /// Canonical absolute path used as the store key for `config_path`.
@@ -194,13 +274,20 @@ pub fn ensure_trusted_in(config_path: &Path, store_path: &Path) -> Result<()> {
 /// Recompute the hash of `config_path` and write it to the store as blessed.
 ///
 /// Validates the full `extends:` closure first (not just the local file) so a
-/// config whose `extends:` target is missing or broken is never blessed.
+/// config whose `extends:` target is missing or broken is never blessed. The
+/// read-modify-write against `store_path` is guarded by an exclusive
+/// [`acquire_store_lock`], so concurrent `ironlint trust` runs (e.g. parallel
+/// agent sessions) serialize instead of racing and losing entries; a corrupt
+/// existing store is tolerated (see [`read_store_for_bless`]) so blessing
+/// doubles as the recovery path.
 pub fn bless_in(config_path: &Path, store_path: &Path, now: &str) -> Result<()> {
     crate::config::parse_file_with_extends(config_path)
         .context("refusing to trust a config that does not parse")?;
     let key = canonical_key(config_path)?;
     let hash = compute_hash(config_path)?;
-    let mut store = read_store(store_path)?;
+
+    let _lock = acquire_store_lock(store_path)?;
+    let mut store = read_store_for_bless(store_path);
     store.version = TRUST_STORE_VERSION;
     store.entries.insert(
         key,
@@ -495,5 +582,84 @@ mod tests {
         let cfg = proj.path().join(".ironlint.yml");
         write(&cfg, "schema_version: 2\nrules: {}\n"); // legacy → parser rejects
         assert!(bless_in(&cfg, &store.path().join("trust.json"), "t").is_err());
+    }
+
+    #[test]
+    fn concurrent_blesses_do_not_lose_entries() {
+        // Today, bless_in is an unlocked read-modify-write with a fixed temp
+        // filename: N threads blessing distinct configs into the same store
+        // race each other and lose entries. Line all N up on a barrier so
+        // they hit the RMW at (as close to) the same instant as possible,
+        // then assert every entry survived.
+        const N: usize = 8;
+        let store_dir = tempfile::tempdir().unwrap();
+        let store_path = store_dir.path().join("trust.json");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(N));
+
+        let handles: Vec<_> = (0..N)
+            .map(|_| {
+                let store_path = store_path.clone();
+                let barrier = std::sync::Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    let proj = tempfile::tempdir().unwrap();
+                    let cfg = cfg_with_gate(proj.path());
+                    barrier.wait();
+                    bless_in(&cfg, &store_path, "t").unwrap();
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        let store = read_store(&store_path).unwrap();
+        assert_eq!(
+            store.entries.len(),
+            N,
+            "concurrent blesses must not lose entries"
+        );
+    }
+
+    #[test]
+    fn bless_recovers_from_corrupt_store() {
+        // A corrupt/half-written store must not brick `trust` — bless_in
+        // should treat unparseable existing content as empty, warn, and
+        // rewrite with the new entry rather than erroring out.
+        let proj = tempfile::tempdir().unwrap();
+        let store_dir = tempfile::tempdir().unwrap();
+        let store_path = store_dir.path().join("trust.json");
+        write(&store_path, "{ not json");
+        let cfg = cfg_with_gate(proj.path());
+
+        bless_in(&cfg, &store_path, "t").unwrap();
+
+        let store = read_store(&store_path).unwrap();
+        let key = canonical_key(&cfg).unwrap();
+        assert!(
+            store.entries.contains_key(&key),
+            "bless must recover from a corrupt store and record the new entry"
+        );
+    }
+
+    #[test]
+    fn ensure_trusted_fails_closed_on_corrupt_store() {
+        // Unlike bless_in, ensure_trusted must NOT tolerate corruption — a
+        // corrupt store must keep `check` failing closed.
+        let proj = tempfile::tempdir().unwrap();
+        let store_dir = tempfile::tempdir().unwrap();
+        let store_path = store_dir.path().join("trust.json");
+        write(&store_path, "{ not json");
+        let cfg = cfg_with_gate(proj.path());
+
+        assert!(ensure_trusted_in(&cfg, &store_path).is_err());
+    }
+
+    #[test]
+    fn unique_tmp_path_differs_across_calls() {
+        let base = Path::new("/x/trust.json");
+        let a = unique_tmp_path(base);
+        let b = unique_tmp_path(base);
+        assert_ne!(a, b, "temp names must be unique per write");
     }
 }
