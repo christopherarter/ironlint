@@ -277,9 +277,13 @@ fn relativize(path: &Path, root: &Path) -> PathBuf {
 /// `SIGTERM`/`SIGINT`/`SIGKILL` that ends ironlint mid-check (harnesses
 /// routinely do this on their own hook timeout budget, not just on a manual
 /// `kill -9`) skips this destructor entirely and leaves the file sitting in
-/// the checked file's own directory. `sweep_stale_tmpfiles`, run at every
-/// engine `load()`, is the backstop that reclaims that leak on a later run
-/// once the file is older than its age threshold.
+/// the checked file's own directory — which for real source is nested (e.g.
+/// `crates/foo/src/`), not the config root. Two `sweep_stale_tmpfiles`
+/// backstops reclaim that leak once it's older than its age threshold:
+/// `maybe_materialize_tmpfile` sweeps the tmpfile's own parent directory
+/// immediately before writing a new tmpfile there, so a later check against
+/// any file in that same directory reclaims the leak; the sweep at engine
+/// `load()` additionally covers leaks sitting directly in the config root.
 struct TmpFileGuard {
     path: PathBuf,
 }
@@ -320,16 +324,22 @@ fn unique_tmp_name(ext: Option<&str>) -> String {
     }
 }
 
-/// Default age threshold for `sweep_stale_tmpfiles`, run once at every
-/// engine `load()`. A tmpfile older than this is assumed to be a leak from a
-/// killed prior run rather than one still in flight: an in-progress check's
-/// own wall-clock cap is `execution.timeout_secs` (default 30s, see
-/// `resolve_timeout`), so an hour of headroom keeps a live tmpfile — even
-/// from a slow, concurrently-running ironlint process — comfortably below
-/// the threshold and never a sweep target. This is what makes it safe to run
-/// the sweep unconditionally on every load rather than coordinating with
-/// other in-flight processes: age, not identity, is the only signal, and a
-/// generous threshold keeps false positives effectively impossible.
+/// Default age threshold for `sweep_stale_tmpfiles`, used both at engine
+/// `load()` (config-root sweep) and at tmpfile materialization time (sweep
+/// of the tmpfile's own parent directory — see `maybe_materialize_tmpfile`).
+/// A tmpfile older than this is assumed to be a leak from a killed prior run
+/// rather than one still in flight: an in-progress check's own wall-clock
+/// cap is `execution.timeout_secs` (default 30s, see `resolve_timeout`), so
+/// an hour of headroom keeps a live tmpfile — even from a slow,
+/// concurrently-running ironlint process — comfortably below the threshold
+/// and never a sweep target. This is what makes it safe to run the sweep
+/// unconditionally rather than coordinating with other in-flight processes:
+/// age, not identity, is the only signal, and a generous threshold keeps
+/// false positives effectively impossible. That safety margin holds only
+/// while the configured per-check timeout (`execution.timeout_secs`) stays
+/// well under this 1h threshold — a check configured with an hours-long
+/// timeout would put its own still-live tmpfile at risk of being swept as a
+/// leak.
 const TMPFILE_SWEEP_MAX_AGE: Duration = Duration::from_secs(60 * 60);
 
 /// Best-effort reclaim of `$IRONLINT_TMPFILE` leaks in `root`'s immediate
@@ -612,6 +622,16 @@ impl IronLintEngine {
                 ));
             }
         }
+        // Reclaim any stale ironlint-tmp-* leak sitting in THIS directory
+        // before adding a new one. This is the leak's actual home (see the
+        // module doc on `maybe_materialize_tmpfile` / `TmpFileGuard`), so
+        // sweeping here — not just at load-time over the config root — is
+        // what makes a nested leak (the common case for real source) ever
+        // get reclaimed. One `read_dir` of `parent`, only for write-event
+        // checks that reference `$IRONLINT_TMPFILE`; the file this call is
+        // about to create doesn't exist yet, so it can never sweep itself.
+        sweep_stale_tmpfiles(parent, TMPFILE_SWEEP_MAX_AGE);
+
         let name = unique_tmp_name(abs.extension().and_then(|e| e.to_str()));
         let path = parent.join(name);
         std::fs::write(&path, content)?;
@@ -1504,5 +1524,66 @@ mod gate_dispatch_tests {
         let dir = TempDir::new().unwrap();
         let missing = dir.path().join("does-not-exist");
         sweep_stale_tmpfiles(&missing, Duration::from_secs(60 * 60));
+    }
+
+    #[test]
+    fn maybe_materialize_tmpfile_sweeps_stale_leaks_in_its_own_nested_dir() {
+        // $IRONLINT_TMPFILE is materialized as a SIBLING of the checked file
+        // (its own directory), which for real source is nested — e.g.
+        // crates/foo/src/ — not the config root. The load-time
+        // sweep_stale_tmpfiles call only sweeps config_dir's immediate
+        // entries, so it never reaches a leak sitting here. This drives the
+        // real, end-to-end reclaim path (through maybe_materialize_tmpfile,
+        // via a full check dispatch) and proves the nested leak is gone.
+        let dir = TempDir::new().unwrap();
+        write_config(
+            &dir,
+            "checks:\n  cap:\n    files: \"**/*.rs\"\n    run: \"cat \\\"$IRONLINT_TMPFILE\\\" > /dev/null\"\n",
+        );
+        let nested = dir.path().join("crates").join("foo").join("src");
+        std::fs::create_dir_all(&nested).unwrap();
+
+        // Stale: leaked ironlint-tmp-* file sitting in the checked file's
+        // own (nested) directory, from a run killed well before "now" — the
+        // exact leak the root-only load-time sweep misses.
+        let stale = nested.join("ironlint-tmp-9999-0-1.rs");
+        std::fs::write(&stale, "leaked").unwrap();
+        backdate_mtime(&stale, 2 * 60 * 60); // 2h ago
+
+        // Fresh: matches the naming prefix but is recent — could be a
+        // concurrently-running ironlint process's still-live tmpfile in the
+        // same directory. Must survive the sweep.
+        let fresh = nested.join("ironlint-tmp-8888-0-2.rs");
+        std::fs::write(&fresh, "still live").unwrap();
+
+        // Unrelated: old, but the name doesn't match the tmpfile prefix.
+        // Must never be touched, regardless of age.
+        let unrelated = nested.join("lib.rs");
+        std::fs::write(&unrelated, "keep me").unwrap();
+        backdate_mtime(&unrelated, 2 * 60 * 60);
+
+        let engine = load_with_event(&dir, "write");
+        let path = nested.join("a.rs");
+        std::fs::write(&path, "OLD").unwrap();
+        let report = engine
+            .check_with_explain(CheckInput::File {
+                path: path.clone(),
+                content: "PROPOSED".to_string(),
+            })
+            .unwrap();
+        assert_eq!(report.verdict.status, Status::Pass);
+
+        assert!(
+            !stale.exists(),
+            "stale ironlint-tmp-* file in the checked file's nested dir must be swept at materialization time"
+        );
+        assert!(
+            fresh.exists(),
+            "fresh ironlint-tmp-* file in the nested dir must survive (may be a concurrent live run)"
+        );
+        assert!(
+            unrelated.exists(),
+            "non-tmpfile-pattern files in the nested dir must never be touched, regardless of age"
+        );
     }
 }
