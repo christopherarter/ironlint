@@ -356,10 +356,17 @@ fn trust_row(ctx: &DoctorContext) -> CheckResult {
 
 /// Always-present summary row over the per-harness adapter rows. Warns when
 /// zero coding-agent hooks are wired — the most common first-run failure mode,
-/// since the tool's entire effect happens through hooks. A healthy install
-/// with at least one wired harness passes.
+/// since the tool's entire effect happens through hooks. Only a `Pass` adapter
+/// row (installed AND registered) counts as wired: a `Warn` row (detected but
+/// ironlint not installed) or a `Fail` row (registered but broken) is present
+/// but NOT wired, so a machine with, e.g., Claude Code installed and `ironlint
+/// init` never run must still warn — not report a healthy install.
 fn hooks_row(adapter_rows: &[CheckResult]) -> CheckResult {
-    if adapter_rows.is_empty() {
+    let wired = adapter_rows
+        .iter()
+        .filter(|r| r.status == Status::Pass)
+        .count();
+    if wired == 0 {
         CheckResult {
             name: "hooks",
             status: Status::Warn,
@@ -370,7 +377,7 @@ fn hooks_row(adapter_rows: &[CheckResult]) -> CheckResult {
         CheckResult {
             name: "hooks",
             status: Status::Pass,
-            detail: format!("{} harness(es) wired", adapter_rows.len()),
+            detail: format!("{wired} harness(es) wired"),
             remediation: None,
         }
     }
@@ -647,5 +654,55 @@ mod tests {
         let r = adapter_check(&s).expect("healthy harness reported");
         assert_eq!(r.status, Status::Pass);
         assert!(r.remediation.is_none());
+    }
+
+    fn row(name: &'static str, status: Status) -> CheckResult {
+        CheckResult {
+            name,
+            status,
+            detail: String::new(),
+            remediation: None,
+        }
+    }
+
+    #[test]
+    fn hooks_row_warns_when_no_adapter_rows() {
+        let r = hooks_row(&[]);
+        assert_eq!(r.status, Status::Warn);
+        assert!(r.detail.contains("no coding-agent hooks"));
+        assert!(r.remediation.unwrap().contains("ironlint init"));
+    }
+
+    #[test]
+    fn hooks_row_warns_when_only_unwired_rows() {
+        // A detected-but-not-installed harness surfaces as a Warn adapter row; it
+        // is NOT wired, so the summary must warn, not report a healthy install.
+        let rows = [row("reasonix", Status::Warn)];
+        let r = hooks_row(&rows);
+        assert_eq!(r.status, Status::Warn);
+        assert!(r.detail.contains("no coding-agent hooks"));
+    }
+
+    #[test]
+    fn hooks_row_warns_when_only_broken_rows() {
+        // A registered-but-broken harness surfaces as a Fail adapter row; still
+        // zero hooks are actually wired, so the summary must warn.
+        let rows = [row("reasonix", Status::Fail)];
+        let r = hooks_row(&rows);
+        assert_eq!(r.status, Status::Warn);
+    }
+
+    #[test]
+    fn hooks_row_counts_only_wired_pass_rows() {
+        // One wired (Pass) harness + one unwired (Warn) harness → pass, but the
+        // count reports only the wired one.
+        let rows = [row("reasonix", Status::Pass), row("pi", Status::Warn)];
+        let r = hooks_row(&rows);
+        assert_eq!(r.status, Status::Pass);
+        assert!(
+            r.detail.contains("1 harness(es) wired"),
+            "detail must count only wired rows: {}",
+            r.detail
+        );
     }
 }

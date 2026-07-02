@@ -63,11 +63,18 @@ pub fn run(dir: &Path, opts: &Options) -> Result<i32> {
         if opts.dry_run {
             // `scaffold_config` writes the config AND calls `trust::bless`, so it
             // must be skipped entirely on the dry-run path — a dry-run that
-            // mutates the security-critical trust store is disqualifying.
-            println!(
-                "would scaffold and trust: {}",
-                dir.join(".ironlint.yml").display()
-            );
+            // mutates the security-critical trust store is disqualifying. The
+            // preview must also mirror `scaffold_config`'s existing-config
+            // skip, or it lies about what a real run would do.
+            let cfg_path = dir.join(".ironlint.yml");
+            if cfg_path.exists() {
+                println!(
+                    "config: {} already present (would skip)",
+                    cfg_path.display()
+                );
+            } else {
+                println!("would scaffold and trust: {}", cfg_path.display());
+            }
         } else {
             scaffold_config(dir)?;
         }

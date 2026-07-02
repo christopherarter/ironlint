@@ -78,6 +78,7 @@ run_ironlint() {
       exit 2
       ;;
     3)
+      [[ -s "${TMP_VERDICT}" ]] && cat "${TMP_VERDICT}" >&2
       if [ "${IRONLINT_FAIL_CLOSED_ON_INTERNAL:-0}" = "1" ]; then
         echo "ironlint: check errored (exit 3) — blocking (fail-closed)" >&2
         exit 2
@@ -87,7 +88,7 @@ run_ironlint() {
       ;;
     1)
       echo "ironlint: config/trust error (exit 1) — see 'ironlint doctor'" >&2
-      exit 0    # (Phase 3 Task 3.2 upgrades exit 1/4 handling; leave allow for now but LOUD)
+      exit 0    # (Phase 3 Task 3.2 upgrades exit 1 handling; leave allow for now but LOUD)
       ;;
     *)
       echo "ironlint: unexpected ironlint exit ${ec} for ${file}" >&2
