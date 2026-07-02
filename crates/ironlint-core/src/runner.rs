@@ -5,7 +5,7 @@ use crate::verdict::{Block, GateError, Status, Verdict};
 use anyhow::{Context, Result};
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 /// Optional per-run knobs for [`IronLintEngine::check`]. Plumbed via
 /// `builder().with_options(...)` so the public `check` signature stays stable
@@ -273,7 +273,13 @@ fn relativize(path: &Path, root: &Path) -> PathBuf {
 }
 
 /// Removes its temp file on drop — covers normal return, error, timeout, and
-/// panic-unwind. Only a SIGKILL of ironlint itself leaks the file.
+/// panic-unwind. `Drop` does **not** run across a hard process kill: a
+/// `SIGTERM`/`SIGINT`/`SIGKILL` that ends ironlint mid-check (harnesses
+/// routinely do this on their own hook timeout budget, not just on a manual
+/// `kill -9`) skips this destructor entirely and leaves the file sitting in
+/// the checked file's own directory. `sweep_stale_tmpfiles`, run at every
+/// engine `load()`, is the backstop that reclaims that leak on a later run
+/// once the file is older than its age threshold.
 struct TmpFileGuard {
     path: PathBuf,
 }
@@ -292,10 +298,15 @@ fn check_references_tmpfile(check: &Check) -> bool {
         .any(|s| s.run.contains("IRONLINT_TMPFILE"))
 }
 
+/// The naming prefix ironlint gives every `$IRONLINT_TMPFILE` it
+/// materializes (see `unique_tmp_name`) — the only pattern
+/// `sweep_stale_tmpfiles` is allowed to remove.
+const TMPFILE_PREFIX: &str = "ironlint-tmp-";
+
 /// A collision-resistant temp-file name mirroring `ext` (no `rng` dependency).
 fn unique_tmp_name(ext: Option<&str>) -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::UNIX_EPOCH;
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
     let pid = std::process::id();
@@ -304,9 +315,75 @@ fn unique_tmp_name(ext: Option<&str>) -> String {
         .map(|d| d.subsec_nanos())
         .unwrap_or(0);
     match ext {
-        Some(e) => format!("ironlint-tmp-{pid}-{n}-{nanos}.{e}"),
-        None => format!("ironlint-tmp-{pid}-{n}-{nanos}"),
+        Some(e) => format!("{TMPFILE_PREFIX}{pid}-{n}-{nanos}.{e}"),
+        None => format!("{TMPFILE_PREFIX}{pid}-{n}-{nanos}"),
     }
+}
+
+/// Default age threshold for `sweep_stale_tmpfiles`, run once at every
+/// engine `load()`. A tmpfile older than this is assumed to be a leak from a
+/// killed prior run rather than one still in flight: an in-progress check's
+/// own wall-clock cap is `execution.timeout_secs` (default 30s, see
+/// `resolve_timeout`), so an hour of headroom keeps a live tmpfile — even
+/// from a slow, concurrently-running ironlint process — comfortably below
+/// the threshold and never a sweep target. This is what makes it safe to run
+/// the sweep unconditionally on every load rather than coordinating with
+/// other in-flight processes: age, not identity, is the only signal, and a
+/// generous threshold keeps false positives effectively impossible.
+const TMPFILE_SWEEP_MAX_AGE: Duration = Duration::from_secs(60 * 60);
+
+/// Best-effort reclaim of `$IRONLINT_TMPFILE` leaks in `root`'s immediate
+/// directory: removes only files whose name starts with `TMPFILE_PREFIX` and
+/// whose mtime is older than `max_age`. Never touches anything else — a
+/// non-matching name, a directory, or an unreadable/racing entry is simply
+/// skipped rather than erroring, since this runs unconditionally on every
+/// engine load and a sweep failure must never block a check.
+///
+/// Deliberately shallow (does not recurse into subdirectories): a tmpfile
+/// for a nested checked file lands in that file's own directory (see
+/// `maybe_materialize_tmpfile`), which this pass does not visit. `load()` is
+/// a hot path — it can run once per agent write — so the sweep is bounded to
+/// `root`'s own entries rather than paying an O(repo size) walk on every
+/// invocation.
+fn sweep_stale_tmpfiles(root: &Path, max_age: Duration) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    let now = SystemTime::now();
+    for entry in entries.flatten() {
+        if is_stale_tmpfile(&entry, now, max_age) {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// True iff `entry` is a regular file matching `TMPFILE_PREFIX` whose mtime
+/// is older than `max_age` relative to `now`. Extracted from
+/// `sweep_stale_tmpfiles` to keep both functions well under the cognitive
+/// complexity cap.
+fn is_stale_tmpfile(entry: &std::fs::DirEntry, now: SystemTime, max_age: Duration) -> bool {
+    let file_name = entry.file_name();
+    let Some(name) = file_name.to_str() else {
+        return false;
+    };
+    if !name.starts_with(TMPFILE_PREFIX) {
+        return false;
+    }
+    let Ok(metadata) = entry.metadata() else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    let Ok(modified) = metadata.modified() else {
+        return false;
+    };
+    // `Err` means `modified` is in the future relative to `now` (clock skew
+    // or a filesystem with coarse/odd mtime semantics) — treat as fresh, not
+    // stale, rather than guessing.
+    now.duration_since(modified)
+        .map(|age| age > max_age)
+        .unwrap_or(false)
 }
 
 pub struct IronLintEngineBuilder {
@@ -400,6 +477,13 @@ impl IronLintEngine {
         let config_dir_canon = config_dir
             .canonicalize()
             .unwrap_or_else(|_| config_dir.clone());
+
+        // Reclaim any $IRONLINT_TMPFILE a prior run leaked by dying mid-check
+        // (SIGTERM/SIGINT skip TmpFileGuard::drop — see its docstring).
+        // Best-effort and age-gated, so it can never step on a tmpfile a
+        // concurrently-running ironlint process still owns.
+        sweep_stale_tmpfiles(&config_dir_canon, TMPFILE_SWEEP_MAX_AGE);
+
         let timeout = resolve_timeout(&config);
 
         Ok(Self {
@@ -1350,5 +1434,75 @@ mod gate_dispatch_tests {
             .check_with_explain(CheckInput::File { path, content })
             .unwrap();
         assert_eq!(report.verdict.status, Status::Pass);
+    }
+
+    // --- Task 2.5: stale $IRONLINT_TMPFILE sweep ---
+
+    /// Backdate `path`'s mtime `secs_ago` seconds into the past, to simulate
+    /// a tmpfile leaked by a run that was killed well before "now".
+    fn backdate_mtime(path: &Path, secs_ago: u64) {
+        let old = SystemTime::now() - Duration::from_secs(secs_ago);
+        let file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+        file.set_times(std::fs::FileTimes::new().set_modified(old))
+            .unwrap();
+    }
+
+    #[test]
+    fn sweep_stale_tmpfiles_removes_only_old_matching_files() {
+        let dir = TempDir::new().unwrap();
+
+        // Stale: matches the tmpfile naming prefix, mtime well past the
+        // threshold — this is the leaked-file case the sweep exists for.
+        let stale = dir.path().join("ironlint-tmp-1111-0-1.rs");
+        std::fs::write(&stale, "leaked").unwrap();
+        backdate_mtime(&stale, 2 * 60 * 60); // 2h ago
+
+        // Fresh: matches the naming prefix but is recent — could be a
+        // concurrently-running ironlint process's still-live tmpfile. Must
+        // survive the sweep.
+        let fresh = dir.path().join("ironlint-tmp-2222-0-2.rs");
+        std::fs::write(&fresh, "still live").unwrap();
+
+        // Unrelated: old, but the name doesn't match the tmpfile prefix.
+        // Must never be touched, regardless of age.
+        let unrelated = dir.path().join("real_file.rs");
+        std::fs::write(&unrelated, "keep me").unwrap();
+        backdate_mtime(&unrelated, 2 * 60 * 60);
+
+        sweep_stale_tmpfiles(dir.path(), Duration::from_secs(60 * 60));
+
+        assert!(!stale.exists(), "stale ironlint-tmp-* file must be swept");
+        assert!(
+            fresh.exists(),
+            "fresh ironlint-tmp-* file must survive (may be a concurrent live run)"
+        );
+        assert!(
+            unrelated.exists(),
+            "non-tmpfile-pattern files must never be touched, regardless of age"
+        );
+    }
+
+    #[test]
+    fn sweep_stale_tmpfiles_ignores_directories_matching_the_prefix() {
+        let dir = TempDir::new().unwrap();
+        let weird_dir = dir.path().join("ironlint-tmp-a-dir");
+        std::fs::create_dir(&weird_dir).unwrap();
+
+        // Even with an effectively-zero threshold (everything old enough to
+        // count as stale), a directory is never a sweep candidate.
+        sweep_stale_tmpfiles(dir.path(), Duration::from_secs(0));
+
+        assert!(
+            weird_dir.exists(),
+            "a directory matching the tmpfile prefix must never be removed"
+        );
+    }
+
+    #[test]
+    fn sweep_stale_tmpfiles_tolerates_missing_root() {
+        // Best-effort: a root that doesn't exist (or vanished) must not panic.
+        let dir = TempDir::new().unwrap();
+        let missing = dir.path().join("does-not-exist");
+        sweep_stale_tmpfiles(&missing, Duration::from_secs(60 * 60));
     }
 }
