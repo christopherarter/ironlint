@@ -64,3 +64,47 @@ fn origin_map_records_transitive_grandparent() {
         &grand.canonicalize().unwrap()
     );
 }
+
+#[test]
+fn origin_resolve_inherits_execution_timeout_from_parent() {
+    let dir = tempdir().unwrap();
+    let parent = dir.path().join("parent.yml");
+    write(
+        &parent,
+        "execution:\n  timeout_secs: 120\nchecks:\n  base-gate:\n    files: \"**/*.rs\"\n    run: \"exit 0\"\n",
+    );
+    let child = dir.path().join(".ironlint.yml");
+    write(
+        &child,
+        "extends: [\"parent.yml\"]\nchecks:\n  child-gate:\n    files: \"**/*.rs\"\n    run: \"exit 0\"\n",
+    );
+
+    let (cfg, _origins) = resolve_with_origin(&child).unwrap();
+    assert_eq!(
+        cfg.timeout_secs(),
+        120,
+        "resolve_with_origin inherits the base's timeout too"
+    );
+}
+
+#[test]
+fn origin_resolve_local_execution_timeout_wins_over_parent() {
+    let dir = tempdir().unwrap();
+    let parent = dir.path().join("parent.yml");
+    write(
+        &parent,
+        "execution:\n  timeout_secs: 120\nchecks:\n  base-gate:\n    files: \"**/*.rs\"\n    run: \"exit 0\"\n",
+    );
+    let child = dir.path().join(".ironlint.yml");
+    write(
+        &child,
+        "extends: [\"parent.yml\"]\nexecution:\n  timeout_secs: 5\nchecks:\n  child-gate:\n    files: \"**/*.rs\"\n    run: \"exit 0\"\n",
+    );
+
+    let (cfg, _origins) = resolve_with_origin(&child).unwrap();
+    assert_eq!(
+        cfg.timeout_secs(),
+        5,
+        "resolve_with_origin: child's explicit timeout overrides the inherited one"
+    );
+}

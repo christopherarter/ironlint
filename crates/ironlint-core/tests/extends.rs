@@ -48,6 +48,69 @@ fn extends_local_gate_wins_on_collision() {
 }
 
 #[test]
+fn extends_inherits_execution_timeout_from_parent() {
+    let dir = tempdir().unwrap();
+    let parent = dir.path().join("parent.yml");
+    write(
+        &parent,
+        "execution:\n  timeout_secs: 120\nchecks:\n  base-gate:\n    files: \"**/*.rs\"\n    run: \"exit 0\"\n",
+    );
+    let child = dir.path().join(".ironlint.yml");
+    write(
+        &child,
+        "extends: [\"parent.yml\"]\nchecks:\n  child-gate:\n    files: \"**/*.rs\"\n    run: \"exit 0\"\n",
+    );
+    let cfg = parse_file_with_extends(&child).expect("parse");
+    assert_eq!(
+        cfg.timeout_secs(),
+        120,
+        "child with no execution block inherits the base's timeout"
+    );
+}
+
+#[test]
+fn extends_local_execution_timeout_wins_over_parent() {
+    let dir = tempdir().unwrap();
+    let parent = dir.path().join("parent.yml");
+    write(
+        &parent,
+        "execution:\n  timeout_secs: 120\nchecks:\n  base-gate:\n    files: \"**/*.rs\"\n    run: \"exit 0\"\n",
+    );
+    let child = dir.path().join(".ironlint.yml");
+    write(
+        &child,
+        "extends: [\"parent.yml\"]\nexecution:\n  timeout_secs: 5\nchecks:\n  child-gate:\n    files: \"**/*.rs\"\n    run: \"exit 0\"\n",
+    );
+    let cfg = parse_file_with_extends(&child).expect("parse");
+    assert_eq!(
+        cfg.timeout_secs(),
+        5,
+        "child's explicit timeout overrides the inherited one"
+    );
+}
+
+#[test]
+fn extends_no_execution_anywhere_defaults_to_30() {
+    let dir = tempdir().unwrap();
+    let parent = dir.path().join("parent.yml");
+    write(
+        &parent,
+        "checks:\n  base-gate:\n    files: \"**/*.rs\"\n    run: \"exit 0\"\n",
+    );
+    let child = dir.path().join(".ironlint.yml");
+    write(
+        &child,
+        "extends: [\"parent.yml\"]\nchecks:\n  child-gate:\n    files: \"**/*.rs\"\n    run: \"exit 0\"\n",
+    );
+    let cfg = parse_file_with_extends(&child).expect("parse");
+    assert_eq!(
+        cfg.timeout_secs(),
+        30,
+        "neither config sets execution — resolved timeout is still the default"
+    );
+}
+
+#[test]
 fn extends_chain_three_levels() {
     let dir = tempdir().unwrap();
     let grand = dir.path().join("grand.yml");

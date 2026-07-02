@@ -74,11 +74,14 @@ fn collect_paths(
 }
 
 /// Inherited checks fill in only where the local config doesn't already define
-/// them — local wins on collision.
+/// them — local wins on collision. `execution` (e.g. `timeout_secs`) merges the
+/// same way: a local config that sets no `execution:` block inherits the
+/// nearest ancestor's; an explicit local block always wins.
 fn merge_inherited(local: &mut Config, inherited: Config) {
     for (id, check) in inherited.checks {
         local.checks.entry(id).or_insert(check);
     }
+    local.execution = local.execution.take().or(inherited.execution);
 }
 
 /// Resolve `extends:` and return a per-check origin map.
@@ -134,6 +137,7 @@ fn merge_inherited_with_origin(
     let inherited_canonical = inherited_from
         .canonicalize()
         .unwrap_or_else(|_| inherited_from.to_path_buf());
+    let inherited_execution = inherited.execution;
     for (id, check) in inherited.checks {
         if let std::collections::btree_map::Entry::Vacant(slot) = local.checks.entry(id.clone()) {
             origins
@@ -142,4 +146,5 @@ fn merge_inherited_with_origin(
             slot.insert(check);
         }
     }
+    local.execution = local.execution.take().or(inherited_execution);
 }

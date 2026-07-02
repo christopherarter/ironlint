@@ -6,9 +6,27 @@ use std::collections::BTreeMap;
 pub struct Config {
     #[serde(default)]
     pub extends: Vec<String>,
-    #[serde(default)]
-    pub execution: ExecutionConfig,
+    /// `None` when the config sets no `execution:` block at all — distinct
+    /// from a block that's present but uses field defaults. `extends` merging
+    /// (`config::extends::merge_inherited`) relies on this to tell "unset,
+    /// inherit the ancestor's value" from "explicitly set, local wins." Use
+    /// [`Config::timeout_secs`] to read the resolved value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<ExecutionConfig>,
     pub checks: BTreeMap<String, Check>,
+}
+
+impl Config {
+    /// The resolved per-check wall-clock timeout in seconds: the configured
+    /// value (local or inherited via `extends`) if set, else the default
+    /// (30s). Call this instead of reading `execution` directly — it's the
+    /// one place that applies the default after `extends` merging.
+    pub fn timeout_secs(&self) -> u64 {
+        self.execution
+            .as_ref()
+            .map(|e| e.timeout_secs)
+            .unwrap_or_else(default_timeout_secs)
+    }
 }
 
 /// Optional execution-tuning block.
@@ -147,7 +165,11 @@ mod tests {
     fn execution_timeout_defaults_to_30() {
         let cfg: Config =
             serde_yaml::from_str("checks:\n  g:\n    files: \"*\"\n    run: \"true\"\n").unwrap();
-        assert_eq!(cfg.execution.timeout_secs, 30);
+        assert!(
+            cfg.execution.is_none(),
+            "no execution block parses to None, not a default-filled struct"
+        );
+        assert_eq!(cfg.timeout_secs(), 30);
     }
 
     #[test]
@@ -156,7 +178,7 @@ mod tests {
             "execution:\n  timeout_secs: 5\nchecks:\n  g:\n    files: \"*\"\n    run: \"true\"\n",
         )
         .unwrap();
-        assert_eq!(cfg.execution.timeout_secs, 5);
+        assert_eq!(cfg.timeout_secs(), 5);
     }
 
     #[test]

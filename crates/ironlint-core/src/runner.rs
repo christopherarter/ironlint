@@ -212,7 +212,7 @@ fn resolve_timeout(config: &Config) -> Duration {
     let secs = std::env::var("IRONLINT_TIMEOUT")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(config.execution.timeout_secs);
+        .unwrap_or_else(|| config.timeout_secs());
     Duration::from_secs(secs.max(1))
 }
 
