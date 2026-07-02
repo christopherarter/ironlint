@@ -16,6 +16,7 @@ globset.workspace = true
 chrono.workspace = true
 wait-timeout = "0.2"
 fs4.workspace = true
+nix = { version = "0.31.3", default-features = false, features = ["signal", "process"] }
 
 [dev-dependencies]
 tempfile.workspace = true

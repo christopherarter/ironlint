@@ -90,6 +90,15 @@ pub fn run_gate(
     if let Some(tf) = env.tmpfile {
         cmd.env("IRONLINT_TMPFILE", tf);
     }
+    // Put the child in its own new process group (pgid == its own pid, since
+    // it is the group leader). A compound `run` (`cargo check | head`) has
+    // `sh` fork-exec the real tool as a group member; on timeout we kill the
+    // whole group, not just `sh`, so the real tool never survives orphaned.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => return GateOutcome::Internal(InternalReason::Spawn(e.to_string())),
@@ -128,8 +137,16 @@ pub fn run_gate(
     let status = match child.wait_timeout(timeout) {
         Ok(Some(status)) => status,
         Ok(None) => {
-            let _ = child.kill();
+            #[cfg(unix)]
+            kill_process_group(&child);
+            #[cfg(not(unix))]
+            kill_process_group(&mut child);
             let _ = child.wait();
+            // The kill closes every write end held by the (now-dead) group,
+            // so these reads see EOF and the threads exit promptly — no
+            // handle is left unjoined on the timeout path.
+            let _ = out_handle.join();
+            let _ = err_handle.join();
             return GateOutcome::Internal(InternalReason::Timeout);
         }
         Err(e) => return GateOutcome::Internal(InternalReason::Spawn(e.to_string())),
@@ -139,6 +156,22 @@ pub fn run_gate(
     let stderr = String::from_utf8_lossy(&err_handle.join().unwrap_or_default()).into_owned();
 
     classify(status, &stdout, &stderr)
+}
+
+/// Kill the child's whole process group (it is the group leader — see the
+/// `process_group(0)` set at spawn), not just the child itself, so a
+/// compound `run` command can't leave its real tool orphaned past a timeout.
+#[cfg(unix)]
+fn kill_process_group(child: &std::process::Child) {
+    use nix::sys::signal::{killpg, Signal};
+    use nix::unistd::Pid;
+    let pgid = Pid::from_raw(child.id().cast_signed());
+    let _ = killpg(pgid, Signal::SIGKILL);
+}
+
+#[cfg(not(unix))]
+fn kill_process_group(child: &mut std::process::Child) {
+    let _ = child.kill();
 }
 
 fn classify(status: std::process::ExitStatus, stdout: &str, stderr: &str) -> GateOutcome {
@@ -365,6 +398,49 @@ mod tests {
         // Gate passes iff $IRONLINT_TMPFILE equals the path we passed.
         let run = format!("test \"$IRONLINT_TMPFILE\" = \"{}\"", tmp.display());
         assert!(matches!(run_gate(&run, &env, None, t()), GateOutcome::Pass));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn timeout_kills_whole_process_group() {
+        // A compound check (`sleep 30 & ...; wait`) forks a grandchild that
+        // `sh` does not wait synchronously for before the timeout fires.
+        // Killing only the `sh` child orphans the grandchild. This test
+        // proves the grandchild is dead too, not just the immediate child.
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("x.txt");
+        let marker = dir.path().join("marker.pid");
+        let run = format!("sleep 30 & echo $! > '{}'; wait", marker.display());
+
+        let out = run_gate(
+            &run,
+            &env_for(&f, dir.path()),
+            None,
+            Duration::from_millis(500),
+        );
+        assert!(matches!(
+            out,
+            GateOutcome::Internal(InternalReason::Timeout)
+        ));
+
+        let pid_str = std::fs::read_to_string(&marker)
+            .expect("grandchild should have written its pid before the timeout fired");
+        let pid: i32 = pid_str.trim().parse().expect("marker should contain a pid");
+
+        // Poll briefly: signal delivery/reaping isn't synchronous with our
+        // return, but should resolve well within this window if the whole
+        // group was actually killed.
+        let mut alive = true;
+        for _ in 0..40 {
+            match nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None) {
+                Err(nix::errno::Errno::ESRCH) => {
+                    alive = false;
+                    break;
+                }
+                _ => std::thread::sleep(Duration::from_millis(50)),
+            }
+        }
+        assert!(!alive, "grandchild process {pid} survived the timeout kill");
     }
 
     #[test]
