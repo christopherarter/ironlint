@@ -56,7 +56,7 @@ test("hooks no-op when .ironlint.yml is absent at load time", async () => {
         { args: { filePath: file, content: "this has DEBUG\n" } },
       ),
     ).resolves.toBeUndefined()
-    expect(existsSync(file)).toBe(false) // shadow-write never happened
+    expect(existsSync(file)).toBe(false) // the adapter never writes the real file
   } finally {
     rmSync(empty, { recursive: true, force: true })
   }
@@ -117,8 +117,9 @@ test("before-hook on clean Write content passes", async () => {
       { args: { filePath: file, content: "ok\n" } },
     ),
   ).resolves.toBeUndefined()
-  // Shadow-write must be undone on the pass path so opencode's real
-  // write is what lands on disk.
+  // The plugin never writes the real file — it only gates the proposed
+  // content via stdin. A nonexistent target stays nonexistent; opencode
+  // performs the real write after the before-hook returns.
   expect(existsSync(file)).toBe(false)
 })
 
@@ -196,9 +197,9 @@ test("before-hook on clean Edit passes and leaves file unchanged (opencode write
     ),
   ).resolves.toBeUndefined()
 
-  // The shadow content must be restored so opencode's own write is the
-  // canonical one. We only assert pre-state here; opencode does the real
-  // write after the before-hook returns.
+  // The plugin never writes the real file — it only reads the current
+  // content to simulate the edit for the gate. opencode performs the
+  // actual write after the before-hook returns.
   expect(readFileSync(file, "utf8")).toBe("hello world\n")
 })
 
@@ -283,7 +284,7 @@ test("before-hook skips self-check of .ironlint.yml (R3)", async () => {
     // No ironlint invocation: no "internal error" log, no trust-verify log.
     expect(errs.join("\n")).not.toContain("internal error")
     expect(errs.join("\n")).not.toContain("trust verify")
-    // File untouched (shadow-write never happened).
+    // File untouched — the plugin never writes the real file.
     expect(readFileSync(file, "utf8")).toBe(beforeBytes)
   } finally {
     console.error = origErr
@@ -294,7 +295,7 @@ test("before-hook skips self-check of .ironlint.yml (R3)", async () => {
 test("before-hook skips self-check of .bully.yml (R3)", async () => {
   // Same R3 short-circuit, applied to the migration-source filename.
   // The fixture project has no .bully.yml on disk; the plugin must
-  // recognize the basename and exit before attempting any shadow-write.
+  // recognize the basename and exit before invoking ironlint at all.
   const file = join(project, ".bully.yml")
   rmSync(file, { force: true })
   const hooks = await IronLintPlugin(fakeCtx(project))
@@ -306,8 +307,90 @@ test("before-hook skips self-check of .bully.yml (R3)", async () => {
     ),
   ).resolves.toBeUndefined()
 
-  // The plugin returned before shadow-writing the proposed content.
+  // The plugin returned before ever touching the real file.
   expect(existsSync(file)).toBe(false)
+})
+
+test("real file is never written: a check inspecting $IRONLINT_FILE mid-check sees the pre-edit original", async () => {
+  // This is the load-bearing regression test for the shadow-write bug
+  // (E3): the old adapter wrote the PROPOSED content to the real file
+  // path, ran `ironlint check --file <path>` (no `--content -`, so the
+  // CLI read the file back off disk), and restored the original in a
+  // `finally`. A check's `run` script that reads `$IRONLINT_FILE` (the
+  // real path) *during* the check would therefore observe the flashed
+  // proposed content — exactly what a file watcher (HMR, tsc --watch)
+  // would see too.
+  //
+  // Fixture: a check whose `run` asserts $IRONLINT_FILE's on-disk content
+  // still equals the pre-edit original. Under the old shadow-write code
+  // this assertion fails (blocks) because the real file briefly held the
+  // proposed content. Under the fixed stdin-piped code the real file is
+  // never touched, so the assertion holds and the check passes.
+  const root = mkdtempSync(join(tmpdir(), "ironlint-opencode-noshadow-"))
+  try {
+    const yml = [
+      "checks:",
+      "  no-shadow-write:",
+      '    files: ["*.txt"]',
+      "    run: 'test \"$(cat \"$IRONLINT_FILE\")\" = \"original content\"'",
+      "",
+    ].join("\n")
+    writeFileSync(join(root, ".ironlint.yml"), yml)
+    await $`ironlint trust --config ${join(root, ".ironlint.yml")}`.quiet()
+
+    const file = join(root, "target.txt")
+    writeFileSync(file, "original content")
+
+    const hooks = await IronLintPlugin(fakeCtx(root))
+    await expect(
+      hooks["tool.execute.before"]!(
+        { tool: "write", sessionID: "s", callID: "c" },
+        { args: { filePath: file, content: "proposed content" } },
+      ),
+    ).resolves.toBeUndefined() // must PASS: the real file was never overwritten mid-check
+
+    // The real file must be byte-identical to its pre-edit state — the
+    // adapter must never have written to it, not even transiently.
+    expect(readFileSync(file, "utf8")).toBe("original content")
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("a passing check leaves a non-UTF8 file byte-identical on disk", async () => {
+  // Regression for the "permanent corruption even on PASS" half of E3:
+  // the old adapter's shadow-write/restore read the real file back with
+  // `readFileSync(file, "utf8")`. Invalid UTF-8 byte sequences decode
+  // lossily into U+FFFD replacement characters, and the `finally` restore
+  // re-encoded that lossy string over the original bytes — corrupting a
+  // non-UTF8 file even when the check passed cleanly. The fixed adapter
+  // never reads or writes the real file, so this can no longer happen.
+  const root = mkdtempSync(join(tmpdir(), "ironlint-opencode-nonutf8-"))
+  try {
+    writeFileSync(join(root, ".ironlint.yml"), IRONLINT_YML)
+    await $`ironlint trust --config ${join(root, ".ironlint.yml")}`.quiet()
+
+    const file = join(root, "binary.txt")
+    // Invalid UTF-8: a lone continuation byte (0xff) and an overlong/
+    // malformed sequence — mangled by any readFileSync(file, "utf8").
+    const originalBytes = Buffer.from([0x68, 0x69, 0xff, 0xfe, 0x00, 0x9c])
+    writeFileSync(file, originalBytes)
+
+    const hooks = await IronLintPlugin(fakeCtx(root))
+    await expect(
+      hooks["tool.execute.before"]!(
+        { tool: "write", sessionID: "s", callID: "c" },
+        { args: { filePath: file, content: "clean\n" } },
+      ),
+    ).resolves.toBeUndefined() // passes: no DEBUG in the proposed content
+
+    // The plugin only gates; opencode itself performs the real write
+    // after the hook returns. The real file must be untouched, byte for
+    // byte — no lossy-decode-and-rewrite round-trip.
+    expect(Buffer.compare(readFileSync(file), originalBytes)).toBe(0)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })
 
 test("before-hook skips self-check of bare relative .ironlint.yml (R3)", async () => {

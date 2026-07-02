@@ -1,5 +1,5 @@
 import type { Plugin } from "@opencode-ai/plugin"
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, readFileSync } from "node:fs"
 import { basename, join } from "node:path"
 
 // OpenCode tools we gate. `apply_patch` is intentionally not gated at 0.1d
@@ -47,16 +47,18 @@ function getNewString(args: FileToolArgs): string | undefined {
 /**
  * IronLint OpenCode plugin.
  *
- *   - `tool.execute.before` on `edit`/`write` → shadow-write the proposed
- *      content to the target path, run `ironlint check --file <path>`, then
- *      always restore the pre-edit state. Throw on block so OpenCode never
- *      executes the tool (exit-code contract: 0 = pass/warn, 2 = block).
+ *   - `tool.execute.before` on `edit`/`write` → compute the proposed
+ *      content and pipe it to `ironlint check --file <path> --content -`
+ *      on stdin. The real file at `filePath` is never written or read
+ *      back — the check only ever sees the proposed bytes. Throw on block
+ *      so OpenCode never executes the tool (exit-code contract: 0 =
+ *      pass/warn, 2 = block).
  *
- * IronLint itself is invoked as a child process via Bun's `$` API. The
+ * IronLint itself is invoked as a child process via `Bun.spawnSync`. The
  * plugin contains no rule logic — it's purely a translation layer between
  * OpenCode's lifecycle and the `ironlint` CLI.
  */
-export const IronLintPlugin: Plugin = async ({ $, directory, worktree }) => {
+export const IronLintPlugin: Plugin = async ({ directory, worktree }) => {
   const projectRoot = worktree || directory
   const configPath = join(projectRoot, ".ironlint.yml")
 
@@ -77,23 +79,32 @@ export const IronLintPlugin: Plugin = async ({ $, directory, worktree }) => {
       const proposed = computeProposedContent(filePath, args)
       if (proposed === null) return // can't simulate — skip the gate
 
-      const originalExists = existsSync(filePath)
-      const original = originalExists ? readFileSync(filePath, "utf8") : null
-
-      // Shadow-write the proposed content so rules that shell out and read
-      // `{file}` from disk (grep, biome, depcruise) see what opencode is
-      // about to write. Always restore in `finally`, whether the check
-      // passes or blocks.
-      let result: Awaited<ReturnType<typeof $>>
-      try {
-        writeFileSync(filePath, proposed)
-        result =
-          await $`ironlint check --file ${filePath} --config ${configPath} --format json`
-            .quiet()
-            .nothrow()
-      } finally {
-        restoreFile(filePath, original)
-      }
+      // Pipe the proposed content to ironlint on stdin via `--content -`.
+      // The real file at `filePath` is NEVER written or read back: no
+      // shadow-write, no restore. That machinery used to (a) permanently
+      // corrupt non-UTF8 files via a lossy readFileSync/writeFileSync
+      // round-trip, even on a passing check; (b) leave blocked content on
+      // disk if the process crashed mid-check; and (c) feed flashed
+      // content to file watchers (HMR, tsc --watch). `--content -` is the
+      // sanctioned ABI path for handing ironlint proposed content without
+      // ever touching the real path. The content is sent as raw UTF-8
+      // bytes (not spliced into a shell command string) so it travels
+      // byte-for-byte.
+      const result = Bun.spawnSync(
+        [
+          "ironlint",
+          "check",
+          "--file",
+          filePath,
+          "--content",
+          "-",
+          "--config",
+          configPath,
+          "--format",
+          "json",
+        ],
+        { stdin: new TextEncoder().encode(proposed) },
+      )
 
       // Exit code contract (commands/check.rs):
       //   0 → pass or warn  (allow opencode to run the tool)
@@ -128,8 +139,9 @@ export const IronLintPlugin: Plugin = async ({ $, directory, worktree }) => {
 }
 
 /**
- * Compute the file content that opencode is about to write, so we can
- * shadow-write it and run ironlint against it before opencode runs the tool.
+ * Compute the file content that opencode is about to write, so we can pipe
+ * it to `ironlint check --content -` and gate it before opencode runs the
+ * tool.
  *
  * - `write` tool → `content` (or `newString`) is the full file body.
  * - `edit` tool → replace the first occurrence of `oldString` with
@@ -161,26 +173,6 @@ function computeProposedContent(filePath: string, args: FileToolArgs): string | 
   const idx = current.indexOf(old)
   if (idx === -1) return null
   return current.slice(0, idx) + neu + current.slice(idx + old.length)
-}
-
-/**
- * Restore a file to its pre-check state. `original === null` means the
- * file did not exist before, so delete it. Failures are swallowed —
- * the check has already happened and the agent will get whatever
- * verdict it produced; a failed restore is reported via stderr.
- */
-function restoreFile(filePath: string, original: string | null): void {
-  try {
-    if (original === null) {
-      rmSync(filePath, { force: true })
-    } else {
-      writeFileSync(filePath, original)
-    }
-  } catch (err) {
-    console.error(
-      `ironlint: failed to restore ${filePath} after check: ${(err as Error).message}`,
-    )
-  }
 }
 
 export default IronLintPlugin
