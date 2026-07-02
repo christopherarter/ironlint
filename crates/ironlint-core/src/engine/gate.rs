@@ -141,12 +141,24 @@ pub fn run_gate(
             kill_process_group(&child);
             #[cfg(not(unix))]
             kill_process_group(&mut child);
+            // Reap the direct `sh` child so it doesn't linger as a zombie.
+            // It was just SIGKILLed (or `.kill()`ed on non-unix), so this
+            // returns promptly.
             let _ = child.wait();
-            // The kill closes every write end held by the (now-dead) group,
-            // so these reads see EOF and the threads exit promptly — no
-            // handle is left unjoined on the timeout path.
-            let _ = out_handle.join();
-            let _ = err_handle.join();
+            // Deliberately do NOT join the drain threads here (contrast the
+            // normal pass/block path below, which does). `read_to_end` only
+            // returns once every write end of the pipe is closed, and
+            // `kill_process_group` only reaches processes still in the
+            // child's own process group. A descendant that escaped the
+            // group (e.g. via `setsid`/`setpgid`) while inheriting our
+            // stdout/stderr fd would keep a write end open and block a
+            // `.join()` forever — defeating the very timeout this function
+            // exists to enforce. Returning here drops `out_handle` /
+            // `err_handle` without joining, which detaches the threads:
+            // they keep draining in the background until their pipe
+            // finally sees EOF (harmless leak, bounded by process
+            // lifetime), and their output is never used anyway since
+            // `Internal(Timeout)` carries no stdout/stderr message.
             return GateOutcome::Internal(InternalReason::Timeout);
         }
         Err(e) => return GateOutcome::Internal(InternalReason::Spawn(e.to_string())),
