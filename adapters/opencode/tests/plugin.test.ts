@@ -1,5 +1,12 @@
 import { test, expect, beforeAll, afterAll } from "bun:test"
-import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs"
+import {
+  mkdtempSync,
+  writeFileSync,
+  readFileSync,
+  rmSync,
+  existsSync,
+  chmodSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { $ } from "bun"
@@ -390,6 +397,74 @@ test("a passing check leaves a non-UTF8 file byte-identical on disk", async () =
     expect(Buffer.compare(readFileSync(file), originalBytes)).toBe(0)
   } finally {
     rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("missing ironlint binary fail-opens with an internal-error log (2.8)", async () => {
+  // Task 2.8 defect 1: Bun.spawnSync throws synchronously when `ironlint`
+  // is absent from PATH (verified on Bun 1.3.8: "Executable not found in
+  // $PATH"). With no try/catch the throw escapes the async before-hook —
+  // which is exactly how this adapter signals BLOCK — so a missing binary
+  // hard-blocks every edit. The hook must instead route a spawn failure
+  // through the internal-error tier (fail-open by default) and log it.
+  const emptyPath = mkdtempSync(join(tmpdir(), "ironlint-empty-path-"))
+  const savedPath = process.env["PATH"]
+  const savedErr = console.error
+  const errs: string[] = []
+  console.error = (msg: unknown) => {
+    errs.push(String(msg))
+  }
+  process.env["PATH"] = emptyPath
+  try {
+    const hooks = await IronLintPlugin(fakeCtx(project))
+    const file = join(project, "missing-binary.txt")
+    rmSync(file, { force: true })
+    await expect(
+      hooks["tool.execute.before"]!(
+        { tool: "write", sessionID: "s", callID: "c" },
+        { args: { filePath: file, content: "ok\n" } },
+      ),
+    ).resolves.toBeUndefined()
+    expect(errs.join("\n").toLowerCase()).toContain("ironlint")
+    expect(existsSync(file)).toBe(false)
+  } finally {
+    process.env["PATH"] = savedPath
+    console.error = savedErr
+    rmSync(emptyPath, { recursive: true, force: true })
+  }
+})
+
+test("signal-killed ironlint honors IRONLINT_FAIL_CLOSED_ON_INTERNAL=1 (2.8)", async () => {
+  // Task 2.8 defect 2: when the CLI dies by signal, Bun reports exitCode
+  // null. The current branch chain skips both `=== 2` and `=== 3` and lands
+  // in the generic `!== 0` log-and-allow arm — silently defeating the
+  // fail-closed opt-in exactly when the engine is being OOM/hook-timeout
+  // killed. A signal death must normalize into the internal tier so the
+  // existing fail-closed branch fires.
+  const stubDir = mkdtempSync(join(tmpdir(), "ironlint-stub-sigkill-"))
+  const stub = join(stubDir, "ironlint")
+  // kill -KILL $$ makes the stub die by SIGKILL → exitCode null.
+  writeFileSync(stub, "#!/bin/sh\nkill -KILL $$\n")
+  chmodSync(stub, 0o755)
+  const savedPath = process.env["PATH"]
+  const savedFc = process.env["IRONLINT_FAIL_CLOSED_ON_INTERNAL"]
+  process.env["PATH"] = stubDir + ":" + (savedPath ?? "")
+  process.env["IRONLINT_FAIL_CLOSED_ON_INTERNAL"] = "1"
+  try {
+    const hooks = await IronLintPlugin(fakeCtx(project))
+    const file = join(project, "sigkill.txt")
+    rmSync(file, { force: true })
+    await expect(
+      hooks["tool.execute.before"]!(
+        { tool: "write", sessionID: "s", callID: "c" },
+        { args: { filePath: file, content: "ok\n" } },
+      ),
+    ).rejects.toThrow(/ironlint/)
+  } finally {
+    process.env["PATH"] = savedPath
+    if (savedFc === undefined) delete process.env["IRONLINT_FAIL_CLOSED_ON_INTERNAL"]
+    else process.env["IRONLINT_FAIL_CLOSED_ON_INTERNAL"] = savedFc
+    rmSync(stubDir, { recursive: true, force: true })
   }
 })
 

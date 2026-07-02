@@ -54,9 +54,12 @@ function getNewString(args: FileToolArgs): string | undefined {
  *      so OpenCode never executes the tool (exit-code contract: 0 =
  *      pass/warn, 2 = block).
  *
- * IronLint itself is invoked as a child process via `Bun.spawnSync`. The
- * plugin contains no rule logic — it's purely a translation layer between
- * OpenCode's lifecycle and the `ironlint` CLI.
+ * IronLint itself is invoked as a child process via the async `Bun.spawn`
+ * (awaited inside the async before-hook). The plugin contains no rule
+ * logic — it's purely a translation layer between OpenCode's lifecycle
+ * and the `ironlint` CLI. Spawn failures (missing binary) and signal death
+ * are normalized into the internal-error tier (fail-open by default,
+ * fail-closed under `IRONLINT_FAIL_CLOSED_ON_INTERNAL=1`) — never a block.
  */
 export const IronLintPlugin: Plugin = async ({ directory, worktree }) => {
   const projectRoot = worktree || directory
@@ -90,21 +93,68 @@ export const IronLintPlugin: Plugin = async ({ directory, worktree }) => {
       // ever touching the real path. The content is sent as raw UTF-8
       // bytes (not spliced into a shell command string) so it travels
       // byte-for-byte.
-      const result = Bun.spawnSync(
-        [
-          "ironlint",
-          "check",
-          "--file",
-          filePath,
-          "--content",
-          "-",
-          "--config",
-          configPath,
-          "--format",
-          "json",
-        ],
-        { stdin: new TextEncoder().encode(proposed) },
-      )
+      //
+      // Spawn via the async `Bun.spawn` (not `spawnSync`): the before-hook
+      // is already async, and a synchronous spawn blocks opencode's entire
+      // event loop (every session, UI, timer, other hook) for the full
+      // check duration — up to `timeout_secs × N checks`, or forever if
+      // ironlint wedges. `env: process.env` is passed explicitly so the
+      // child sees the live environment (Bun's spawn otherwise resolves
+      // `ironlint` against a PATH snapshot taken at plugin load, ignoring
+      // runtime PATH changes — which also made the missing-binary case
+      // un-reproducible in tests).
+      let exitCode: number | null = null
+      let stdout = ""
+      let stderr = ""
+      try {
+        const proc = Bun.spawn(
+          [
+            "ironlint",
+            "check",
+            "--file",
+            filePath,
+            "--content",
+            "-",
+            "--config",
+            configPath,
+            "--format",
+            "json",
+          ],
+          {
+            stdin: new TextEncoder().encode(proposed),
+            stdout: "pipe",
+            stderr: "pipe",
+            env: process.env,
+          },
+        )
+        ;[stdout, stderr, exitCode] = await Promise.all([
+          new Response(proc.stdout).text(),
+          new Response(proc.stderr).text(),
+          proc.exited,
+        ])
+      } catch (err) {
+        // Spawn failure (binary missing → ENOENT, EACCES, etc.): this is an
+        // internal-error tier, NOT a block. A throw here used to escape the
+        // async before-hook — which is exactly how this adapter signals
+        // BLOCK — so a missing `ironlint` binary hard-blocked every edit.
+        // `Bun.spawn` throws synchronously on ENOENT, so this try/catch is
+        // load-bearing either way.
+        exitCode = 3
+        stderr = (err as Error).message
+      }
+
+      // Normalize signal death into the internal-error tier before the
+      // branch chain. With the async API, a signal-killed CLI resolves
+      // `proc.exited` to `128 + signum` (e.g. SIGKILL → 137); without this
+      // normalization a signal death (OOM-kill, hook-timeout-kill) would
+      // skip the `=== 3` arm and land in the generic `!== 0` log-and-allow
+      // arm — silently defeating `IRONLINT_FAIL_CLOSED_ON_INTERNAL=1`
+      // exactly when the engine is being killed. `null` is the defensive
+      // form (the sync API reports signal death as `null`; kept for safety).
+      if (exitCode === null || exitCode >= 128) {
+        if (exitCode !== 3) stderr = stderr || `ironlint killed by signal (exit ${exitCode})`
+        exitCode = 3
+      }
 
       // Exit code contract (commands/check.rs):
       //   0 → pass or warn  (allow opencode to run the tool)
@@ -112,26 +162,26 @@ export const IronLintPlugin: Plugin = async ({ directory, worktree }) => {
       //   3 → engine internal error (missing API key, spawn failure, etc.)
       //       fail-open by default; IRONLINT_FAIL_CLOSED_ON_INTERNAL=1 to block
       //   1 → config/load error (log to stderr, allow)
-      if (result.exitCode === 2) {
-        const verdict = result.stdout.toString().trim() || "rule violation"
+      if (exitCode === 2) {
+        const verdict = stdout.trim() || "rule violation"
         throw new Error(`ironlint blocked this edit:\n${verdict}`)
       }
-      if (result.exitCode === 3) {
+      if (exitCode === 3) {
         // B7: engine runtime error — the gate is broken, not the policy.
-        const stderr = result.stderr.toString().trim()
+        const trimmed = stderr.trim()
         if (process.env["IRONLINT_FAIL_CLOSED_ON_INTERNAL"] === "1") {
           console.error(
-            `ironlint: internal error — failing closed (IRONLINT_FAIL_CLOSED_ON_INTERNAL=1)${stderr ? `: ${stderr}` : ""}`,
+            `ironlint: internal error — failing closed (IRONLINT_FAIL_CLOSED_ON_INTERNAL=1)${trimmed ? `: ${trimmed}` : ""}`,
           )
           throw new Error(`ironlint: internal error during check — failing closed`)
         }
         console.error(
-          `ironlint: internal error checking ${filePath} — allowing edit; see .ironlint/log.jsonl${stderr ? `: ${stderr}` : ""}`,
+          `ironlint: internal error checking ${filePath} — allowing edit; see .ironlint/log.jsonl${trimmed ? `: ${trimmed}` : ""}`,
         )
-      } else if (result.exitCode !== 0) {
-        const stderr = result.stderr.toString().trim()
+      } else if (exitCode !== 0) {
+        const trimmed = stderr.trim()
         console.error(
-          `ironlint: internal error checking ${filePath} (exit ${result.exitCode})${stderr ? `: ${stderr}` : ""}`,
+          `ironlint: internal error checking ${filePath} (exit ${exitCode})${trimmed ? `: ${trimmed}` : ""}`,
         )
       }
     },
