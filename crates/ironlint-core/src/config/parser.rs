@@ -20,10 +20,10 @@ pub fn parse_str(input: &str) -> Result<Config> {
              See specs/2026-06-28-ironlint-checks-pipeline-design.md"
         ));
     }
-    if let Some(id) = duplicate_check_id(input) {
+    if let Some(key) = duplicate_mapping_key(input) {
         return Err(anyhow!(
-            "duplicate check id `{id}` — each check id must be unique. Found `{id}:` more \
-             than once under `checks:`; rename or remove one (a copy-paste or merge-conflict \
+            "duplicate key `{key}` — each check id must be unique. `{key}` appears more than \
+             once as a mapping key; rename or remove one (a copy-paste or merge-conflict \
              resolution can silently disarm a check this way)."
         ));
     }
@@ -92,48 +92,32 @@ fn guard_run(id: &str, step_idx: Option<usize>, run: &str) -> anyhow::Result<()>
     Ok(())
 }
 
-/// True if `line` is a check-id key line: indented exactly 2 spaces.
+/// Return the name of a duplicated YAML mapping key in `input`, if any.
 ///
-/// Check ids sit at 2-space indent directly under `checks:`; a check's body
-/// fields (`files:`, `run:`, `steps:`, ...) and any block-scalar content sit
-/// at 4+ spaces, so this predicate never mistakes a body line for an id.
-fn is_check_id_line(line: &str) -> bool {
-    line.starts_with("  ") && !line.starts_with("   ")
-}
-
-/// Return the id of the first check key that appears more than once under
-/// `checks:`, if any.
+/// Deserializing straight into `Config` does **not** catch this: its `checks`
+/// field is a `BTreeMap<String, Check>`, and serde's generic map visitor just
+/// inserts each entry as it's read — last-write-wins, so a second `dup:` key
+/// silently overwrites the first with no error (this was the original "a
+/// duplicate check id disarms a policy" bug). `serde_yaml::Value`, by
+/// contrast, hard-errors on a duplicate mapping key at deserialize time — it
+/// does not collapse or merge them — with a message that names the key, e.g.
+/// `checks: duplicate entry with key "dup" at line 5 column 3`. This function
+/// runs that `Value` parse purely for its structural duplicate detection and
+/// extracts the key name from serde_yaml's own message, rather than
+/// re-implementing key-tracking with a text scan (which is exactly what broke
+/// on non-2-space indentation and bare-vs-quoted keys before this fix).
 ///
-/// `serde_yaml::Value` (and the `Config` map it deserializes into) silently
-/// collapses duplicate mapping keys, last-write-wins — so a duplicate must be
-/// caught by scanning the raw text before that collapse happens. This is a
-/// line-based pre-scan of the `checks:` block: it collects each 2-space
-/// indented key (a check id) until the block ends (a non-indented,
-/// non-blank, non-comment line, or end of input) and reports the first
-/// repeat.
-fn duplicate_check_id(input: &str) -> Option<String> {
-    let mut seen = std::collections::HashSet::new();
-    let mut in_checks_block = false;
-    for line in input.lines() {
-        if line.starts_with("checks:") {
-            in_checks_block = true;
-            continue;
-        }
-        if !in_checks_block || line.trim().is_empty() || line.trim_start().starts_with('#') {
-            continue;
-        }
-        if !line.starts_with(' ') {
-            break;
-        }
-        if !is_check_id_line(line) {
-            continue;
-        }
-        let id = line[2..].split(':').next().unwrap_or("").trim();
-        if !id.is_empty() && !seen.insert(id.to_string()) {
-            return Some(id.to_string());
-        }
-    }
-    None
+/// This is structural, not scoped to `checks:` — a duplicate key anywhere in
+/// the document is malformed YAML, and rejecting it is correct everywhere,
+/// not just under `checks:`.
+fn duplicate_mapping_key(input: &str) -> Option<String> {
+    let err = serde_yaml::from_str::<serde_yaml::Value>(input).err()?;
+    let msg = err.to_string();
+    let marker = "duplicate entry with key \"";
+    let key_start = msg.find(marker)? + marker.len();
+    let key = &msg[key_start..];
+    let key_end = key.find('"')?;
+    Some(key[..key_end].to_string())
 }
 
 /// Return the first top-level legacy marker key present, if any.
@@ -165,6 +149,37 @@ mod tests {
     fn duplicate_check_ids_are_rejected() {
         let err = parse_str(
             "checks:\n  dup:\n    files: \"*.rs\"\n    run: \"exit 2\"\n  dup:\n    files: \"*.rs\"\n    run: \"true\"\n"
+        ).unwrap_err().to_string();
+        assert!(
+            err.contains("dup"),
+            "error should name the duplicated id: {err}"
+        );
+    }
+
+    #[test]
+    fn duplicate_check_ids_are_rejected_with_4_space_indent() {
+        // Regression for the line-based pre-scan's false negative: a `checks:`
+        // block indented 4 spaces (instead of the "canonical" 2) is still valid
+        // YAML that `Config` parses, but a scanner hard-coded to a 2-space
+        // indent never recognizes the id lines at all, so the duplicate slips
+        // through and the second `dup:` silently wins (last-write-wins).
+        let err = parse_str(
+            "checks:\n    dup:\n      files: \"*.rs\"\n      run: \"exit 2\"\n    dup:\n      files: \"*.rs\"\n      run: \"true\"\n"
+        ).unwrap_err().to_string();
+        assert!(
+            err.contains("dup"),
+            "error should name the duplicated id: {err}"
+        );
+    }
+
+    #[test]
+    fn duplicate_check_ids_are_rejected_bare_vs_quoted() {
+        // Regression for the line-based pre-scan's false negative: `dup:` and
+        // `"dup":` are the same YAML mapping key structurally, but a text
+        // scanner that keeps the literal quotes sees `"dup"` != `dup` and
+        // misses the duplicate.
+        let err = parse_str(
+            "checks:\n  dup:\n    files: \"*.rs\"\n    run: \"exit 2\"\n  \"dup\":\n    files: \"*.rs\"\n    run: \"true\"\n"
         ).unwrap_err().to_string();
         assert!(
             err.contains("dup"),
