@@ -2,6 +2,44 @@
 
 Notable changes to IronLint, newest first. In-flight work lives in `plans/`.
 
+## [0.7.0] — 2026-07-01 — Hector is now IronLint
+
+### Changed
+
+- **BREAKING: the tool is renamed Hector → IronLint.** Every user-facing name
+  changes, with no compatibility shims — the old names are not read:
+  - binary: `hector` → `ironlint` (crates: `ironlint-core`, `ironlint-cli`)
+  - config: `.hector.yml` → `.ironlint.yml`; gate scripts dir `.hector/gates/`
+    → `.ironlint/gates/`
+  - check ABI env vars: `HECTOR_FILE`, `HECTOR_FILES`, `HECTOR_ROOT`,
+    `HECTOR_EVENT`, `HECTOR_TMPFILE`, `HECTOR_TIMEOUT`,
+    `HECTOR_FAIL_CLOSED_ON_INTERNAL` → the same names under `IRONLINT_*`
+  - disable directive: `hector-disable:` → `ironlint-disable:`
+  - trust store: `~/.config/hector/trust.json` → `~/.config/ironlint/trust.json`
+    (existing configs must be re-blessed with `ironlint trust`)
+  - telemetry: `.hector/log.jsonl` → `.ironlint/log.jsonl`
+  - installed skills: `hector-config`/`hector-init`/`hector-review` →
+    `ironlint-config`/`ironlint-init`/`ironlint-review`
+  - repository: github.com/christopherarter/hector →
+    github.com/christopherarter/ironlint (the old URL redirects)
+
+  Existing installs: install the `ironlint` binary, re-run `ironlint init` to
+  rewire agent hooks, rename `.hector.yml` → `.ironlint.yml` (updating any
+  `$HECTOR_*` references), and re-bless with `ironlint trust`. Verdict and
+  telemetry JSON schemas are unchanged (both stay at 5).
+
+### Fixed
+
+- Adapter metadata (Claude Code plugin marketplace, opencode/pi package
+  manifests, adapter READMEs) pointed at a nonexistent `dynamik-dev` GitHub
+  repo — now `christopherarter/ironlint`.
+- The opencode and pi adapter test suites still drove the binary with 0.3-era
+  `gates:` fixtures, broken since the 0.4 checks pipeline — migrated to the
+  `checks:` model (both suites green again in CI).
+- `llms.txt` still described the removed 0.2 engine/severity/baseline model and
+  linked four doc pages that no longer exist — rewritten against the current
+  checks model and docs tree.
+
 ## [0.6.0] — 2026-07-01 — init onboarding plan preview
 
 ### Changed
