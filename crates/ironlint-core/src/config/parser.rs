@@ -20,6 +20,13 @@ pub fn parse_str(input: &str) -> Result<Config> {
              See specs/2026-06-28-ironlint-checks-pipeline-design.md"
         ));
     }
+    if let Some(id) = duplicate_check_id(input) {
+        return Err(anyhow!(
+            "duplicate check id `{id}` — each check id must be unique. Found `{id}:` more \
+             than once under `checks:`; rename or remove one (a copy-paste or merge-conflict \
+             resolution can silently disarm a check this way)."
+        ));
+    }
     let cfg: Config = serde_yaml::from_str(input).context("parsing ironlint config")?;
     for (id, check) in &cfg.checks {
         match (&check.run, &check.steps) {
@@ -85,6 +92,50 @@ fn guard_run(id: &str, step_idx: Option<usize>, run: &str) -> anyhow::Result<()>
     Ok(())
 }
 
+/// True if `line` is a check-id key line: indented exactly 2 spaces.
+///
+/// Check ids sit at 2-space indent directly under `checks:`; a check's body
+/// fields (`files:`, `run:`, `steps:`, ...) and any block-scalar content sit
+/// at 4+ spaces, so this predicate never mistakes a body line for an id.
+fn is_check_id_line(line: &str) -> bool {
+    line.starts_with("  ") && !line.starts_with("   ")
+}
+
+/// Return the id of the first check key that appears more than once under
+/// `checks:`, if any.
+///
+/// `serde_yaml::Value` (and the `Config` map it deserializes into) silently
+/// collapses duplicate mapping keys, last-write-wins — so a duplicate must be
+/// caught by scanning the raw text before that collapse happens. This is a
+/// line-based pre-scan of the `checks:` block: it collects each 2-space
+/// indented key (a check id) until the block ends (a non-indented,
+/// non-blank, non-comment line, or end of input) and reports the first
+/// repeat.
+fn duplicate_check_id(input: &str) -> Option<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut in_checks_block = false;
+    for line in input.lines() {
+        if line.starts_with("checks:") {
+            in_checks_block = true;
+            continue;
+        }
+        if !in_checks_block || line.trim().is_empty() || line.trim_start().starts_with('#') {
+            continue;
+        }
+        if !line.starts_with(' ') {
+            break;
+        }
+        if !is_check_id_line(line) {
+            continue;
+        }
+        let id = line[2..].split(':').next().unwrap_or("").trim();
+        if !id.is_empty() && !seen.insert(id.to_string()) {
+            return Some(id.to_string());
+        }
+    }
+    None
+}
+
 /// Return the first top-level legacy marker key present, if any.
 fn legacy_marker(input: &str) -> Option<&'static str> {
     let value: serde_yaml::Value = serde_yaml::from_str(input).ok()?;
@@ -108,6 +159,45 @@ mod tests {
     fn parses_a_checks_config() {
         let cfg = parse_str("checks:\n  g:\n    files: \"*.rs\"\n    run: \"true\"\n").unwrap();
         assert!(cfg.checks.contains_key("g"));
+    }
+
+    #[test]
+    fn duplicate_check_ids_are_rejected() {
+        let err = parse_str(
+            "checks:\n  dup:\n    files: \"*.rs\"\n    run: \"exit 2\"\n  dup:\n    files: \"*.rs\"\n    run: \"true\"\n"
+        ).unwrap_err().to_string();
+        assert!(
+            err.contains("dup"),
+            "error should name the duplicated id: {err}"
+        );
+    }
+
+    #[test]
+    fn unique_check_ids_with_multiline_run_are_not_false_positives() {
+        // Regression guard: a check's own body fields (`files:`, `run:`) and a
+        // multi-line block-scalar `run` (which can itself contain lines that
+        // *look* like `key:` pairs, e.g. the `# comment` line below) must never
+        // be mistaken for a repeated check id. Check ids sit at exactly 2-space
+        // indent; body fields and block-scalar content sit at 4+ spaces.
+        let cfg = parse_str(
+            "checks:\n  a:\n    files: \"*.py\"\n    run: |\n      # comment\n      grep -q FORBIDDEN && exit 2\n      exit 0\n  b:\n    files: \"*.rs\"\n    run: \"true\"\n",
+        )
+        .unwrap();
+        assert!(cfg.checks.contains_key("a"));
+        assert!(cfg.checks.contains_key("b"));
+    }
+
+    #[test]
+    fn unique_check_ids_with_steps_are_not_false_positives() {
+        // `steps:` entries repeat the `run:` key at 6-space indent (list items
+        // under a 4-space `steps:`); that repetition must not be mistaken for a
+        // duplicated check id either.
+        let cfg = parse_str(
+            "checks:\n  a:\n    files: \"*\"\n    steps:\n      - run: \"true\"\n      - run: \"true\"\n  b:\n    files: \"*\"\n    run: \"true\"\n",
+        )
+        .unwrap();
+        assert!(cfg.checks.contains_key("a"));
+        assert!(cfg.checks.contains_key("b"));
     }
 
     #[test]
