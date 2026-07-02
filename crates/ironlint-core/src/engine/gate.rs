@@ -135,7 +135,30 @@ pub fn run_gate(
     });
 
     let status = match child.wait_timeout(timeout) {
-        Ok(Some(status)) => status,
+        Ok(Some(status)) => {
+            // Kill the child's process group before joining the drain
+            // threads. On the normal path the group leader (`sh`) has
+            // already exited and been reaped by `wait_timeout`, but
+            // surviving backgrounded descendants (`run: "my-daemon &
+            // exit 0"`) still hold the stdout/stderr pipe write-ends.
+            // Without this kill, `read_to_end` in the drain threads never
+            // sees EOF and the `.join()` calls block until the descendant
+            // exits — potentially forever for a non-exiting daemon.
+            // Killing the group closes every write-end, guaranteeing the
+            // joins return promptly.
+            //
+            // This intentionally means a check that backgrounds a daemon
+            // and exits 0 no longer leaves the daemon running — a gate
+            // must not leave residue. A descendant that escaped the group
+            // via `setsid`/`setpgid` still evades this kill (same caveat
+            // as the timeout branch below), but the common case of a
+            // plain `&` background is covered.
+            #[cfg(unix)]
+            kill_process_group(&child);
+            #[cfg(not(unix))]
+            kill_process_group(&mut child);
+            status
+        }
         Ok(None) => {
             #[cfg(unix)]
             kill_process_group(&child);
@@ -453,6 +476,69 @@ mod tests {
             }
         }
         assert!(!alive, "grandchild process {pid} survived the timeout kill");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn normal_exit_with_backgrounded_descendant_does_not_hang() {
+        // A check that backgrounds a long-running descendant and exits 0 hits
+        // the NORMAL path (`wait_timeout` returns `Ok(Some(status))`). The
+        // backgrounded `sleep 30` inherits the stdout/stderr pipe write-ends,
+        // so `read_to_end` in the drain threads never sees EOF and the
+        // `.join()` calls hang until the descendant exits (30s, or forever
+        // for a non-exiting daemon). The fix: kill the process group before
+        // joining the drains on the normal path too, so every pipe write-end
+        // is closed and the joins return promptly.
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("x.txt");
+        let start = std::time::Instant::now();
+        let out = run_gate(
+            "sleep 30 & exit 0",
+            &env_for(&f, dir.path()),
+            None,
+            Duration::from_secs(1),
+        );
+        let elapsed = start.elapsed();
+        assert!(
+            matches!(out, GateOutcome::Pass),
+            "expected Pass, got {out:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "normal exit with backgrounded descendant took {elapsed:?} — should be well under 5s"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn timeout_detaches_when_descendant_setsids_away() {
+        // Regression pin for the f65d68c timeout-branch drain fix: a
+        // descendant that `setsid`s out of the child's process group while
+        // inheriting stdout survives `kill_process_group` (it's no longer in
+        // the group). The timeout branch must NOT join the drain threads in
+        // that case — joining would block forever on the inherited pipe.
+        // Instead it detaches and returns `Internal(Timeout)` promptly.
+        // The outer `sh` sleeps 30 (past the timeout), and a setsid'd
+        // grandchild also holds the stdout pipe, so this exercises the
+        // timeout branch's detach-don't-join path.
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("x.txt");
+        let start = std::time::Instant::now();
+        let out = run_gate(
+            "setsid sh -c 'exec sleep 30' & sleep 30",
+            &env_for(&f, dir.path()),
+            None,
+            Duration::from_millis(500),
+        );
+        let elapsed = start.elapsed();
+        assert!(
+            matches!(out, GateOutcome::Internal(InternalReason::Timeout)),
+            "expected Internal(Timeout), got {out:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(3),
+            "timeout branch with setsid'd descendant took {elapsed:?} — should detach and return promptly"
+        );
     }
 
     #[test]
