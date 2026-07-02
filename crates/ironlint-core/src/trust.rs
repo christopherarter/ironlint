@@ -235,20 +235,39 @@ fn acquire_store_lock(store_path: &Path) -> Result<StoreLock> {
     Ok(StoreLock)
 }
 
-/// Read the store for a bless. Unlike [`read_store`], an unparseable or
-/// otherwise unreadable existing store is treated as **empty** (with a
-/// warning to stderr) rather than propagated as an error, so a corrupt or
+/// Classify the outcome of reading the raw store bytes for a bless. Pure
+/// (independent of the filesystem) so the classification can be unit tested
+/// without permission-flakiness.
+///
+/// Only a **parse** failure on content that was actually read is tolerated
+/// as "empty store" (with a warning to stderr), so a corrupt or
 /// half-written store can self-heal the next time someone runs
-/// `ironlint trust`. [`ensure_trusted_in`] deliberately does **not** use this
-/// path — a corrupt store must keep `check` failing closed.
-fn read_store_for_bless(store_path: &Path) -> TrustStore {
-    read_store(store_path).unwrap_or_else(|_| {
-        eprintln!(
-            "warning: trust store at {} was unreadable; rewriting",
-            store_path.display()
-        );
-        TrustStore::default()
-    })
+/// `ironlint trust`. A missing file is also empty (first bless). Any other
+/// read failure (permission denied, transient I/O, ...) propagates as
+/// `Err` rather than being treated as empty — swallowing it would let
+/// `bless_in` silently overwrite a real, non-empty store with just the one
+/// new entry, since `rename` only needs directory write permission, not
+/// read permission on the target file. [`ensure_trusted_in`] deliberately
+/// does **not** use this path — a corrupt store must keep `check` failing
+/// closed.
+fn classify_store_read(store_path: &Path, read: std::io::Result<String>) -> Result<TrustStore> {
+    match read {
+        Ok(s) => Ok(serde_json::from_str(&s).unwrap_or_else(|_| {
+            eprintln!(
+                "warning: trust store at {} was unreadable; rewriting",
+                store_path.display()
+            );
+            TrustStore::default()
+        })),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(TrustStore::default()),
+        Err(e) => Err(e).with_context(|| format!("reading {}", store_path.display())),
+    }
+}
+
+/// Read the store for a bless. See [`classify_store_read`] for the
+/// tolerance rules.
+fn read_store_for_bless(store_path: &Path) -> Result<TrustStore> {
+    classify_store_read(store_path, std::fs::read_to_string(store_path))
 }
 
 /// Canonical absolute path used as the store key for `config_path`.
@@ -287,7 +306,7 @@ pub fn bless_in(config_path: &Path, store_path: &Path, now: &str) -> Result<()> 
     let hash = compute_hash(config_path)?;
 
     let _lock = acquire_store_lock(store_path)?;
-    let mut store = read_store_for_bless(store_path);
+    let mut store = read_store_for_bless(store_path)?;
     store.version = TRUST_STORE_VERSION;
     store.entries.insert(
         key,
@@ -661,5 +680,91 @@ mod tests {
         let a = unique_tmp_path(base);
         let b = unique_tmp_path(base);
         assert_ne!(a, b, "temp names must be unique per write");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bless_in_fails_closed_when_store_unreadable_for_non_parse_reasons() {
+        // read_store_for_bless must only tolerate a PARSE error (corrupt
+        // content) as "empty store". A read that fails for any other reason
+        // (permission denied, transient I/O) must propagate as Err rather
+        // than being treated as an empty store — otherwise bless_in would
+        // silently overwrite a real, non-empty store with just the one new
+        // entry (rename only needs directory write permission, not read
+        // permission on the target file, so the clobber would succeed).
+        use std::os::unix::fs::PermissionsExt;
+
+        let store_dir = tempfile::tempdir().unwrap();
+        let store_path = store_dir.path().join("trust.json");
+
+        // Seed a real, non-empty store first.
+        let seed_proj = tempfile::tempdir().unwrap();
+        let seed_cfg = cfg_with_gate(seed_proj.path());
+        bless_in(&seed_cfg, &store_path, "t").unwrap();
+        let before = fs::read(&store_path).unwrap();
+        assert!(!before.is_empty());
+
+        // Make the store file unreadable.
+        let mut perms = fs::metadata(&store_path).unwrap().permissions();
+        perms.set_mode(0o000);
+        fs::set_permissions(&store_path, perms).unwrap();
+
+        // Root (and some sandboxed/CI environments) bypass file-mode
+        // permission checks entirely — skip rather than pass vacuously.
+        if std::fs::read_to_string(&store_path).is_ok() {
+            let mut perms = fs::metadata(&store_path).unwrap().permissions();
+            perms.set_mode(0o644);
+            fs::set_permissions(&store_path, perms).unwrap();
+            eprintln!(
+                "skipping bless_in_fails_closed_when_store_unreadable_for_non_parse_reasons: \
+                 running with privileges that bypass file-mode permissions"
+            );
+            return;
+        }
+
+        let proj = tempfile::tempdir().unwrap();
+        let cfg = cfg_with_gate(proj.path());
+        let result = bless_in(&cfg, &store_path, "t2");
+
+        // Restore perms so tempdir cleanup can remove the file regardless of
+        // assertion outcome below.
+        let mut perms = fs::metadata(&store_path).unwrap().permissions();
+        perms.set_mode(0o644);
+        fs::set_permissions(&store_path, perms).unwrap();
+
+        assert!(
+            result.is_err(),
+            "bless_in must fail loudly on a non-parse read error, not silently clobber"
+        );
+        let after = fs::read(&store_path).unwrap();
+        assert_eq!(
+            before, after,
+            "store bytes must be unchanged after a failed bless"
+        );
+    }
+
+    #[test]
+    fn classify_store_read_permission_denied_propagates_err() {
+        let dir = tempfile::tempdir().unwrap();
+        let store_path = dir.path().join("trust.json");
+        let err = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied");
+        assert!(classify_store_read(&store_path, Err(err)).is_err());
+    }
+
+    #[test]
+    fn classify_store_read_not_found_is_empty_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let store_path = dir.path().join("trust.json");
+        let err = std::io::Error::new(std::io::ErrorKind::NotFound, "missing");
+        let store = classify_store_read(&store_path, Err(err)).unwrap();
+        assert!(store.entries.is_empty());
+    }
+
+    #[test]
+    fn classify_store_read_invalid_json_is_empty_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let store_path = dir.path().join("trust.json");
+        let store = classify_store_read(&store_path, Ok("{ not json".to_string())).unwrap();
+        assert!(store.entries.is_empty());
     }
 }
