@@ -60,7 +60,17 @@ pub fn run(dir: &Path, opts: &Options) -> Result<i32> {
     }
 
     if !opts.hook_only && !opts.uninstall {
-        scaffold_config(dir)?;
+        if opts.dry_run {
+            // `scaffold_config` writes the config AND calls `trust::bless`, so it
+            // must be skipped entirely on the dry-run path — a dry-run that
+            // mutates the security-critical trust store is disqualifying.
+            println!(
+                "would scaffold and trust: {}",
+                dir.join(".ironlint.yml").display()
+            );
+        } else {
+            scaffold_config(dir)?;
+        }
     }
 
     if opts.no_hook {

@@ -1,8 +1,14 @@
 # IronLint — Claude Code adapter
 
 `PostToolUse` hook integration for Claude Code. Runs `ironlint check` on every
-`Edit` or `Write` tool call, gating the edit against your project's `.ironlint.yml`
-policy before it lands on disk.
+`Edit` or `Write` tool call, checking the edit against your project's
+`.ironlint.yml` policy.
+
+> **Timing:** this adapter fires on **PostToolUse**, so the edit has *already*
+> been written to disk by the time the hook runs. A block (exit 2) does not
+> revert the write — it surfaces the check's message to the agent as feedback,
+> and the agent is expected to correct it on its next turn. Pre-write blocking
+> (PreToolUse) is planned; the reasonix and pi adapters already gate pre-write.
 
 > **Note:** this adapter installs via a direct settings patch (see below). The
 > `.claude-plugin/` plugin-packaging layout under this directory is kept for

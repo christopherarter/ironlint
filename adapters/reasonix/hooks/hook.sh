@@ -54,6 +54,10 @@ trap cleanup EXIT
 # semantics:
 #   0 → pass through (edit proceeds)
 #   2 → block (Reasonix refuses the tool call)
+#   3 → engine internal error: fail-open by default so a broken gate doesn't
+#       brick the agent; set IRONLINT_FAIL_CLOSED_ON_INTERNAL=1 to block.
+#   1 → config/trust error: log loudly but pass through (allow) for now;
+#       Phase 3 Task 3.2 upgrades this to proper handling.
 #   anything else → log to stderr and pass through (fail-open on internal
 #                   errors so an agent isn't bricked by a misconfigured
 #                   ironlint install).
@@ -73,9 +77,20 @@ run_ironlint() {
       cat "${TMP_VERDICT}" >&2
       exit 2
       ;;
+    3)
+      if [ "${IRONLINT_FAIL_CLOSED_ON_INTERNAL:-0}" = "1" ]; then
+        echo "ironlint: check errored (exit 3) — blocking (fail-closed)" >&2
+        exit 2
+      fi
+      echo "ironlint: check errored (exit 3) — allowing (fail-open default)" >&2
+      exit 0
+      ;;
+    1)
+      echo "ironlint: config/trust error (exit 1) — see 'ironlint doctor'" >&2
+      exit 0    # (Phase 3 Task 3.2 upgrades exit 1/4 handling; leave allow for now but LOUD)
+      ;;
     *)
-      echo "ironlint: internal error checking ${file} (exit ${ec})" >&2
-      [[ -s "${TMP_VERDICT}" ]] && cat "${TMP_VERDICT}" >&2
+      echo "ironlint: unexpected ironlint exit ${ec} for ${file}" >&2
       exit 0
       ;;
   esac

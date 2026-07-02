@@ -7,6 +7,33 @@ use ironlint_core::verdict::{Status, Verdict};
 use std::collections::HashSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::process::Command;
+
+/// The POSIX shell the engine spawns checks through (`engine/gate.rs`).
+pub(crate) const POSIX_SHELL: &str = "sh";
+
+/// Probes whether a given command can be executed via `Command::new(cmd).arg
+/// ("-c").arg("exit 0").status()`. Returns `false` on `ErrorKind::NotFound` or
+/// any other spawn failure (permission denied, not executable). Kept simple
+/// to stay well under the cognitive-complexity cap.
+///
+/// `doctor` calls this with `POSIX_SHELL`; tests probe a guaranteed-absent name.
+pub(crate) fn shell_available(cmd: &str) -> bool {
+    Command::new(cmd)
+        .arg("-c")
+        .arg("exit 0")
+        .status()
+        .map(|_| true)
+        .unwrap_or(false)
+}
+
+/// Message printed (to stderr) and exit-1'd at the top of `check::run` when no
+/// POSIX shell is on PATH. Exit 1 (config tier), NOT 3 — 3 is InternalError,
+/// which adapters fail-open on; a missing shell must fail loud, never silent.
+const NO_SHELL_MSG: &str =
+    "error: no POSIX shell (`sh`) found on PATH. IronLint runs checks via `sh -c`\
+     \nand cannot enforce anything without it. On Windows, run IronLint inside \
+     \nGit Bash or WSL. See docs/getting-started.md.";
 
 #[allow(clippy::too_many_arguments)]
 pub fn run(
@@ -23,6 +50,14 @@ pub fn run(
 ) -> Result<i32> {
     if force && checks.is_empty() {
         eprintln!("ERROR: --force requires at least one --check <id>");
+        return Ok(1);
+    }
+    // Fail loud when the POSIX shell the engine spawns is absent (stock
+    // Windows). Without `sh` every check fails to spawn → exit 3 → adapters
+    // fail open → the user "enforces" nothing. We surface this as a config-tier
+    // exit 1 (not 3) so nobody is fooled into thinking enforcement is active.
+    if !shell_available(POSIX_SHELL) {
+        eprintln!("{NO_SHELL_MSG}");
         return Ok(1);
     }
     // Trust gate: refuse an unblessed or tampered config/checks before the engine
@@ -244,5 +279,29 @@ fn resolve_content_value(value: String) -> Result<String> {
         Ok(buf)
     } else {
         Ok(value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A command name that cannot exist on PATH, so `shell_available` reports
+    /// the unavailable path. Keeps the probe honest on a machine where `sh`
+    /// does exist (macOS/Linux): we can't remove `sh`, but we can probe a name
+    /// that is guaranteed not to resolve.
+    const NO_SUCH_SHELL: &str = "ironlint-definitely-not-a-real-shell-xyz123";
+
+    #[test]
+    fn shell_available_false_for_nonexistent_command() {
+        assert!(!shell_available(NO_SUCH_SHELL));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shell_available_true_for_sh_on_unix() {
+        // On a Unix dev/CI machine `sh` is always present; this documents the
+        // happy path and guards against a regression that breaks the probe.
+        assert!(shell_available("sh"));
     }
 }

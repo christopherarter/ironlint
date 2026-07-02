@@ -57,6 +57,7 @@ The hook is a silent no-op in any project that lacks `.ironlint.yml`, so install
 
 - `ironlint` on `PATH`
 - `jq` on `PATH` (parses the Reasonix stdin payload)
+- `python3` on `PATH` (the `edit_file` path shells out to it to synthesize post-edit content)
 - `bash`
 
 ## How it works

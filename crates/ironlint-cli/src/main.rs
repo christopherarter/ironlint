@@ -8,7 +8,20 @@ use clap::Parser;
 use cli::{Cli, Command};
 
 fn main() -> Result<()> {
-    let cli = Cli::parse();
+    // Parse with the fallible API so a *usage* error (typo'd flag, missing
+    // value, bare invocation) can be remapped to exit 1 (config/usage tier)
+    // instead of clap's default 2. Exit 2 is reserved for a real **Block**
+    // verdict; adapters map exit 2 to a policy block and show its stdout as
+    // the reason, so a typo must never look like a block. `e.use_stderr()` is
+    // false for `--help`/`--version` (which should still exit 0) and true for
+    // genuine parse errors — so help stays exit 0 while errors become exit 1.
+    let cli = match Cli::try_parse() {
+        Ok(c) => c,
+        Err(e) => {
+            e.print().expect("write clap output to stdout/stderr");
+            std::process::exit(i32::from(e.use_stderr()));
+        }
+    };
     let code = match cli.command {
         Command::Check {
             file,

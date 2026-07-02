@@ -28,7 +28,7 @@ ironlint check [--file <path>] [--diff <path>] [--content <string|->]
 | `--explain` | off | Print a per-check outcome report to stderr after the verdict. |
 | `--allow-external-paths` | off | Allow checking files whose canonical path falls outside the config's directory. |
 
-**Exit codes:** `0` pass · `1` config or load error · `2` block · `3` internal error. See [Running checks](../operating/running-checks.md).
+**Exit codes:** `0` pass · `1` config or load error · `2` block · `3` internal error. Argument/usage errors (a typo'd flag, a missing value, bare `ironlint`) also exit `1` — `2` is reserved exclusively for a real **Block** verdict, so a usage error is never mistaken for a policy block. See [Running checks](../operating/running-checks.md).
 
 ## `ironlint trust`
 

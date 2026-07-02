@@ -10,15 +10,20 @@
 //!   3. parses  — config parses (extends resolved)
 //!   4. check_scripts — each check whose `run` names a single-token path that
 //!      starts with `.ironlint/` exists and is executable
-//!   5. adapters — one row per supported harness that is detected on this
+//!   5. trust — config + `.ironlint/gates/` are blessed in the trust store
+//!      (warn, not fail: doctor is read-only; trust is enforced only at the
+//!      `check` layer)
+//!   6. adapters — one row per supported harness that is detected on this
 //!      machine or has ironlint installed: pass when installed+registered, fail
 //!      when registered-but-broken (hook artifact missing), warn otherwise
+//!   7. hooks — always-present summary row: warns when zero coding-agent hooks
+//!      are wired (the most common first-run failure mode)
 //!
-//! Dropped from the old model: trust fingerprint, schema_version probe,
-//! scope_globs (Rule-based), engine/EngineKind availability, capability
-//! sandbox row, baseline/runtime_state.
+//! Dropped from the old model: schema_version probe, scope_globs (Rule-based),
+//! engine/EngineKind availability, capability sandbox row, baseline/runtime_state.
 
 use crate::cli::OutputFormat;
+use crate::commands::check;
 use anyhow::Result;
 use ironlint_core::adapter::{all_harnesses, status, AdapterEnv, HarnessStatus, Scope};
 use serde::Serialize;
@@ -61,10 +66,19 @@ pub fn run(dir: &Path, format: OutputFormat) -> Result<i32> {
         check_config_present(&ctx),
         check_config_parses(&ctx),
         check_script_paths(&ctx),
+        shell_row(),
+        trust_row(&ctx),
     ];
-    if let Ok(env) = AdapterEnv::from_process(dir.to_path_buf()) {
-        checks.extend(check_adapters(&env));
-    }
+    // The hooks summary row comes after the per-harness rows so a healthy
+    // install reads: each adapter `ok`, then `hooks — N wired`.
+    let adapter_rows = if let Ok(env) = AdapterEnv::from_process(dir.to_path_buf()) {
+        check_adapters(&env)
+    } else {
+        Vec::new()
+    };
+    let hooks = hooks_row(&adapter_rows);
+    checks.extend(adapter_rows);
+    checks.push(hooks);
     let report = Report {
         ironlint_version: env!("CARGO_PKG_VERSION").to_string(),
         checks,
@@ -282,6 +296,84 @@ fn adapter_check(s: &HarnessStatus) -> Option<CheckResult> {
         detail,
         remediation,
     })
+}
+
+/// Shell availability row: `pass` when the POSIX shell the engine spawns
+/// (`sh`) is on PATH, `fail` with a clear remediation when it is not. This is
+/// the fail-loud guard for stock Windows, where `sh` is absent and every check
+/// would otherwise fail to spawn (exit 3 → adapters fail open). Reuses the same
+/// probe `check::run` gates on at startup (`check::shell_available`).
+fn shell_row() -> CheckResult {
+    if check::shell_available(check::POSIX_SHELL) {
+        CheckResult {
+            name: "shell",
+            status: Status::Pass,
+            detail: format!("`{}` found on PATH", check::POSIX_SHELL),
+            remediation: None,
+        }
+    } else {
+        CheckResult {
+            name: "shell",
+            status: Status::Fail,
+            detail: format!("no POSIX shell (`{}`) on PATH", check::POSIX_SHELL),
+            remediation: Some(
+                "on Windows, run IronLint inside Git Bash or WSL; see docs/getting-started.md"
+                    .into(),
+            ),
+        }
+    }
+}
+
+/// Trust row: warn (not fail) when the config is not blessed. Doctor is
+/// read-only — trust enforcement lives at the `check` layer (`commands/check.rs`
+/// calls `trust::ensure_trusted` and exits 1 on a mismatch). A `warn` here
+/// surfaces the gap without making a read-only command fail merely because the
+/// config is unblessed.
+fn trust_row(ctx: &DoctorContext) -> CheckResult {
+    if !ctx.config_path.exists() {
+        return CheckResult {
+            name: "trust",
+            status: Status::Warn,
+            detail: "skipped (no config to trust)".into(),
+            remediation: Some("run `ironlint init` to scaffold a config first".into()),
+        };
+    }
+    match ironlint_core::trust::ensure_trusted(&ctx.config_path) {
+        Ok(()) => CheckResult {
+            name: "trust",
+            status: Status::Pass,
+            detail: "config is trusted".into(),
+            remediation: None,
+        },
+        Err(_) => CheckResult {
+            name: "trust",
+            status: Status::Warn,
+            detail: "config/gates not trusted".into(),
+            remediation: Some("run `ironlint trust`".into()),
+        },
+    }
+}
+
+/// Always-present summary row over the per-harness adapter rows. Warns when
+/// zero coding-agent hooks are wired — the most common first-run failure mode,
+/// since the tool's entire effect happens through hooks. A healthy install
+/// with at least one wired harness passes.
+fn hooks_row(adapter_rows: &[CheckResult]) -> CheckResult {
+    if adapter_rows.is_empty() {
+        CheckResult {
+            name: "hooks",
+            status: Status::Warn,
+            detail: "no coding-agent hooks detected".into(),
+            remediation: Some("run `ironlint init`".into()),
+        }
+    } else {
+        CheckResult {
+            name: "hooks",
+            status: Status::Pass,
+            detail: format!("{} harness(es) wired", adapter_rows.len()),
+            remediation: None,
+        }
+    }
 }
 
 /// Per-harness adapter checks. Uses Local scope because `ironlint init` defaults

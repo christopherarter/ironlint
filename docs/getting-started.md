@@ -13,6 +13,8 @@ cargo build --release
 
 Put `./target/release/ironlint` on your `PATH` so the rest of this guide can call `ironlint` directly. (Prebuilt binaries and a one-line installer are in the [project README](../README.md).)
 
+> **Windows:** IronLint runs checks via `sh -c` and requires a POSIX shell. On Windows, run it inside **Git Bash** or **WSL** — a stock PowerShell/CMD environment has no `sh`, so `ironlint check` will exit `1` (a loud config-tier error) and `ironlint doctor` will report a failing `shell` row rather than silently fail-open. A `windows-latest` CI leg is planned (see `plans/readiness-review/`).
+
 ## Write your first check
 
 Create a `.ironlint.yml` in your repo root:
