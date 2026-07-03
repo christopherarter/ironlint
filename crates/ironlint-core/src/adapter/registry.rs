@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 // --- embedded artifacts (single source of truth = adapters/) -----------------
 const CLAUDE_HOOK: &str = include_str!("../../../../adapters/claude-code/hooks/hook.sh");
-const REASONIX_HOOK: &str = include_str!("../../../../adapters/reasonix/hooks/hook.sh");
+const CODEX_HOOK: &str = include_str!("../../../../adapters/codex/hooks/hook.sh");
 const PI_PLUGIN: &str = include_str!("../../../../adapters/pi/src/index.ts");
 const OPENCODE_PLUGIN: &str = include_str!("../../../../adapters/opencode/src/index.ts");
 const IRONLINT_CONFIG_SKILL: &str =
@@ -47,11 +47,10 @@ pub(crate) fn claude_build_entry(command: &str) -> Value {
            "hooks": [{"type": "command", "command": command}]})
 }
 
-pub(crate) fn reasonix_build_entry(command: &str) -> Value {
-    json!({"command": command,
-           "match": "^(write_file|edit_file|multi_edit)$",
-           "description": "Block edits that violate ironlint policy before they land on disk",
-           "timeout": 30000})
+pub(crate) fn codex_build_entry(command: &str) -> Value {
+    json!({"matcher": "apply_patch|Edit|Write",
+           "hooks": [{"type": "command", "command": command,
+                      "timeout": 30, "statusMessage": "ironlint check"}]})
 }
 
 // --- registry ----------------------------------------------------------------
@@ -65,14 +64,14 @@ const CLAUDE: JsonHookSpec = JsonHookSpec {
     build_entry: claude_build_entry,
 };
 
-const REASONIX: JsonHookSpec = JsonHookSpec {
-    settings_local: |_| None, // reasonix settings are user-global only
-    settings_global: |e| e.home.join(".reasonix").join("settings.json"),
+const CODEX: JsonHookSpec = JsonHookSpec {
+    settings_local: |e| Some(e.project_root.join(".codex").join("hooks.json")),
+    settings_global: |e| e.home.join(".codex").join("hooks.json"),
     array_key: "PreToolUse",
     entry_arg: "pre-tool-use",
     primary: "hook.sh",
-    files: &[("hook.sh", REASONIX_HOOK)],
-    build_entry: reasonix_build_entry,
+    files: &[("hook.sh", CODEX_HOOK)],
+    build_entry: codex_build_entry,
 };
 
 const PI: PluginSpec = PluginSpec {
@@ -99,9 +98,9 @@ const CLAUDE_SKILL: SkillSpec = SkillSpec {
     dir_global: |e| e.home.join(".claude").join("skills"),
     source: IRONLINT_CONFIG_SKILL,
 };
-const REASONIX_SKILL: SkillSpec = SkillSpec {
-    dir_local: |e| e.project_root.join(".reasonix").join("skills"),
-    dir_global: |e| e.home.join(".reasonix").join("skills"),
+const CODEX_SKILL: SkillSpec = SkillSpec {
+    dir_local: |e| e.project_root.join(".codex").join("skills"),
+    dir_global: |e| e.home.join(".codex").join("skills"),
     source: IRONLINT_CONFIG_SKILL,
 };
 const PI_SKILL: SkillSpec = SkillSpec {
@@ -124,10 +123,10 @@ pub fn all_harnesses() -> Vec<Harness> {
             skill: CLAUDE_SKILL,
         },
         Harness {
-            name: "reasonix",
-            kind: HarnessKind::JsonHook(REASONIX),
-            restart_hint: "Restart Reasonix so it reloads settings.",
-            skill: REASONIX_SKILL,
+            name: "codex",
+            kind: HarnessKind::JsonHook(CODEX),
+            restart_hint: "Restart Codex, then review+trust the ironlint hook when Codex prompts (non-managed hooks require trust).",
+            skill: CODEX_SKILL,
         },
         Harness {
             name: "pi",
@@ -146,14 +145,14 @@ pub fn all_harnesses() -> Vec<Harness> {
 
 /// Whether `harness` looks installed on this machine.
 ///
-/// Keyed on the harness **name**, not `array_key`: claude-code and reasonix
-/// both register a `PreToolUse` hook (see `CLAUDE`/`REASONIX` above), so a
+/// Keyed on the harness **name**, not `array_key`: claude-code and codex
+/// both register a `PreToolUse` hook (see `CLAUDE`/`CODEX` above), so a
 /// dispatch on `array_key` alone can no longer distinguish them.
 pub(crate) fn is_detected(harness: &Harness, env: &AdapterEnv) -> bool {
     match &harness.kind {
         HarnessKind::JsonHook(_) => match harness.name {
             "claude-code" => env.home.join(".claude").is_dir(),
-            "reasonix" => env.home.join(".reasonix").is_dir(),
+            "codex" => env.home.join(".codex").is_dir(),
             _ => false,
         },
         HarnessKind::Plugin(p) => (p.detect)(env),
@@ -177,7 +176,7 @@ mod tests {
     #[test]
     fn four_harnesses_registered() {
         let names: Vec<_> = all_harnesses().iter().map(|h| h.name).collect();
-        assert_eq!(names, vec!["claude-code", "reasonix", "pi", "opencode"]);
+        assert_eq!(names, vec!["claude-code", "codex", "pi", "opencode"]);
     }
 
     #[test]
@@ -203,10 +202,11 @@ mod tests {
     }
 
     #[test]
-    fn reasonix_entry_matches_write_tools() {
-        let e = reasonix_build_entry("\"/x/hook.sh\" pre-tool-use");
-        assert_eq!(e["match"], "^(write_file|edit_file|multi_edit)$");
-        assert_eq!(e["command"], "\"/x/hook.sh\" pre-tool-use");
+    fn codex_entry_matches_apply_patch() {
+        let e = codex_build_entry("\"/x/hook.sh\" pre-tool-use");
+        assert_eq!(e["matcher"], "apply_patch|Edit|Write");
+        assert_eq!(e["hooks"][0]["command"], "\"/x/hook.sh\" pre-tool-use");
+        assert_eq!(e["hooks"][0]["timeout"], 30);
     }
 
     #[test]
@@ -220,47 +220,44 @@ mod tests {
             crate::adapter::detect(&env).into_iter().collect();
         assert!(found["claude-code"]);
         assert!(found["pi"]);
-        assert!(!found["reasonix"]);
+        assert!(!found["codex"]);
         assert!(!found["opencode"]);
     }
 
     #[test]
-    fn claude_and_reasonix_share_pre_tool_use_but_detect_independently() {
-        // Regression guard: claude-code and reasonix both register a
+    fn claude_and_codex_share_pre_tool_use_but_detect_independently() {
+        // Regression guard: claude-code and codex both register a
         // PreToolUse hook now, so `is_detected` must key off the harness
         // name, not `array_key` — otherwise claude-code would be (mis)detected
-        // via ~/.reasonix, or vice versa.
+        // via ~/.codex, or vice versa.
         let harnesses = all_harnesses();
         let claude = harnesses.iter().find(|h| h.name == "claude-code").unwrap();
-        let reasonix = harnesses.iter().find(|h| h.name == "reasonix").unwrap();
-        match (&claude.kind, &reasonix.kind) {
+        let codex = harnesses.iter().find(|h| h.name == "codex").unwrap();
+        match (&claude.kind, &codex.kind) {
             (HarnessKind::JsonHook(c), HarnessKind::JsonHook(r)) => {
                 assert_eq!(c.array_key, "PreToolUse");
                 assert_eq!(r.array_key, "PreToolUse");
             }
             _ => panic!("expected both to be JsonHook"),
         }
-
-        // Only ~/.reasonix exists: claude-code must NOT be detected.
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path().to_str().unwrap();
-        std::fs::create_dir_all(format!("{home}/.reasonix")).unwrap();
+        std::fs::create_dir_all(format!("{home}/.codex")).unwrap();
         let env = env_with(home, home);
         assert!(
             !is_detected(claude, &env),
-            "claude-code false-positive via ~/.reasonix"
+            "claude-code false-positive via ~/.codex"
         );
-        assert!(is_detected(reasonix, &env));
+        assert!(is_detected(codex, &env));
 
-        // Only ~/.claude exists: reasonix must NOT be detected.
         let tmp2 = tempfile::tempdir().unwrap();
         let home2 = tmp2.path().to_str().unwrap();
         std::fs::create_dir_all(format!("{home2}/.claude")).unwrap();
         let env2 = env_with(home2, home2);
         assert!(is_detected(claude, &env2));
         assert!(
-            !is_detected(reasonix, &env2),
-            "reasonix false-positive via ~/.claude"
+            !is_detected(codex, &env2),
+            "codex false-positive via ~/.claude"
         );
     }
 
@@ -304,15 +301,15 @@ mod tests {
             (opencode.dir_global)(&env),
             PathBuf::from("/home/u/.config/opencode/skills")
         );
-        // reasonix
-        let reasonix = by("reasonix");
+        // codex
+        let codex = by("codex");
         assert_eq!(
-            (reasonix.dir_local)(&env),
-            PathBuf::from("/home/u/proj/.reasonix/skills")
+            (codex.dir_local)(&env),
+            PathBuf::from("/home/u/proj/.codex/skills")
         );
         assert_eq!(
-            (reasonix.dir_global)(&env),
-            PathBuf::from("/home/u/.reasonix/skills")
+            (codex.dir_global)(&env),
+            PathBuf::from("/home/u/.codex/skills")
         );
     }
 
@@ -333,7 +330,7 @@ mod tests {
         // hook-capable harness must be embedded, else `ironlint init` ships a
         // partial hook. Checks the two JsonHook harnesses' hooks/ dirs.
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../adapters");
-        for (harness, subdir) in [("claude-code", "hooks"), ("reasonix", "hooks")] {
+        for (harness, subdir) in [("claude-code", "hooks"), ("codex", "hooks")] {
             let dir = root.join(harness).join(subdir);
             let spec = match &all_harnesses()
                 .into_iter()
