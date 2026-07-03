@@ -118,9 +118,7 @@ mod tests {
         let arr = s["hooks"]["PreToolUse"].as_array().unwrap();
         assert_eq!(arr.len(), 2); // foreign kept, single ironlint entry refreshed
         assert!(arr.iter().any(|e| e["command"] == "other-tool guard"));
-        assert!(arr
-            .iter()
-            .any(|e| e["match"] == "apply_patch|Edit|Write"));
+        assert!(arr.iter().any(|e| e["match"] == "apply_patch|Edit|Write"));
     }
 
     #[test]
