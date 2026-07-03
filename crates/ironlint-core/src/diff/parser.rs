@@ -113,8 +113,13 @@ pub fn parse_unified(input: &str) -> Result<Vec<ChangedFile>> {
     for raw in input.lines() {
         if let Some(minus) = raw.strip_prefix("--- ") {
             // Flush any in-progress file before starting a new header pair.
+            // A pending Renamed from a `rename to` line is dropped here: the
+            // ---/+++ pair that follows describes the same file with content
+            // changes, and the Modified entry is more specific.
             if let Some(f) = current.take() {
-                files.push(f);
+                if f.op != ChangeOp::Renamed {
+                    files.push(f);
+                }
             }
             let minus = minus.split('\t').next().unwrap_or(minus);
             let minus = minus.trim_end_matches('\r');

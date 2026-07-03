@@ -202,6 +202,39 @@ fn parse_unified_rejects_absolute_in_deletion_minus_path() {
     );
 }
 
+/// A rename WITH content changes emits both `rename to` and a `---`/`+++`
+/// pair. The parser must produce exactly ONE ChangedFile for the target
+/// path (the more specific Modified entry), not a duplicate Renamed +
+/// Modified pair. Regression test for the rename-with-content case.
+#[test]
+fn parse_unified_rename_with_content_yields_single_entry() {
+    use ironlint_core::diff::parser::{ChangeOp, ChangedFile};
+    use std::path::PathBuf;
+
+    let input = "diff --git a/old.rs b/new.rs\n\
+        similarity index 80%\n\
+        rename from old.rs\n\
+        rename to new.rs\n\
+        --- a/old.rs\n\
+        +++ b/new.rs\n\
+        @@ -1,1 +1,1 @@\n\
+        -old\n\
+        +new\n";
+    let files = ironlint_core::diff::parser::parse_unified(input).expect("parses");
+    assert_eq!(
+        files.len(),
+        1,
+        "rename-with-content must yield exactly one entry, got {files:?}"
+    );
+    assert_eq!(
+        files[0],
+        ChangedFile {
+            path: PathBuf::from("new.rs"),
+            op: ChangeOp::Modified,
+        }
+    );
+}
+
 /// A pure `git mv` diff (no ---/+++ pair, only rename from/to headers)
 /// must surface the renamed file in the changed set.
 #[test]
