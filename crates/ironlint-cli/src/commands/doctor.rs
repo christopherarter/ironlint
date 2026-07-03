@@ -541,19 +541,21 @@ mod tests {
     }
 
     #[test]
-    fn check_adapters_reports_installed_reasonix_as_pass() {
+    fn check_adapters_reports_installed_codex_as_pass() {
         let tmp = tempfile::tempdir().unwrap();
         let env = adapter_env(tmp.path());
         let h = ironlint_core::adapter::all_harnesses()
             .into_iter()
-            .find(|h| h.name == "reasonix")
+            .find(|h| h.name == "codex")
             .unwrap();
-        ironlint_core::adapter::install(&h, &env, ironlint_core::adapter::Scope::Global).unwrap();
+        // check_adapters reads status at Scope::Local; codex (unlike the prior global-only harness)
+        // has a real project-local settings file, so install must match scope.
+        ironlint_core::adapter::install(&h, &env, ironlint_core::adapter::Scope::Local).unwrap();
         let checks = check_adapters(&env);
         let r = checks
             .iter()
-            .find(|c| c.name == "reasonix")
-            .expect("reasonix reported");
+            .find(|c| c.name == "codex")
+            .expect("codex reported");
         assert_eq!(r.status, Status::Pass);
         assert!(r.detail.contains("installed"));
     }
@@ -564,22 +566,24 @@ mod tests {
         let env = adapter_env(tmp.path());
         let h = ironlint_core::adapter::all_harnesses()
             .into_iter()
-            .find(|h| h.name == "reasonix")
+            .find(|h| h.name == "codex")
             .unwrap();
-        ironlint_core::adapter::install(&h, &env, ironlint_core::adapter::Scope::Global).unwrap();
+        // check_adapters reads status at Scope::Local; codex (unlike the prior global-only harness)
+        // has a real project-local settings file, so install must match scope.
+        ironlint_core::adapter::install(&h, &env, ironlint_core::adapter::Scope::Local).unwrap();
         // Delete the materialized artifact dir but leave the settings entry → broken.
-        std::fs::remove_dir_all(env.config_home.join("ironlint/adapters/reasonix")).unwrap();
+        std::fs::remove_dir_all(env.config_home.join("ironlint/adapters/codex")).unwrap();
         let checks = check_adapters(&env);
         let r = checks
             .iter()
-            .find(|c| c.name == "reasonix")
-            .expect("reasonix reported");
+            .find(|c| c.name == "codex")
+            .expect("codex reported");
         assert_eq!(r.status, Status::Fail);
     }
 
     fn harness_status(detected: bool, installed: bool, registered: bool) -> HarnessStatus {
         HarnessStatus {
-            harness: "reasonix",
+            harness: "codex",
             detected,
             installed,
             registered,
@@ -599,7 +603,7 @@ mod tests {
         // registered in settings but artifact gone AND harness dir absent:
         // must still surface as a broken (Fail) row, not be skipped.
         let s = ironlint_core::adapter::HarnessStatus {
-            harness: "reasonix",
+            harness: "codex",
             detected: false,
             installed: false,
             registered: true,
@@ -619,7 +623,7 @@ mod tests {
         assert!(r
             .remediation
             .unwrap()
-            .contains("ironlint init --harness reasonix"));
+            .contains("ironlint init --harness codex"));
     }
 
     #[test]
@@ -677,7 +681,7 @@ mod tests {
     fn hooks_row_warns_when_only_unwired_rows() {
         // A detected-but-not-installed harness surfaces as a Warn adapter row; it
         // is NOT wired, so the summary must warn, not report a healthy install.
-        let rows = [row("reasonix", Status::Warn)];
+        let rows = [row("codex", Status::Warn)];
         let r = hooks_row(&rows);
         assert_eq!(r.status, Status::Warn);
         assert!(r.detail.contains("no coding-agent hooks"));
@@ -687,7 +691,7 @@ mod tests {
     fn hooks_row_warns_when_only_broken_rows() {
         // A registered-but-broken harness surfaces as a Fail adapter row; still
         // zero hooks are actually wired, so the summary must warn.
-        let rows = [row("reasonix", Status::Fail)];
+        let rows = [row("codex", Status::Fail)];
         let r = hooks_row(&rows);
         assert_eq!(r.status, Status::Warn);
     }
@@ -696,7 +700,7 @@ mod tests {
     fn hooks_row_counts_only_wired_pass_rows() {
         // One wired (Pass) harness + one unwired (Warn) harness → pass, but the
         // count reports only the wired one.
-        let rows = [row("reasonix", Status::Pass), row("pi", Status::Warn)];
+        let rows = [row("codex", Status::Pass), row("pi", Status::Warn)];
         let r = hooks_row(&rows);
         assert_eq!(r.status, Status::Pass);
         assert!(
