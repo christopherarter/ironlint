@@ -1166,7 +1166,9 @@ mod gate_dispatch_tests {
         touch(&dir, "b.rs");
         let engine = load_with_event(&dir, "pre-commit");
         // Pass RELATIVE paths into check_set, simulating the CLI --diff path.
-        let v = engine.check_set(&[PathBuf::from("a.rs"), PathBuf::from("b.rs")]).unwrap();
+        let v = engine
+            .check_set(&[PathBuf::from("a.rs"), PathBuf::from("b.rs")])
+            .unwrap();
         assert_eq!(
             v.status,
             Status::Pass,
