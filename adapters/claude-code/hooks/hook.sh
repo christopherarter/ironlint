@@ -33,12 +33,16 @@ if [[ ! -f "${CONFIG}" ]]; then
   exit 0
 fi
 
-# Per-invocation temp file for the verdict; cleaned up on exit so concurrent
-# Claude Code sessions don't clobber each other.
+# Per-invocation temp files (verdict, synthesized Edit content); cleaned up
+# on exit so concurrent Claude Code sessions don't clobber each other.
 TMP_VERDICT=""
+TMP_PROPOSED=""
 cleanup() {
   if [[ -n "${TMP_VERDICT}" && -f "${TMP_VERDICT}" ]]; then
     rm -f "${TMP_VERDICT}"
+  fi
+  if [[ -n "${TMP_PROPOSED}" && -f "${TMP_PROPOSED}" ]]; then
+    rm -f "${TMP_PROPOSED}"
   fi
 }
 trap cleanup EXIT
@@ -123,31 +127,46 @@ case "${TOOL_NAME}" in
     # replace_all is set, old_string must appear exactly once in the file,
     # else Claude Code itself refuses the edit — fail closed (exit 2) here
     # so the content we gate matches what Claude Code would actually write.
-    # Env vars (not shell interpolation) keep arbitrary substitution
-    # payloads safe.
-    OLD=$(echo "${EVENT}" | jq -r '.tool_input.old_string // empty')
-    NEW=$(echo "${EVENT}" | jq -r '.tool_input.new_string // ""')
-    REPLACE_ALL=$(echo "${EVENT}" | jq -r '(.tool_input.replace_all // false) | tostring')
-    if [[ -z "${OLD}" ]]; then
-      exit 0
-    fi
-    PROPOSED=$(
-      IRONLINT_FILE="${FILE}" \
-      IRONLINT_OLD="${OLD}" \
-      IRONLINT_NEW="${NEW}" \
-      IRONLINT_REPLACE_ALL="${REPLACE_ALL}" \
-      python3 -c '
-import os, sys
+    #
+    # old_string/new_string/replace_all are extracted INSIDE python via
+    # json.loads on the whole event, never round-tripped through a shell
+    # `$(...)` command substitution — `$(...)` strips ALL trailing newlines
+    # from the captured value, which would desync the bytes ironlint gates
+    # from the bytes Claude Code actually writes to disk (e.g. a
+    # new_string ending in "\n" would silently lose it). The event JSON
+    # travels only as an env var (never shell-interpolated), so arbitrary
+    # substitution payloads stay safe from injection. Python's stdout is
+    # redirected straight to a temp file (not captured via `$(...)` either)
+    # so the synthesized content's own trailing newline, if any, survives
+    # byte-for-byte.
+    #
+    # python exit codes (local to this branch only):
+    #   0 → synthesized content written to stdout
+    #   2 → block: old_string isn't unique, or the on-disk file couldn't be
+    #       read — mirrors Claude Code's own refusal, so we gate what
+    #       Claude Code would actually do
+    #   3 → no old_string in the payload — nothing to synthesize, allow
+    TMP_PROPOSED=$(mktemp -t ironlint-edit.XXXXXX)
+    PY_EC=0
+    IRONLINT_EVENT_JSON="${EVENT}" IRONLINT_FILE="${FILE}" python3 -c '
+import json, os, sys
+
+ev = json.loads(os.environ["IRONLINT_EVENT_JSON"])
+ti = ev.get("tool_input") or {}
+old = ti.get("old_string")
+if not old:
+    sys.exit(3)
+new = ti.get("new_string", "")
+replace_all = bool(ti.get("replace_all", False))
 path = os.environ["IRONLINT_FILE"]
-old = os.environ["IRONLINT_OLD"]
-new = os.environ.get("IRONLINT_NEW", "")
-replace_all = os.environ.get("IRONLINT_REPLACE_ALL", "false") == "true"
+
 try:
     with open(path, "r", encoding="utf-8") as f:
         content = f.read()
 except OSError as e:
     print(f"ironlint: cannot read {path}: {e}", file=sys.stderr)
     sys.exit(2)
+
 count = content.count(old)
 if replace_all:
     if count == 0:
@@ -167,14 +186,17 @@ else:
         )
         sys.exit(2)
     sys.stdout.write(content.replace(old, new, 1))
-' && printf 'X'
-    ) || exit 2
-    # $(...) strips trailing newlines; the sentinel 'X' (appended only on
-    # python success via &&) preserves them. Strip the sentinel to recover
-    # byte-exact content including any trailing newline.
-    PROPOSED=${PROPOSED%X}
-    # printf '%s' avoids the extra \n that `echo` would append after the value.
-    printf '%s' "${PROPOSED}" | run_ironlint "${FILE}"
+' > "${TMP_PROPOSED}" || PY_EC=$?
+    case "${PY_EC}" in
+      0) : ;;
+      3) exit 0 ;;
+      *) exit 2 ;;
+    esac
+    # Redirect stdin from the temp file — byte-exact, including any
+    # trailing newline — rather than piping python straight into
+    # run_ironlint. This also means run_ironlint's `exit` runs in THIS
+    # shell rather than a pipeline subshell.
+    run_ironlint "${FILE}" < "${TMP_PROPOSED}"
     ;;
   *)
     # Any other tool_name: nothing to gate.
