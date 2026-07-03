@@ -337,6 +337,46 @@ mod tests {
         ));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn not_executable_file_is_internal() {
+        // Mirrors `command_not_found_is_internal` (the 127 analog): invoking a
+        // regular, non-executable file directly (contains a `/`, so the shell
+        // execs it rather than searching `$PATH`) makes the shell fail with
+        // EACCES and exit 126. `classify()` must map that to
+        // `Internal(NotExecutable)`, not `NotFound`.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("x.txt");
+        let notexec = dir.path().join("notexec");
+        std::fs::write(&notexec, "#!/bin/sh\necho hi\n").unwrap();
+        std::fs::set_permissions(&notexec, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let run = format!("\"{}\"", notexec.display());
+        let out = run_gate(&run, &env_for(&f, dir.path()), None, t());
+        assert!(
+            matches!(out, GateOutcome::Internal(InternalReason::NotExecutable)),
+            "expected Internal(NotExecutable), got {out:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn signal_death_is_internal_with_signal_reason() {
+        // A REAL signal death (the process is killed by SIGTERM, so
+        // `ExitStatus::signal()` is `Some(15)`) must classify as
+        // `Internal(Signal(15))`. This is distinct from
+        // `high_normal_exit_is_internal_with_exit_code_label`, where `exit 137`
+        // is a *normal* exit with a high code (no signal involved at all) — the
+        // two paths must not be conflated.
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("x.txt");
+        let out = run_gate("kill -TERM $$", &env_for(&f, dir.path()), None, t());
+        match out {
+            GateOutcome::Internal(InternalReason::Signal(n)) => assert_eq!(n, 15),
+            other => panic!("expected Internal(Signal(15)), got {other:?}"),
+        }
+    }
+
     #[test]
     fn timeout_is_internal() {
         let dir = tempfile::tempdir().unwrap();

@@ -209,11 +209,54 @@ impl Collected {
 /// value, which defaults to 30. Clamped to `>= 1` (a zero timeout would kill
 /// every check instantly).
 fn resolve_timeout(config: &Config) -> Duration {
-    let secs = std::env::var("IRONLINT_TIMEOUT")
-        .ok()
+    let env_val = std::env::var("IRONLINT_TIMEOUT").ok();
+    let secs = resolve_timeout_secs(env_val.as_deref(), config.timeout_secs());
+    Duration::from_secs(secs)
+}
+
+/// Pure resolver behind [`resolve_timeout`]: `env_val` (the raw
+/// `IRONLINT_TIMEOUT` string, if any) wins when it parses as a `u64`;
+/// otherwise `config_default` is used. The result is always clamped to
+/// `>= 1`, regardless of which source it came from. Extracted as a pure
+/// function (no env access) so the override + clamp behavior is unit-testable
+/// without mutating process-global env state.
+fn resolve_timeout_secs(env_val: Option<&str>, config_default: u64) -> u64 {
+    env_val
         .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or_else(|| config.timeout_secs());
-    Duration::from_secs(secs.max(1))
+        .unwrap_or(config_default)
+        .max(1)
+}
+
+#[cfg(test)]
+mod resolve_timeout_secs_tests {
+    use super::resolve_timeout_secs;
+
+    #[test]
+    fn valid_env_override_wins_over_config_default() {
+        assert_eq!(resolve_timeout_secs(Some("5"), 30), 5);
+    }
+
+    #[test]
+    fn zero_env_override_is_clamped_to_one() {
+        assert_eq!(resolve_timeout_secs(Some("0"), 30), 1);
+    }
+
+    #[test]
+    fn unparseable_env_override_falls_back_to_config_default() {
+        assert_eq!(resolve_timeout_secs(Some("notanumber"), 30), 30);
+    }
+
+    #[test]
+    fn unset_env_override_uses_config_default() {
+        assert_eq!(resolve_timeout_secs(None, 30), 30);
+    }
+
+    #[test]
+    fn config_default_itself_is_clamped_to_one() {
+        // A configured `timeout_secs: 0` must also be clamped — the clamp
+        // applies to whichever source (env or config) supplied the value.
+        assert_eq!(resolve_timeout_secs(None, 0), 1);
+    }
 }
 
 /// Map the current event string to a [`Lifecycle`] variant for the `on:` filter.
@@ -1175,6 +1218,46 @@ mod gate_dispatch_tests {
             "check must run exactly once over the set, got {runs:?}"
         );
         assert_eq!(v.status, Status::Pass);
+    }
+
+    // --- $IRONLINT_EVENT: pin the exact value a check sees, end-to-end ---
+
+    #[test]
+    fn ironlint_event_seen_by_check_is_write_for_write_dispatch() {
+        // Traces the real write-lifecycle path (CheckOptions.event ->
+        // run_one_check -> GateEnv.event -> $IRONLINT_EVENT), not just that
+        // gate.rs forwards whatever string it's given.
+        let dir = tempfile::tempdir().unwrap();
+        write_config(
+            &dir,
+            "checks:\n  g:\n    files: \"*\"\n    run: \"[ \\\"$IRONLINT_EVENT\\\" = write ] || exit 2\"\n",
+        );
+        let engine = load_with_event(&dir, "write");
+        let v = engine.check(file_input(&dir, "x.txt", "body")).unwrap();
+        assert_eq!(
+            v.status,
+            Status::Pass,
+            "check must see IRONLINT_EVENT=write on the write dispatch path"
+        );
+    }
+
+    #[test]
+    fn ironlint_event_seen_by_check_is_pre_commit_for_pre_commit_dispatch() {
+        // Same, but through the pre-commit/set dispatch path (check_set),
+        // which builds its own GateEnv independently of run_one_check.
+        let dir = tempfile::tempdir().unwrap();
+        write_config(
+            &dir,
+            "checks:\n  g:\n    files: \"*.rs\"\n    on: [pre-commit]\n    run: \"[ \\\"$IRONLINT_EVENT\\\" = pre-commit ] || exit 2\"\n",
+        );
+        touch(&dir, "a.rs");
+        let engine = load_with_event(&dir, "pre-commit");
+        let v = engine.check_set(&[abs(&dir, "a.rs")]).unwrap();
+        assert_eq!(
+            v.status,
+            Status::Pass,
+            "check must see IRONLINT_EVENT=pre-commit on the pre-commit dispatch path"
+        );
     }
 
     // --- Phase 2: steps fail-fast ---

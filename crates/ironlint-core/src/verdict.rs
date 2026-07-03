@@ -164,6 +164,37 @@ mod tests {
         assert_eq!(SCHEMA_VERSION, 5);
     }
 
+    /// Locks the full verdict-JSON wire shape: top-level keys, `Status`
+    /// string casing, and `schema_version` (visible and literal — must show
+    /// `5`). Covers a block, an internal error, and a passed entry in one
+    /// verdict so every array shape is exercised. `elapsed_ms` and
+    /// `ironlint_version` are redacted — the former is caller-supplied
+    /// timing, the latter tracks `CARGO_PKG_VERSION` and would break this
+    /// snapshot on every version bump otherwise.
+    #[test]
+    fn verdict_json_wire_shape() {
+        let verdict = Verdict::from_outcomes(
+            vec![Block {
+                check: "no-todo".into(),
+                step: Some("no-any".into()),
+                file: Some("src/a.rs".into()),
+                message: "TODO found".into(),
+            }],
+            vec![GateError {
+                check: "flaky".into(),
+                step: None,
+                file: Some("src/b.rs".into()),
+                reason: "not_found".into(),
+            }],
+            vec!["fmt".into()],
+            1234,
+        );
+        insta::assert_json_snapshot!(verdict, {
+            ".elapsed_ms" => "[ms]",
+            ".ironlint_version" => "[version]",
+        });
+    }
+
     #[test]
     fn block_serializes_check_key_not_gate() {
         let b = Block {

@@ -1,0 +1,29 @@
+---
+source: crates/ironlint-core/src/verdict.rs
+expression: verdict
+---
+{
+  "schema_version": 5,
+  "ironlint_version": "[version]",
+  "status": "block",
+  "blocks": [
+    {
+      "check": "no-todo",
+      "step": "no-any",
+      "file": "src/a.rs",
+      "message": "TODO found"
+    }
+  ],
+  "errors": [
+    {
+      "check": "flaky",
+      "step": null,
+      "file": "src/b.rs",
+      "reason": "not_found"
+    }
+  ],
+  "passed": [
+    "fmt"
+  ],
+  "elapsed_ms": "[ms]"
+}
