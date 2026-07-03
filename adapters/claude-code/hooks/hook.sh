@@ -221,7 +221,16 @@ else:
     run_ironlint "${FILE}" < "${TMP_PROPOSED}"
     ;;
   *)
-    # Any other tool_name: nothing to gate.
-    exit 0
+    # Any other tool_name (e.g. MultiEdit, NotebookEdit): the hook's
+    # registration matcher (Edit|Write) catches this call, but there is no
+    # gating logic for it here — silently allowing it through would be a
+    # policy bypass: the tool matched the hook's registration but never
+    # reached `ironlint check`. Fail LOUD and CLOSED instead — block and
+    # name the tool — so an ungated edit is never mistaken for an allowed
+    # one. Proper gating of MultiEdit (folding its edits array into a single
+    # post-edit content and checking that) is a legitimate separate
+    # follow-up, not built here.
+    echo "ironlint: tool '${TOOL_NAME}' is not yet gated by ironlint — refusing (it would bypass policy checks). Use Write/Edit." >&2
+    exit 2
     ;;
 esac

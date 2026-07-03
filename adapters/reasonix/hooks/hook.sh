@@ -188,11 +188,20 @@ sys.stdout.write(content.replace(search, replace, 1))
         printf '%s' "${PROPOSED}" | run_ironlint "${FILE}"
         ;;
       *)
-        # multi_edit and any future tool: currently no-op. multi_edit
-        # would need to fold N edits onto N (path, content) pairs and
-        # check each; first block aborts the whole tool call. Tracked as
-        # follow-up in specs/2026-05-25-reasonix-adapter.md §9.3.
-        exit 0
+        # multi_edit and any future tool: the hook's registration regex
+        # (^(write_file|edit_file|multi_edit)$) catches this call, but there
+        # is no gating logic for it here — multi_edit would need to fold N
+        # edits onto N (path, content) pairs and check each; first block
+        # aborts the whole tool call. Tracked as follow-up in
+        # specs/2026-05-25-reasonix-adapter.md §9.3.
+        #
+        # Until that lands, silently allowing this tool through would be a
+        # policy bypass: the tool matched the hook's registration but never
+        # reached `ironlint check`. Fail LOUD and CLOSED instead — block and
+        # name the tool — so an ungated edit is never mistaken for an
+        # allowed one.
+        echo "ironlint: tool '${TOOL}' is not yet gated by ironlint — refusing (it would bypass policy checks). Use write_file/edit_file." >&2
+        exit 2
         ;;
     esac
     ;;

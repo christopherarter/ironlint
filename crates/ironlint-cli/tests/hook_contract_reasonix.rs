@@ -38,6 +38,13 @@ fn edit_payload(cwd: &std::path::Path) -> String {
     )
 }
 
+fn multi_edit_payload(cwd: &std::path::Path) -> String {
+    format!(
+        r#"{{"event":"PreToolUse","cwd":"{}","toolName":"multi_edit","toolArgs":{{"path":"foo.py","edits":[{{"search":"OLD","replace":"NEW"}}]}}}}"#,
+        cwd.display()
+    )
+}
+
 #[test]
 fn write_allow_on_exit_0() {
     if !common::hook_tools_available() {
@@ -142,6 +149,34 @@ fn untrusted_config_blocks_with_trust_message() {
         .failure()
         .code(2)
         .stderr(predicates::str::contains("not trusted"));
+}
+
+/// FR-1: a matched-but-unhandled tool (here `multi_edit`, which the hook's
+/// registration regex `^(write_file|edit_file|multi_edit)$` catches but the
+/// `case "${TOOL}"` body never handles) must fail LOUD and CLOSED — not
+/// silently pass through. Before the FR-1 fix, the `*)` catch-all was a bare
+/// `exit 0`, so an ungated tool call would bypass every policy check with no
+/// signal at all. The hook now blocks (exit 2) and names the offending tool
+/// on stderr.
+#[test]
+fn multi_edit_fails_closed_not_yet_gated() {
+    if !common::hook_tools_available() {
+        eprintln!("skipping: jq/python3 not available on this machine");
+        return;
+    }
+    let fx = HookFixture::new(HOOK);
+    // No stub exit code matters here — a not-yet-gated tool must never reach
+    // the point of invoking `ironlint` at all.
+    fx.stub(0, "");
+    fx.run(
+        "pre-tool-use",
+        &multi_edit_payload(fx.project.path()),
+        &[],
+    )
+    .failure()
+    .code(2)
+    .stderr(predicates::str::contains("multi_edit"))
+    .stderr(predicates::str::contains("not yet gated"));
 }
 
 /// Malformed JSON on stdin must never crash the hook. Before the guard added
