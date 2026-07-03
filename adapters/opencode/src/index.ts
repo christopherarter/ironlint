@@ -161,10 +161,21 @@ export const IronLintPlugin: Plugin = async ({ directory, worktree }) => {
       //   2 → block         (throw — opencode cancels the tool call)
       //   3 → engine internal error (missing API key, spawn failure, etc.)
       //       fail-open by default; IRONLINT_FAIL_CLOSED_ON_INTERNAL=1 to block
+      //   4 → untrusted config/gates (Task 3.2 / Finding C3): fail CLOSED
+      //       (throw), unconditionally — unlike exit 3, there is no
+      //       fail-open default here. An untrusted config must never be
+      //       silently un-gated just because nobody re-ran `ironlint trust`
+      //       after pulling a changed `.ironlint.yml`. Checked BEFORE the
+      //       `!== 0` catch-all below so it can never fall into log-and-allow.
       //   1 → config/load error (log to stderr, allow)
       if (exitCode === 2) {
         const verdict = stdout.trim() || "rule violation"
         throw new Error(`ironlint blocked this edit:\n${verdict}`)
+      }
+      if (exitCode === 4) {
+        throw new Error(
+          "ironlint is configured here but not trusted — run 'ironlint trust' to enable checks",
+        )
       }
       if (exitCode === 3) {
         // B7: engine runtime error — the gate is broken, not the policy.

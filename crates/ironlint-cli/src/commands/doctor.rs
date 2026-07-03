@@ -326,9 +326,9 @@ fn shell_row() -> CheckResult {
 
 /// Trust row: warn (not fail) when the config is not blessed. Doctor is
 /// read-only — trust enforcement lives at the `check` layer (`commands/check.rs`
-/// calls `trust::ensure_trusted` and exits 1 on a mismatch). A `warn` here
-/// surfaces the gap without making a read-only command fail merely because the
-/// config is unblessed.
+/// calls `trust::check_trust` and exits 4 on a mismatch, Task 3.2). A `warn`
+/// here surfaces the gap without making a read-only command fail merely
+/// because the config is unblessed.
 fn trust_row(ctx: &DoctorContext) -> CheckResult {
     if !ctx.config_path.exists() {
         return CheckResult {

@@ -74,8 +74,14 @@ fi
 #       as the denial reason)
 #   3 → engine internal error: fail-open by default so a broken gate doesn't
 #       brick the agent; set IRONLINT_FAIL_CLOSED_ON_INTERNAL=1 to block.
-#   1 → config/trust error: log loudly but allow for now (Task 3.2 upgrades
-#       exit 1 handling and adds exit 4).
+#   4 → untrusted config/gates: fail CLOSED (deny) — an untrusted config must
+#       never be silently allowed through. Claude Code's PreToolUse block is
+#       hook exit 2 (there is no separate "deny" exit code), so this arm
+#       exits 2 just like a real policy block, with the trust message on
+#       stderr as the reason.
+#   1 → config/load error (parse failure, missing file, ...): log loudly but
+#       allow — this is a genuine config problem, not a trust decision, and
+#       is not the gap Task 3.2 closes.
 #   anything else → log to stderr and allow (fail-open on internal errors so
 #       a misconfigured ironlint install doesn't brick the agent).
 run_ironlint() {
@@ -103,9 +109,13 @@ run_ironlint() {
       echo "ironlint: check errored (exit 3) — allowing (fail-open default)" >&2
       exit 0
       ;;
+    4)
+      echo "ironlint is configured here but not trusted — run 'ironlint trust' to enable checks" >&2
+      exit 2    # fail CLOSED: an untrusted config must never be silently allowed
+      ;;
     1)
-      echo "ironlint: config/trust error (exit 1) — see 'ironlint doctor'" >&2
-      exit 0    # (Task 3.2 upgrades exit 1/4 handling; leave allow for now but LOUD)
+      echo "ironlint: config/load error (exit 1) — see 'ironlint doctor'" >&2
+      exit 0    # a genuine config/parse problem, not a trust decision — allow but loud
       ;;
     *)
       echo "ironlint: unexpected ironlint exit ${ec} for ${file}" >&2

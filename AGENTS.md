@@ -4,7 +4,7 @@ Guidance for AI coding agents working in this repo.
 
 ## What this is
 
-Rust rewrite of [dynamik-dev/bully](https://github.com/dynamik-dev/bully) — local CI for AI coding agents. Status: **0.4 "checks pipeline" redesign merged.** A check is `files` (globs) + `run` (or `steps`) + `on` (lifecycle); ironlint matches a touched file to checks, runs each command with the ABI on env + proposed content on stdin, and reads only the exit code — **any nonzero exit (1–125) blocks**. No per-rule engines, no severity, no LLM. CLI ships `check`, `validate`, `init` (scaffolds `.ironlint.yml` AND onboards ironlint's hook into detected coding agents — claude-code, reasonix, pi, opencode), `explain`, `show-resolved-config`, `doctor` (reports per-harness adapter status in the `checks[]` array), `trust` (blesses the out-of-repo store; `check` fails closed — exit 1 — on untrusted config/checks), `update` (self-updates the binary to the latest GitHub release via the dist install receipt). Authoritative design: `specs/2026-06-28-ironlint-checks-pipeline-design.md`; per-phase plans in `plans/`.
+Rust rewrite of [dynamik-dev/bully](https://github.com/dynamik-dev/bully) — local CI for AI coding agents. Status: **0.4 "checks pipeline" redesign merged.** A check is `files` (globs) + `run` (or `steps`) + `on` (lifecycle); ironlint matches a touched file to checks, runs each command with the ABI on env + proposed content on stdin, and reads only the exit code — **any nonzero exit (1–125) blocks**. No per-rule engines, no severity, no LLM. CLI ships `check`, `validate`, `init` (scaffolds `.ironlint.yml` AND onboards ironlint's hook into detected coding agents — claude-code, reasonix, pi, opencode), `explain`, `show-resolved-config`, `doctor` (reports per-harness adapter status in the `checks[]` array), `trust` (blesses the out-of-repo store; `check` fails closed — exit 4 — on untrusted config/checks), `update` (self-updates the binary to the latest GitHub release via the dist install receipt). Authoritative design: `specs/2026-06-28-ironlint-checks-pipeline-design.md`; per-phase plans in `plans/`.
 
 **Not yet built (later plans):** `ironlint verify` + the full `doctor` expansion.
 
@@ -55,7 +55,7 @@ Cargo workspace, two crates:
 1. **Extends.** `config::extends::resolve` does a cycle-detected DFS; inherited checks fill gaps but **local checks win on collision**.
 2. **Legacy rejection.** `config::parser` rejects any pre-0.3 config (top-level `schema_version:`, `rules:`, or `trust:`) with a curated error pointing at the checks format — there is no migration path (no install base).
 
-(Trust is enforced at the CLI `check` layer — `check::run` calls `trust::ensure_trusted` before invoking the engine and exits 1 on missing/mismatch. `IronLintEngine::load` stays pure; read-only commands do not enforce trust.)
+(Trust is enforced at the CLI `check` layer — `check::run` calls `trust::check_trust` before invoking the engine and exits **4** on missing/mismatch (or a corrupt/unreadable trust store). A config the trust layer can't even hash — parse failure, missing `extends:` target, etc. — isn't a trust decision at all; it falls through to exit 1, the same code the subsequent `engine.load` error path uses. `IronLintEngine::load` stays pure; read-only commands do not enforce trust.)
 
 **The check ABI** (locked stability surface — every adapter must satisfy it, every check `run` may rely on it): `$IRONLINT_FILE` (absolute path of the single file under check; not set for `pre-commit`), `$IRONLINT_FILES` (newline-joined list of all files under check; single entry for `write`, all staged files for `pre-commit`), `$IRONLINT_ROOT` (project root = the check's cwd), `$IRONLINT_EVENT` (`write`/`pre-commit`), `$IRONLINT_TMPFILE` (write-only, and only when the check's `run`/`steps` reference it: absolute path to an ironlint-materialized temp file — sibling of `$IRONLINT_FILE`, same extension — holding the proposed content; auto-removed after the check), the proposed post-edit content on **stdin** (empty for `pre-commit`). No string templating — the path travels only as an env value, never spliced into `run`.
 
@@ -66,11 +66,12 @@ Cargo workspace, two crates:
 **Exit-code contract** (`commands/check.rs`) — consumed by CI and editor adapters, do not break:
 
 - `0` — Pass (no warning tier exists)
-- `1` — config/load error (parse failure, missing file, unknown `--check`, or untrusted config/checks)
+- `1` — config/load error (parse failure, missing file, unknown `--check`)
 - `2` — Block (≥1 check exited nonzero 1–125)
 - `3` — InternalError (≥1 check crashed: 127 / timeout / signal)
+- `4` — Untrusted config/gates (run `ironlint trust`) — the ONE sanctioned extension of this contract (Task 3.2 / Finding C3). Emitted by the trust gate *before* the engine loads or any check runs, never from a verdict.
 
-Adapters fail-open on exit 3 by default; opt-in fail-closed via `IRONLINT_FAIL_CLOSED_ON_INTERNAL=1`.
+Adapters fail-open on exit 3 by default; opt-in fail-closed via `IRONLINT_FAIL_CLOSED_ON_INTERNAL=1`. Exit 4 is the opposite default: adapters must surface it loudly, and every pre-write adapter treats it as fail-closed — it blocks the tool call rather than allowing it through. An untrusted config must never be silently un-gated.
 
 **Verdict JSON** (`verdict.rs`): `SCHEMA_VERSION = 5`. Treat `Verdict`, `Block`, `GateError`, `Status`, and `SCHEMA_VERSION` as a public stability surface — bump `SCHEMA_VERSION` to change shape. (Telemetry records are versioned independently — `telemetry::SCHEMA_VERSION = 5`.)
 

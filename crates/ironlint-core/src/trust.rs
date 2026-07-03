@@ -513,15 +513,68 @@ fn canonical_key(config_path: &Path) -> Result<String> {
     Ok(canon.to_string_lossy().to_string())
 }
 
+/// Outcome of a trust-enforcement attempt against a specific store.
+///
+/// Kept distinct so callers (concretely: `ironlint-cli`'s `check` command,
+/// Task 3.2 / Finding C3) can map them to different exit codes — an
+/// untrusted or tampered config must be surfaced loudly (exit 4, and
+/// pre-write adapters block), while a config the trust layer can't even
+/// *evaluate* is a structural config problem the engine's own `load()` will
+/// report a moment later on its own terms, so it keeps the ordinary
+/// config-error exit code.
+///
+/// `ensure_trusted`/`ensure_trusted_in` collapse both non-`Trusted` variants
+/// back into a plain `Err` — every existing caller that only cares "is this
+/// trusted, yes or no" (`doctor`, the trust_extends integration tests, this
+/// module's own unit tests) keeps working unchanged.
+pub enum TrustOutcome {
+    Trusted,
+    /// The config's hash resolved fine but doesn't match (or has no) entry
+    /// in the store — genuinely untrusted/tampered — OR the trust store
+    /// itself couldn't be read (corrupt/unreadable): either way we cannot
+    /// answer "is this trusted?" in the affirmative, so fail closed and
+    /// surface it loudly.
+    Untrusted(anyhow::Error),
+    /// The trust hash could not be *computed* at all — the config (or an
+    /// `extends:` target) doesn't parse, a referenced path is missing, a
+    /// gates dir contains a symlink, etc. This is a structural config
+    /// problem, not a trust decision: defer to the engine's own load error.
+    Unverifiable(anyhow::Error),
+}
+
+/// Classify a trust-enforcement attempt against `store_path`. See
+/// [`TrustOutcome`] for what each variant means and why the split exists.
+pub fn check_trust_in(config_path: &Path, store_path: &Path) -> TrustOutcome {
+    let expected = match compute_hash(config_path) {
+        Ok(h) => h,
+        Err(e) => return TrustOutcome::Unverifiable(e),
+    };
+    let key = match canonical_key(config_path) {
+        Ok(k) => k,
+        Err(e) => return TrustOutcome::Unverifiable(e),
+    };
+    let store = match read_store(store_path) {
+        Ok(s) => s,
+        Err(e) => return TrustOutcome::Untrusted(e),
+    };
+    match store.entries.get(&key) {
+        Some(entry) if entry.hash == expected => TrustOutcome::Trusted,
+        _ => TrustOutcome::Untrusted(anyhow::anyhow!(
+            "config/gates not trusted — review and run `ironlint trust`"
+        )),
+    }
+}
+
 /// Verify `config_path` (and its gate scripts) match a blessed entry in the
 /// store at `store_path`. Fails closed with a fixed, actionable message.
+///
+/// Thin boolean wrapper over [`check_trust_in`] for callers that only need
+/// "is this trusted" — see that function if you need to distinguish
+/// untrusted from unverifiable (e.g. to pick an exit code).
 pub fn ensure_trusted_in(config_path: &Path, store_path: &Path) -> Result<()> {
-    let key = canonical_key(config_path)?;
-    let expected = compute_hash(config_path)?;
-    let store = read_store(store_path)?;
-    match store.entries.get(&key) {
-        Some(entry) if entry.hash == expected => Ok(()),
-        _ => anyhow::bail!("config/gates not trusted — review and run `ironlint trust`"),
+    match check_trust_in(config_path, store_path) {
+        TrustOutcome::Trusted => Ok(()),
+        TrustOutcome::Untrusted(e) | TrustOutcome::Unverifiable(e) => Err(e),
     }
 }
 
@@ -556,6 +609,16 @@ pub fn bless_in(config_path: &Path, store_path: &Path, now: &str) -> Result<()> 
 /// Thin wrapper: enforce trust against the real out-of-repo store.
 pub fn ensure_trusted(config_path: &Path) -> Result<()> {
     ensure_trusted_in(config_path, &trust_store_path()?)
+}
+
+/// Thin wrapper: classify trust against the real out-of-repo store.
+///
+/// See [`check_trust_in`]/[`TrustOutcome`]. The outer `Result` only ever
+/// fails when the store's location itself can't be resolved (no
+/// `$XDG_CONFIG_HOME` / `$HOME`) — an environment problem, not a per-config
+/// trust decision.
+pub fn check_trust(config_path: &Path) -> Result<TrustOutcome> {
+    Ok(check_trust_in(config_path, &trust_store_path()?))
 }
 
 /// Thin wrapper: bless against the real out-of-repo store, stamping `blessed_at`

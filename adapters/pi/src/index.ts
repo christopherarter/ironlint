@@ -227,6 +227,16 @@ export default function ironlintExtension(pi: PiExtensionAPI): void {
     if (res.exitCode === 3) {
       return failOpenOrClosed("check", res.stderr.trim())
     }
+    if (res.exitCode === 4) {
+      // Untrusted/tampered config (Task 3.2 / Finding C3): fail CLOSED,
+      // unlike the generic exit-1 catch-all below. An untrusted config must
+      // never be silently un-gated just because nobody re-ran `ironlint
+      // trust` after pulling a changed `.ironlint.yml`.
+      return {
+        block: true,
+        reason: "ironlint is configured here but not trusted — run 'ironlint trust' to enable checks",
+      }
+    }
     // exit 1 / other -> config error: log + allow.
     const suffix = res.stderr.trim() ? `: ${res.stderr.trim()}` : ""
     console.error(`ironlint: internal error checking ${filePath} (exit ${res.exitCode})${suffix}`)

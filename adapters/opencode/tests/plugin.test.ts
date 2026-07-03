@@ -468,6 +468,35 @@ test("signal-killed ironlint honors IRONLINT_FAIL_CLOSED_ON_INTERNAL=1 (2.8)", a
   }
 })
 
+test("before-hook throws the trust message on ironlint exit 4 (untrusted config, Task 3.2)", async () => {
+  // A real exit 4 (Finding C3: an untrusted/tampered config) is forced via a
+  // fake `ironlint` on PATH — the same technique the missing-binary and
+  // signal-killed tests above use — since a genuine trust mismatch would
+  // require racing the shared blessed project this file's other tests
+  // depend on. Unlike exit 3, there is no fail-open branch for exit 4: it
+  // must ALWAYS throw (block), unconditionally, with the fixed trust message.
+  const stubDir = mkdtempSync(join(tmpdir(), "ironlint-stub-untrusted-"))
+  const stub = join(stubDir, "ironlint")
+  writeFileSync(stub, "#!/bin/sh\necho 'not trusted' 1>&2\nexit 4\n")
+  chmodSync(stub, 0o755)
+  const savedPath = process.env["PATH"]
+  process.env["PATH"] = stubDir + ":" + (savedPath ?? "")
+  try {
+    const hooks = await IronLintPlugin(fakeCtx(project))
+    const file = join(project, "untrusted.txt")
+    rmSync(file, { force: true })
+    await expect(
+      hooks["tool.execute.before"]!(
+        { tool: "write", sessionID: "s", callID: "c" },
+        { args: { filePath: file, content: "ok\n" } },
+      ),
+    ).rejects.toThrow(/not trusted/)
+  } finally {
+    process.env["PATH"] = savedPath
+    rmSync(stubDir, { recursive: true, force: true })
+  }
+})
+
 test("before-hook skips self-check of bare relative .ironlint.yml (R3)", async () => {
   // Basename match must work even when filePath is a bare filename
   // (no directory component).

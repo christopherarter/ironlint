@@ -178,11 +178,12 @@ Each adapter collapses one harness's edit hook into the ABI above and runs `iron
 | Code | Meaning |
 |------|---------|
 | 0 | Pass — every matched check passed |
-| 1 | Config or load error — untrusted config, parse failure, missing file |
+| 1 | Config or load error — parse failure, missing file |
 | 2 | Block — at least one check exited nonzero (1–125) |
 | 3 | InternalError — at least one check crashed (not found, timeout, killed by signal) |
+| 4 | Untrusted config/gates — run `ironlint trust` |
 
-Adapters fail-open on exit 3 by default. Opt-in fail-closed: `IRONLINT_FAIL_CLOSED_ON_INTERNAL=1`.
+Adapters fail-open on exit 3 by default. Opt-in fail-closed: `IRONLINT_FAIL_CLOSED_ON_INTERNAL=1`. Exit 4 is different: adapters must surface it loudly, and pre-write adapters (every shipped adapter) treat it as fail-closed and block the tool call outright — an untrusted config is never silently allowed through.
 </details>
 
 <details>

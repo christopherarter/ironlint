@@ -3,6 +3,7 @@ use anyhow::{Context, Result};
 use ironlint_core::runner::{
     CheckExplain, CheckInput, CheckOptions, ExplainOutcome, IronLintEngine,
 };
+use ironlint_core::trust::TrustOutcome;
 use ironlint_core::verdict::{Status, Verdict};
 use std::collections::HashSet;
 use std::io::Read;
@@ -64,9 +65,25 @@ pub fn run(
     // loads or any check runs. This hashes the config + `.ironlint/gates/` now; a
     // write between here and check execution is a known, accepted TOCTOU window
     // (the direnv-model limitation — no file locking in 0.4).
-    if let Err(e) = ironlint_core::trust::ensure_trusted(config) {
-        eprintln!("ERROR: {e:#}");
-        return Ok(1);
+    //
+    // Exit code split (Task 3.2 / Finding C3, a sanctioned extension of the
+    // locked 0/1/2/3 contract): a genuinely untrusted/tampered config gets
+    // its OWN exit code, 4, distinct from exit 1 (config/parse error) — every
+    // adapter previously mapped exit 1 to allow, so an untrusted config was
+    // silently un-gated. A config the trust layer can't even evaluate (parse
+    // error, missing extends target, ...) is not a trust decision at all; it
+    // keeps exit 1 and is left for `engine.load` below to report on its own
+    // terms.
+    match ironlint_core::trust::check_trust(config) {
+        Ok(TrustOutcome::Trusted) => {}
+        Ok(TrustOutcome::Untrusted(e)) => {
+            eprintln!("ERROR: {e:#}");
+            return Ok(4);
+        }
+        Ok(TrustOutcome::Unverifiable(e)) | Err(e) => {
+            eprintln!("ERROR: {e:#}");
+            return Ok(1);
+        }
     }
     let options = CheckOptions {
         checks: HashSet::new(),

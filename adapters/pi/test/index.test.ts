@@ -192,7 +192,8 @@ const IRONLINT_YML = `checks:
     run: 'if grep -q "panic!" ; then echo "no panics in source"; exit 1; fi'
 `
 
-// Plan 2 enforces trust at `check`: an unblessed config fails closed (exit 1).
+// Plan 2 enforces trust at `check`: an unblessed config fails closed (exit 4
+// as of Task 3.2; the adapter blocks on it, see below).
 // Point XDG_CONFIG_HOME at one ephemeral store for the whole file so blessing
 // (execFileSync) and the adapter's own `ironlint check` (spawnSync — both inherit
 // process.env) share it, and the real ~/.config/ironlint/trust.json is untouched.
@@ -540,6 +541,42 @@ test("tool_call: exit-3 fails closed under IRONLINT_FAIL_CLOSED_ON_INTERNAL=1", 
     process.env["PATH"] = origPath
     if (hadClosed === undefined) delete process.env["IRONLINT_FAIL_CLOSED_ON_INTERNAL"]
     else process.env["IRONLINT_FAIL_CLOSED_ON_INTERNAL"] = hadClosed
+    rmSync(dir, { recursive: true, force: true })
+    rmSync(bin, { recursive: true, force: true })
+  }
+})
+
+// --- tool_call: exit-4 (untrusted config) always blocks --------------------
+// A real exit 4 (Task 3.2 / Finding C3: an untrusted/tampered config) is
+// forced the same way exit 3 is above — via a fake `ironlint` on PATH — since
+// a real trust mismatch would require racing the shared XDG trust store this
+// file's other tests depend on. Unlike exit 3, there is no fail-open branch:
+// exit 4 must ALWAYS block, with the fixed trust message as the reason.
+
+test("tool_call: exit-4 (untrusted config) blocks with the trust message", () => {
+  const dir = makeProject()
+  const bin = mkdtempSync(join(tmpdir(), "ironlint-pi-fakebin-"))
+  const origPath = process.env["PATH"] ?? ""
+  const origErr = console.error
+  console.error = () => {}
+  try {
+    const fake = join(bin, "ironlint")
+    writeFileSync(fake, "#!/bin/sh\necho 'not trusted' 1>&2\nexit 4\n")
+    chmodSync(fake, 0o755)
+    process.env["PATH"] = bin + delimiter + origPath
+
+    const file = join(dir, "src", "x.rs")
+    const handlers = loadExtension(dir)
+    const result = handlers.tool_call!(
+      { toolName: "write", input: { path: file, content: "fn a() {}\n" } },
+      {},
+    ) as { block?: boolean; reason?: string } | undefined
+    assert.equal(result?.block, true)
+    assert.match(result?.reason ?? "", /not trusted/)
+    assert.match(result?.reason ?? "", /ironlint trust/)
+  } finally {
+    console.error = origErr
+    process.env["PATH"] = origPath
     rmSync(dir, { recursive: true, force: true })
     rmSync(bin, { recursive: true, force: true })
   }

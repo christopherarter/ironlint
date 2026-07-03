@@ -52,9 +52,14 @@ fn trust_rejects_unparseable_config() {
     );
 }
 
-/// An unblessed config makes `check` fail closed with exit 1.
+/// An unblessed (but well-formed, parseable) config makes `check` fail
+/// closed with exit **4** — its own code, distinct from exit 1 (config/parse
+/// error). Before Task 3.2 this was exit 1, the same code a parse error
+/// uses, so an adapter mapping exit 1 -> allow would silently un-gate every
+/// edit for a config nobody ever blessed. See `parse_error_config_check_exits_1`
+/// below for the sibling guard that a genuine parse error keeps exit 1.
 #[test]
-fn unblessed_config_check_exits_1() {
+fn unblessed_config_check_exits_4() {
     let proj = tempfile::tempdir().unwrap();
     let xdg = tempfile::tempdir().unwrap();
     let cfg = proj.path().join(".ironlint.yml");
@@ -75,8 +80,38 @@ fn unblessed_config_check_exits_1() {
         .arg(&target)
         .assert()
         .failure()
-        .code(1)
+        .code(4)
         .stderr(predicates::str::contains("not trusted"));
+}
+
+/// Sibling guard for `unblessed_config_check_exits_4`: a config that fails to
+/// **parse** (legacy pre-0.3 schema) must keep exit **1**, not collapse into
+/// the untrusted-config exit 4. It can never even be blessed (`ironlint
+/// trust` itself refuses to bless anything that doesn't parse — see
+/// `trust_rejects_unparseable_config` above), so this hits `check` directly:
+/// the trust layer can't compute a hash over content that doesn't parse, and
+/// that failure is a structural config problem, not a "this config was never
+/// reviewed" problem — it must surface through the same exit code a load
+/// failure would use.
+#[test]
+fn parse_error_config_check_exits_1() {
+    let proj = tempfile::tempdir().unwrap();
+    let xdg = tempfile::tempdir().unwrap();
+    let cfg = proj.path().join(".ironlint.yml");
+    fs::write(&cfg, "schema_version: 2\nrules: {}\n").unwrap(); // legacy -> parser rejects
+    let target = proj.path().join("a.rs");
+    fs::write(&target, "x\n").unwrap();
+
+    Command::cargo_bin("ironlint")
+        .unwrap()
+        .env("XDG_CONFIG_HOME", xdg.path())
+        .args(["check", "--config"])
+        .arg(&cfg)
+        .arg("--file")
+        .arg(&target)
+        .assert()
+        .failure()
+        .code(1);
 }
 
 /// After `trust`, `check` admits the config and actually runs its checks — not
@@ -116,7 +151,9 @@ fn blessed_config_check_runs() {
         .code(2);
 }
 
-/// Editing a check script after blessing revokes trust → check exits 1.
+/// Editing a check script after blessing revokes trust → check exits 4 (the
+/// blessed hash no longer matches, so this is the untrusted/mismatch case,
+/// not a parse error).
 #[test]
 fn editing_check_after_bless_blocks_check() {
     let proj = tempfile::tempdir().unwrap();
@@ -152,6 +189,6 @@ fn editing_check_after_bless_blocks_check() {
         .arg(&target)
         .assert()
         .failure()
-        .code(1)
+        .code(4)
         .stderr(predicates::str::contains("not trusted"));
 }
