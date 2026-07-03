@@ -1,13 +1,13 @@
 ---
 name: adapter-drift-audit
-description: Use when checking whether a Hector adapter still matches its coding harness's current contract — auditing adapter/harness drift, verifying hook payload shapes, plugin manifest schemas, lifecycle events, or tool names are up to date, or doing periodic adapter maintenance. Takes a harness name (claude-code, codex, pi, opencode) as argument.
+description: Use when checking whether an IronLint adapter still matches its coding harness's current contract — auditing adapter/harness drift, verifying hook payload shapes, plugin manifest schemas, lifecycle events, or tool names are up to date, or doing periodic adapter maintenance. Takes a harness name (claude-code, codex, pi, opencode) as argument.
 ---
 
 # Adapter Drift Audit
 
-Audit a Hector adapter against its coding harness's **current** contract and report drift.
+Audit an IronLint adapter against its coding harness's **current** contract and report drift.
 
-**Read-only.** You produce findings and recommendations. You do NOT edit adapter files, you do NOT write the watermark, and you do NOT audit `hector` core. The maintainer reads the report and decides what to change.
+**Read-only.** You produce findings and recommendations. You do NOT edit adapter files, you do NOT write the watermark, and you do NOT audit `ironlint` core. The maintainer reads the report and decides what to change.
 
 ## When to use
 

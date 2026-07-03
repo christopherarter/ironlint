@@ -108,7 +108,7 @@ Notable changes to IronLint, newest first. In-flight work lives in `plans/`.
   `no-merge-markers` (both read proposed content from stdin) — plus commented,
   copy-paste examples showing the stdin and `$IRONLINT_TMPFILE` patterns. Harness
   onboarding (installing ironlint's hook into claude-code / pi / opencode /
-  codex) is unchanged.
+  reasonix) is unchanged.
 
 ## [0.4.0] — 2026-06-29 — checks pipeline redesign
 
@@ -150,7 +150,7 @@ Notable changes to IronLint, newest first. In-flight work lives in `plans/`.
   the same guide that `ironlint init` installs for each coding agent.
 - **`ironlint init` harness onboarding.** `ironlint init` now installs ironlint's
   hook into detected coding agents with a detect-then-confirm UX. Bare `ironlint
-  init` auto-detects installed harnesses (claude-code, codex, pi, opencode)
+  init` auto-detects installed harnesses (claude-code, reasonix, pi, opencode)
   and prompts before writing anything. New flags: `--harness <name|all>`
   (repeatable; selects explicitly), `--yes` (skip prompt), `--hook-only` (skip
   config scaffold), `--no-hook` (config only, legacy behaviour), `--dry-run`
@@ -162,7 +162,7 @@ Notable changes to IronLint, newest first. In-flight work lives in `plans/`.
   state. Re-runs are idempotent.
 - **`ironlint doctor` per-harness adapter status.** `doctor` now reports a row
   for each installed harness inside the existing `checks[]` array — name is the
-  harness id (`claude-code`, `codex`, `pi`, `opencode`), same
+  harness id (`claude-code`, `reasonix`, `pi`, `opencode`), same
   `{name, status, detail, remediation}` shape as other checks. A registered
   harness with a missing artifact → `fail` → exit 1; modified or outdated
   artifact → `warn`; ok → `pass`; not installed/registered → row omitted.
