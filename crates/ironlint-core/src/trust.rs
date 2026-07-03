@@ -1,7 +1,8 @@
+use crate::config::Config;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -113,6 +114,149 @@ fn collect_into(root: &Path, dir: &Path, out: &mut Vec<(String, Vec<u8>)>) -> Re
     Ok(())
 }
 
+/// Split a shell command string into candidate path tokens: whitespace AND a
+/// liberal set of shell metacharacters are all treated as separators. This is
+/// deliberately not a real shell parser — it is a conservative *extractor*
+/// for the referenced-scripts hash fold (see [`referenced_repo_files`]):
+/// false positives (a token that happens to coincide with a real file, but
+/// isn't actually "the script") are harmless, so splitting too eagerly is
+/// safe. Splitting on quote characters means a quoted path containing a
+/// space (e.g. `'my script.sh'`) is not recovered as one token — a known,
+/// acceptable gap for a conservative, inclusion-biased extractor.
+fn tokenize_command(cmd: &str) -> Vec<String> {
+    const METACHARS: &[char] = &[
+        ';', '|', '&', '>', '<', '(', ')', '{', '}', '$', '`', '\'', '"', '=', '*',
+    ];
+    cmd.split(|c: char| c.is_whitespace() || METACHARS.contains(&c))
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect()
+}
+
+/// `true` iff `path` is a regular file **without following a symlink** at
+/// the final component — mirrors the guard [`classify_entry`] applies to the
+/// gates walk, but here a non-match is a silent skip rather than a hard
+/// error: most command tokens are not paths at all, so treating every
+/// unusual token as fatal would make `compute_hash` fail on ordinary
+/// configs. A symlink-referenced script is therefore a residual gap: its
+/// target is not covered by this hash, so it can be swapped without
+/// revoking trust.
+fn is_regular_file_no_follow(path: &Path) -> bool {
+    std::fs::symlink_metadata(path)
+        .map(|m| m.file_type().is_file())
+        .unwrap_or(false)
+}
+
+/// Resolve `token` against `root` and return its repo-relative (`/`-joined)
+/// path iff it names an existing, in-repo, regular, non-symlink file that
+/// isn't already under one of `gate_dirs` (those are folded once by the
+/// caller's separate gates walk — double-folding them would change the hash
+/// of every config that references a gate script via `run:`, breaking the
+/// "no-scripts/gates-only hash is unchanged" invariant). `None` for anything
+/// that doesn't resolve, escapes `root`, isn't a regular file, or duplicates
+/// a gate file.
+fn candidate_repo_relative(token: &str, root: &Path, gate_dirs: &[PathBuf]) -> Option<String> {
+    // `Path::join` with an absolute `token` discards `root` entirely (per
+    // `std::path::PathBuf::push` semantics), which is exactly what we want:
+    // an absolute token still gets canonicalized and containment-checked
+    // below, so an absolute in-repo path is included and an absolute
+    // out-of-repo path is excluded by the `starts_with` check either way.
+    let joined = root.join(token);
+    // Check symlink-ness on the JOINED (pre-canonicalize) path, not the
+    // canonicalized one: `canonicalize()` fully dereferences symlinks
+    // (that's its job), so by the time a path is canonical it can never
+    // itself "be a symlink" — checking after canonicalizing would silently
+    // follow the very symlinks this guard exists to skip. `symlink_metadata`
+    // here still resolves any symlinked *intermediate* directories (only the
+    // final path component is left un-followed), matching `classify_entry`'s
+    // guard elsewhere in this file.
+    if !is_regular_file_no_follow(&joined) {
+        return None;
+    }
+    let canon = joined.canonicalize().ok()?;
+    if !canon.starts_with(root) {
+        return None;
+    }
+    if gate_dirs.iter().any(|g| canon.starts_with(g)) {
+        return None;
+    }
+    let rel = canon.strip_prefix(root).ok()?;
+    Some(
+        rel.components()
+            .map(|c| c.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/"),
+    )
+}
+
+/// Extract every in-repo script referenced by any check's `run` or
+/// `steps[].run`, resolved against `root`, excluding files already under
+/// `gate_dirs`. Returns `(repo-relative path, bytes)` pairs sorted and
+/// deduped by relative path, ready to fold into the trust hash.
+///
+/// Conservative by design (see [`tokenize_command`] and
+/// [`candidate_repo_relative`]): err toward inclusion for anything that
+/// resolves to a real in-repo regular file, since a missed script (false
+/// negative) is the actual danger — a coincidental match (false positive)
+/// only adds harmless extra bytes to the hash.
+fn referenced_repo_files(
+    cfg: &Config,
+    root: &Path,
+    gate_dirs: &[PathBuf],
+) -> Result<Vec<(String, Vec<u8>)>> {
+    let mut rels: BTreeSet<String> = BTreeSet::new();
+    for check in cfg.checks.values() {
+        for step in check.effective_steps() {
+            for token in tokenize_command(&step.run) {
+                if let Some(rel) = candidate_repo_relative(&token, root, gate_dirs) {
+                    rels.insert(rel);
+                }
+            }
+        }
+    }
+    let mut out = Vec::with_capacity(rels.len());
+    for rel in rels {
+        let path = root.join(&rel);
+        let bytes = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+        out.push((rel, bytes));
+    }
+    Ok(out)
+}
+
+/// Fold every in-repo script referenced by the merged config's checks into
+/// `hasher`, under the `run-ref\0<repo-relative-path>` label namespace (kept
+/// distinct from `config\0` and `gates\0` so no cross-namespace collision is
+/// possible). `root` is the **primary** config's directory — checks run with
+/// that as their cwd regardless of which `extends:`-inherited file defined
+/// them, so that's what `run:` tokens resolve against.
+///
+/// Resolution failures here fold nothing rather than erroring: an
+/// unparseable/unresolvable config runs no checks at all, so there is no
+/// `run:` string to reference a script from and thus no RCE surface from
+/// skipping this step — the config's own bytes are already folded by the
+/// caller regardless. This mirrors [`compute_hash`]'s existing behavior of
+/// never erroring on a config it could previously hash by bytes alone.
+fn fold_referenced_scripts(
+    hasher: &mut Sha256,
+    config_path: &Path,
+    gate_dirs: &[PathBuf],
+) -> Result<()> {
+    let Ok(canon_config) = config_path.canonicalize() else {
+        return Ok(());
+    };
+    let root = canon_config
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf();
+    let Ok(merged) = crate::config::extends::resolve(config_path) else {
+        return Ok(());
+    };
+    for (rel, bytes) in referenced_repo_files(&merged, &root, gate_dirs)? {
+        hash_entry(hasher, &format!("run-ref\0{rel}"), &bytes);
+    }
+    Ok(())
+}
+
 /// Compute the trust hash of a config over its **entire `extends:` closure**.
 ///
 /// Sha256 over every config file reachable from `config_path` (the root plus
@@ -173,6 +317,15 @@ pub fn compute_hash(config_path: &Path) -> Result<String> {
             }
         }
     }
+
+    // Fold in-repo scripts referenced by any check's run/steps that aren't
+    // already covered by the gates loop above — closes the post-bless
+    // script-swap gap (Task 3.3 / Finding C6): `run: "bash scripts/lint.sh"`
+    // used to be trusted by its command *string* only, so scripts/lint.sh
+    // could be rewritten after blessing and run on the next agent edit with
+    // no re-bless. See `fold_referenced_scripts` for the leniency rationale.
+    fold_referenced_scripts(&mut hasher, config_path, &gate_dirs)?;
+
     Ok(format!("sha256:{:x}", hasher.finalize()))
 }
 
@@ -516,6 +669,179 @@ mod tests {
         let want = format!("sha256:{:x}", expected.finalize());
 
         assert_eq!(compute_hash(&cfg).unwrap(), want);
+    }
+
+    // --- Task 3.3: hash in-repo scripts referenced by run:/steps[].run ---
+    // RED: today compute_hash never looks at a check's `run`/`steps[].run`
+    // strings, so editing an in-repo script a check shells out to (but that
+    // isn't under `.ironlint/gates/`) does not change the hash. Bless the
+    // benign check, rewrite the script, and it runs on the next agent write
+    // with no re-bless. These tests must fail before the fix.
+
+    #[test]
+    fn editing_a_referenced_script_changes_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = dir.path().join(".ironlint.yml");
+        write(
+            &cfg,
+            "checks:\n  g:\n    files: \"*\"\n    run: \"bash scripts/lint.sh\"\n",
+        );
+        let script = dir.path().join("scripts/lint.sh");
+        write(&script, "#!/bin/sh\nexit 0\n");
+        let before = compute_hash(&cfg).unwrap();
+        write(&script, "#!/bin/sh\nexit 2\n");
+        let after = compute_hash(&cfg).unwrap();
+        assert_ne!(
+            before, after,
+            "editing an in-repo script referenced by `run:` must invalidate the hash"
+        );
+    }
+
+    #[test]
+    fn editing_an_unrelated_file_does_not_change_hash() {
+        // Control: mutating a file that is NOT referenced by any check's
+        // run/steps must leave the hash untouched.
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = dir.path().join(".ironlint.yml");
+        write(
+            &cfg,
+            "checks:\n  g:\n    files: \"*\"\n    run: \"bash scripts/lint.sh\"\n",
+        );
+        write(&dir.path().join("scripts/lint.sh"), "#!/bin/sh\nexit 0\n");
+        write(&dir.path().join("README"), "hello\n");
+        let before = compute_hash(&cfg).unwrap();
+        write(&dir.path().join("README"), "goodbye\n");
+        let after = compute_hash(&cfg).unwrap();
+        assert_eq!(
+            before, after,
+            "editing an unrelated file must not change the trust hash"
+        );
+    }
+
+    #[test]
+    fn referenced_script_in_steps_run_changes_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = dir.path().join(".ironlint.yml");
+        write(
+            &cfg,
+            "checks:\n  g:\n    files: \"*\"\n    steps:\n      - run: \"true\"\n      - run: \"bash scripts/lint.sh\"\n",
+        );
+        let script = dir.path().join("scripts/lint.sh");
+        write(&script, "#!/bin/sh\nexit 0\n");
+        let before = compute_hash(&cfg).unwrap();
+        write(&script, "#!/bin/sh\nexit 2\n");
+        let after = compute_hash(&cfg).unwrap();
+        assert_ne!(
+            before, after,
+            "a step's run referencing a script must be scanned too, not just single-step `run:`"
+        );
+    }
+
+    #[test]
+    fn referenced_script_from_inherited_check_uses_primary_root() {
+        // Checks run with cwd = the primary config's directory, even when the
+        // check itself is defined in an extended (inherited) file. So an
+        // inherited check's `run:` must resolve relative to the PRIMARY
+        // root, and editing that script must still revoke trust.
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("base.yml");
+        write(
+            &base,
+            "checks:\n  b:\n    files: \"*\"\n    run: \"bash scripts/base.sh\"\n",
+        );
+        let cfg = dir.path().join(".ironlint.yml");
+        write(&cfg, "extends: [\"./base.yml\"]\nchecks: {}\n");
+        write(&dir.path().join("scripts/base.sh"), "#!/bin/sh\nexit 0\n");
+        let before = compute_hash(&cfg).unwrap();
+        write(&dir.path().join("scripts/base.sh"), "#!/bin/sh\nexit 2\n");
+        let after = compute_hash(&cfg).unwrap();
+        assert_ne!(
+            before, after,
+            "an inherited check's referenced script must be hashed relative to the primary root"
+        );
+    }
+
+    #[test]
+    fn referenced_out_of_repo_path_is_not_folded() {
+        // A run: string that happens to name a file OUTSIDE the project root
+        // (e.g. an absolute path to a sibling directory) must not be folded —
+        // only in-repo files are in scope for this hash.
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let outside_file = outside.path().join("evil.sh");
+        write(&outside_file, "#!/bin/sh\nexit 0\n");
+        let cfg = dir.path().join(".ironlint.yml");
+        write(
+            &cfg,
+            &format!(
+                "checks:\n  g:\n    files: \"*\"\n    run: \"bash {}\"\n",
+                outside_file.display()
+            ),
+        );
+        let before = compute_hash(&cfg).unwrap();
+        write(&outside_file, "#!/bin/sh\nexit 2\n");
+        let after = compute_hash(&cfg).unwrap();
+        assert_eq!(
+            before, after,
+            "a script outside the project root must not be folded into the trust hash"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn referenced_script_symlink_is_skipped_not_followed() {
+        // Regular files only (same guard as Task 2.3's gates walk) — a
+        // symlink-referenced script is a documented residual gap: it is not
+        // covered by this hash, so its target can be swapped without
+        // revoking trust.
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = dir.path().join(".ironlint.yml");
+        write(
+            &cfg,
+            "checks:\n  g:\n    files: \"*\"\n    run: \"bash scripts/lint.sh\"\n",
+        );
+        let real = dir.path().join("real_lint.sh");
+        write(&real, "#!/bin/sh\nexit 0\n");
+        fs::create_dir_all(dir.path().join("scripts")).unwrap();
+        std::os::unix::fs::symlink(&real, dir.path().join("scripts/lint.sh")).unwrap();
+
+        let before = compute_hash(&cfg).unwrap();
+        write(&real, "#!/bin/sh\nexit 2\n");
+        let after = compute_hash(&cfg).unwrap();
+        assert_eq!(
+            before, after,
+            "a symlink-referenced script is skipped (regular files only, not followed) — \
+             this is the documented residual limitation"
+        );
+    }
+
+    #[test]
+    fn editing_a_referenced_script_after_bless_revokes_trust() {
+        // End-to-end re-bless proof: bless a config whose check shells out to
+        // an in-repo script, confirm it's trusted, tamper with the script,
+        // and confirm `ensure_trusted_in` now fails closed until re-bless.
+        let proj = tempfile::tempdir().unwrap();
+        let store = tempfile::tempdir().unwrap();
+        let store_path = store.path().join("trust.json");
+        let cfg = proj.path().join(".ironlint.yml");
+        write(
+            &cfg,
+            "checks:\n  g:\n    files: \"*\"\n    run: \"bash scripts/lint.sh\"\n",
+        );
+        write(&proj.path().join("scripts/lint.sh"), "#!/bin/sh\nexit 0\n");
+
+        bless_in(&cfg, &store_path, "t").unwrap();
+        assert!(ensure_trusted_in(&cfg, &store_path).is_ok());
+
+        write(&proj.path().join("scripts/lint.sh"), "#!/bin/sh\nexit 2\n");
+        assert!(
+            ensure_trusted_in(&cfg, &store_path).is_err(),
+            "rewriting a referenced script after bless must revoke trust until re-bless"
+        );
+
+        // And re-blessing restores trust.
+        bless_in(&cfg, &store_path, "t2").unwrap();
+        assert!(ensure_trusted_in(&cfg, &store_path).is_ok());
     }
 
     #[test]
