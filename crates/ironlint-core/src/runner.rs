@@ -579,6 +579,16 @@ impl IronLintEngine {
         Ok(canon_input)
     }
 
+    /// Make a path absolute relative to the project root for ABI env vars.
+    /// Absolute paths pass through; relative paths join onto `config_dir`.
+    fn absolutize_for_env(&self, p: &Path) -> PathBuf {
+        if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            self.config_dir.join(p)
+        }
+    }
+
     /// Match a path against a check's file globs using the load-time matcher
     /// cache. A relative path is matched directly (already config-dir-relative);
     /// an absolute path is stripped against the canonical config dir first.
@@ -785,7 +795,7 @@ impl IronLintEngine {
             let matched: Vec<PathBuf> = files
                 .iter()
                 .filter(|f| self.check_matches_path(check_id, f))
-                .cloned()
+                .map(|f| self.absolutize_for_env(f))
                 .collect();
             if matched.is_empty() {
                 continue;
@@ -1137,6 +1147,30 @@ mod gate_dispatch_tests {
             v.status,
             Status::Pass,
             "$IRONLINT_FILE must be absolute (check blocks on a non-absolute path): {:?}",
+            v.blocks
+        );
+    }
+
+    #[test]
+    fn ironlint_files_are_absolute_for_pre_commit_set() {
+        // ABI lock: `$IRONLINT_FILES` handed to a pre-commit check is always
+        // newline-joined absolute paths. The check blocks (exit 2) iff any
+        // entry in `$IRONLINT_FILES` is not absolute.
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            ".ironlint.yml",
+            "checks:\n  abs:\n    files: \"**/*.rs\"\n    on: [pre-commit]\n    run: \"for p in \\\"$IRONLINT_FILES\\\"; do case \\\"$p\\\" in /*) ;; *) exit 2;; esac; done\"\n",
+        );
+        touch(&dir, "a.rs");
+        touch(&dir, "b.rs");
+        let engine = load_with_event(&dir, "pre-commit");
+        // Pass RELATIVE paths into check_set, simulating the CLI --diff path.
+        let v = engine.check_set(&[PathBuf::from("a.rs"), PathBuf::from("b.rs")]).unwrap();
+        assert_eq!(
+            v.status,
+            Status::Pass,
+            "$IRONLINT_FILES entries must be absolute (check blocks on a non-absolute path): {:?}",
             v.blocks
         );
     }
