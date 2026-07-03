@@ -116,9 +116,9 @@ pub fn parse_unified(input: &str) -> Result<Vec<ChangedFile>> {
             if let Some(f) = current.take() {
                 files.push(f);
             }
-            let minus = unquote_git_path(minus)?;
-            let minus = minus.split('\t').next().unwrap_or(&minus);
+            let minus = minus.split('\t').next().unwrap_or(minus);
             let minus = minus.trim_end_matches('\r');
+            let minus = unquote_git_path(minus)?;
             pending_minus = if let Some(path_str) = minus.strip_prefix("a/") {
                 validate_path(path_str)?;
                 Some(PathBuf::from(path_str))
@@ -126,9 +126,9 @@ pub fn parse_unified(input: &str) -> Result<Vec<ChangedFile>> {
                 None
             };
         } else if let Some(plus) = raw.strip_prefix("+++ ") {
-            let plus = unquote_git_path(plus)?;
-            let plus = plus.split('\t').next().unwrap_or(&plus);
+            let plus = plus.split('\t').next().unwrap_or(plus);
             let plus = plus.trim_end_matches('\r');
+            let plus = unquote_git_path(plus)?;
 
             if plus == "/dev/null" {
                 if let Some(p) = pending_minus.take() {
@@ -154,10 +154,10 @@ pub fn parse_unified(input: &str) -> Result<Vec<ChangedFile>> {
             if let Some(f) = current.take() {
                 files.push(f);
             }
-            let rename_to = unquote_git_path(rename_to)?;
-            let rename_to = rename_to.split('\t').next().unwrap_or(&rename_to);
+            let rename_to = rename_to.split('\t').next().unwrap_or(rename_to);
             let rename_to = rename_to.trim_end_matches('\r');
-            validate_path(rename_to)?;
+            let rename_to = unquote_git_path(rename_to)?;
+            validate_path(&rename_to)?;
             current = Some(ChangedFile {
                 path: PathBuf::from(rename_to),
                 op: ChangeOp::Renamed,

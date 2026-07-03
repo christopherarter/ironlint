@@ -247,3 +247,137 @@ fn parse_unified_rejects_unrecognized_plus_plus_plus_header() {
         "error should mention the malformed +++ header; got: {msg}"
     );
 }
+
+// Quoted-path edge cases -----------------------------------------------------
+
+/// C-quoted paths may contain standard escapes. Each must decode to the real
+/// byte in the parsed path.
+#[test]
+fn parse_unified_unquotes_standard_c_escapes() {
+    let cases = [
+        (
+            r#"--- "a/weird\\name.rs"
++++ "b/weird\\name.rs"
+@@ -1,1 +1,1 @@
+-a
++b
+"#,
+            "weird\\name.rs",
+        ),
+        (
+            r#"--- "a/quote\".rs"
++++ "b/quote\".rs"
+@@ -1,1 +1,1 @@
+-a
++b
+"#,
+            "quote\".rs",
+        ),
+        (
+            r#"--- "a/weird\nname.rs"
++++ "b/weird\nname.rs"
+@@ -1,1 +1,1 @@
+-a
++b
+"#,
+            "weird\nname.rs",
+        ),
+        (
+            r#"--- "a/weird\rname.rs"
++++ "b/weird\rname.rs"
+@@ -1,1 +1,1 @@
+-a
++b
+"#,
+            "weird\rname.rs",
+        ),
+        (
+            r#"--- "a/weird\tname.rs"
++++ "b/weird\tname.rs"
+@@ -1,1 +1,1 @@
+-a
++b
+"#,
+            "weird\tname.rs",
+        ),
+    ];
+    for (input, expected) in cases {
+        let files = ironlint_core::diff::parser::parse_unified(input).expect("parses");
+        assert_eq!(files.len(), 1, "input: {input:?}");
+        assert_eq!(
+            files[0].path,
+            std::path::PathBuf::from(expected),
+            "input: {input:?}"
+        );
+    }
+}
+
+/// A truncated escape at the end of a quoted path must be a hard parse error.
+#[test]
+fn parse_unified_rejects_truncated_escape_in_quoted_path() {
+    let input = r#"--- "a/bad\"
++++ "b/good.rs"
+@@ -1,1 +1,1 @@
+-a
++b
+"#;
+    let err = ironlint_core::diff::parser::parse_unified(input)
+        .expect_err("truncated escape must be a hard parse error");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("truncated"),
+        "error should mention truncated escape; got: {msg}"
+    );
+}
+
+/// Non-octal digits in an escape sequence must be rejected.
+#[test]
+fn parse_unified_rejects_invalid_octal_escape_in_quoted_path() {
+    let input = r#"--- "a/bad\8.rs"
++++ "b/bad\8.rs"
+@@ -1,1 +1,1 @@
+-a
++b
+"#;
+    let err = ironlint_core::diff::parser::parse_unified(input)
+        .expect_err("invalid octal escape must be a hard parse error");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("octal") || msg.contains("escape"),
+        "error should mention octal/escape; got: {msg}"
+    );
+}
+
+/// An octal sequence that does not form valid UTF-8 must be rejected.
+#[test]
+fn parse_unified_rejects_invalid_utf8_from_octal_escape() {
+    let input = r#"--- "a/\377.rs"
++++ "b/\377.rs"
+@@ -1,1 +1,1 @@
+-a
++b
+"#;
+    let err = ironlint_core::diff::parser::parse_unified(input)
+        .expect_err("invalid UTF-8 from octal escape must be a hard parse error");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("UTF-8") || msg.contains("utf-8"),
+        "error should mention UTF-8; got: {msg}"
+    );
+}
+
+/// Quoted paths may still carry the POSIX timestamp suffix; splitting on the
+/// real tab must happen before unquoting so escaped tabs inside the path are
+/// not mistaken for the timestamp separator.
+#[test]
+fn parse_unified_unquotes_c_quoted_path_with_timestamp() {
+    let input = r#"--- "a/caf\303\251.rs"	2024-01-01 12:00:00 +0000
++++ "b/caf\303\251.rs"	2024-01-01 12:00:00 +0000
+@@ -1,1 +1,1 @@
+-a
++b
+"#;
+    let files = ironlint_core::diff::parser::parse_unified(input).expect("parses");
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].path, std::path::PathBuf::from("café.rs"));
+}
