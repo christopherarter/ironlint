@@ -381,3 +381,17 @@ fn parse_unified_unquotes_c_quoted_path_with_timestamp() {
     assert_eq!(files.len(), 1);
     assert_eq!(files[0].path, std::path::PathBuf::from("café.rs"));
 }
+
+/// An unsupported C escape (e.g. `\x`) inside a quoted git path must be a
+/// hard parse error, not silently passed through or dropped.
+#[test]
+fn parse_unified_rejects_unsupported_escape_in_quoted_path() {
+    let input = "--- \"a/bad\\x.rs\"\n+++ \"a/bad\\x.rs\"\n@@ -1,1 +1,1 @@\n-a\n+b\n";
+    let err = ironlint_core::diff::parser::parse_unified(input)
+        .expect_err("unsupported escape in quoted path must be a hard parse error");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("unsupported escape"),
+        "error should mention unsupported escape; got: {msg}"
+    );
+}
