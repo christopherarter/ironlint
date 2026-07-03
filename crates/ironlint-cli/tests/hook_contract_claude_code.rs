@@ -5,8 +5,8 @@
 //! `PATH` whose exit code is controlled per case. That stub is what's under
 //! test's control; the hook's own exit-code translation (0/2/3/4 -> Claude
 //! Code's allow/block semantics) is the actual thing being verified. See
-//! `adapters/reasonix/hooks/hook.sh`'s sibling suite,
-//! `hook_contract_reasonix.rs`, for the same contract on that harness.
+//! `adapters/codex/hooks/hook.sh`'s sibling suite,
+//! `hook_contract_codex.rs`, for the same contract on that harness.
 //!
 //! Every test runs in a temp project dir (with its own `.ironlint.yml`, so
 //! the hook doesn't silently skip) and a temp `HOME`/`XDG_CONFIG_HOME`, so

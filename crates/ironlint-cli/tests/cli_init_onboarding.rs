@@ -10,28 +10,28 @@ fn ironlint(home: &Path, project: &Path) -> Command {
 }
 
 #[test]
-fn init_installs_reasonix_hook_with_yes() {
+fn init_installs_codex_hook_with_yes() {
     let tmp = tempfile::tempdir().unwrap();
     let home = tmp.path().join("home");
     let project = tmp.path().join("proj");
     std::fs::create_dir_all(&project).unwrap();
-    std::fs::create_dir_all(home.join(".reasonix")).unwrap();
+    std::fs::create_dir_all(home.join(".codex")).unwrap();
 
     ironlint(&home, &project)
-        .args(["init", "--harness", "reasonix", "--yes"])
+        .args(["init", "--harness", "codex", "--yes"])
         .assert()
         .success();
 
-    let hook = home.join(".config/ironlint/adapters/reasonix/hook.sh");
+    let hook = home.join(".config/ironlint/adapters/codex/hook.sh");
     assert!(hook.exists(), "hook artifact materialized");
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(home.join(".reasonix/settings.json")).unwrap(),
-    )
-    .unwrap();
-    assert!(settings["hooks"]["PreToolUse"][0]["command"]
+    // No --global passed: init defaults to local (project) scope.
+    let settings: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(project.join(".codex/hooks.json")).unwrap())
+            .unwrap();
+    assert!(settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
         .as_str()
         .unwrap()
-        .contains("adapters/reasonix/hook.sh"));
+        .contains("adapters/codex/hook.sh"));
 }
 
 #[test]
@@ -43,7 +43,7 @@ fn reinstall_reports_already_present() {
 
     let run = || {
         ironlint(&home, &project)
-            .args(["init", "--hook-only", "--harness", "reasonix", "--yes"])
+            .args(["init", "--hook-only", "--harness", "codex", "--yes"])
             .assert()
             .success()
             .get_output()
@@ -70,15 +70,16 @@ fn dry_run_writes_nothing() {
             "init",
             "--hook-only",
             "--harness",
-            "reasonix",
+            "codex",
             "--yes",
             "--dry-run",
         ])
         .assert()
         .success();
-    assert!(!home.join(".reasonix/settings.json").exists());
+    // No --global passed: local scope, so the project-local settings file.
+    assert!(!project.join(".codex/hooks.json").exists());
     assert!(!home
-        .join(".config/ironlint/adapters/reasonix/hook.sh")
+        .join(".config/ironlint/adapters/codex/hook.sh")
         .exists());
 }
 
@@ -90,26 +91,30 @@ fn uninstall_removes_hook() {
     std::fs::create_dir_all(&project).unwrap();
 
     ironlint(&home, &project)
-        .args(["init", "--hook-only", "--harness", "reasonix", "--yes"])
+        .args(["init", "--hook-only", "--harness", "codex", "--yes"])
         .assert()
         .success();
     ironlint(&home, &project)
-        .args(["init", "--uninstall", "--harness", "reasonix"])
+        .args(["init", "--uninstall", "--harness", "codex"])
         .assert()
         .success();
     assert!(!home
-        .join(".config/ironlint/adapters/reasonix/hook.sh")
+        .join(".config/ironlint/adapters/codex/hook.sh")
         .exists());
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(home.join(".reasonix/settings.json")).unwrap(),
-    )
-    .unwrap();
+    // No --global passed on either invocation: local (project) scope.
+    let settings: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(project.join(".codex/hooks.json")).unwrap())
+            .unwrap();
     let arr = settings["hooks"]["PreToolUse"].as_array().unwrap();
     assert!(
-        arr.iter().all(|e| !e["command"]
-            .as_str()
-            .unwrap_or("")
-            .contains("adapters/reasonix/hook.sh")),
+        arr.iter().all(|e| {
+            e["hooks"].as_array().into_iter().flatten().all(|h| {
+                !h["command"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("adapters/codex/hook.sh")
+            })
+        }),
         "uninstall must remove the ironlint PreToolUse entry"
     );
 }
@@ -120,7 +125,7 @@ fn no_tty_without_yes_or_harness_skips_hooks() {
     let home = tmp.path().join("home");
     let project = tmp.path().join("proj");
     std::fs::create_dir_all(&project).unwrap();
-    std::fs::create_dir_all(home.join(".reasonix")).unwrap();
+    std::fs::create_dir_all(home.join(".codex")).unwrap();
 
     // assert_cmd pipes stdin (non-TTY); bare init must not install.
     let out = ironlint(&home, &project)
@@ -134,7 +139,9 @@ fn no_tty_without_yes_or_harness_skips_hooks() {
         String::from_utf8(out).unwrap().contains("re-run with"),
         "non-TTY path must print the re-run hint"
     );
-    assert!(!home.join(".reasonix/settings.json").exists());
+    // Auto-detect (no --harness) stops before install, so neither the
+    // local (project) nor global settings file is ever written.
+    assert!(!project.join(".codex/hooks.json").exists());
 }
 
 #[test]
@@ -145,7 +152,7 @@ fn explicit_harness_renders_plan_with_requested_tag() {
     std::fs::create_dir_all(&project).unwrap();
 
     let out = ironlint(&home, &project)
-        .args(["init", "--hook-only", "--harness", "reasonix", "--yes"])
+        .args(["init", "--hook-only", "--harness", "codex", "--yes"])
         .assert()
         .success()
         .get_output()
@@ -153,12 +160,12 @@ fn explicit_harness_renders_plan_with_requested_tag() {
         .clone();
     let s = String::from_utf8(out).unwrap();
     assert!(s.contains("ironlint · onboarding"), "header:\n{s}");
-    assert!(s.contains("reasonix"), "harness:\n{s}");
+    assert!(s.contains("codex"), "harness:\n{s}");
     assert!(s.contains("requested"), "explicit → requested tag:\n{s}");
     assert!(s.contains("hook"), "hook step listed:\n{s}");
     // --yes still installs
     assert!(home
-        .join(".config/ironlint/adapters/reasonix/hook.sh")
+        .join(".config/ironlint/adapters/codex/hook.sh")
         .exists());
 }
 
@@ -170,7 +177,7 @@ fn dry_run_renders_plan_but_installs_nothing() {
     std::fs::create_dir_all(&project).unwrap();
 
     let out = ironlint(&home, &project)
-        .args(["init", "--hook-only", "--harness", "reasonix", "--dry-run"])
+        .args(["init", "--hook-only", "--harness", "codex", "--dry-run"])
         .assert()
         .success()
         .get_output()
@@ -183,7 +190,7 @@ fn dry_run_renders_plan_but_installs_nothing() {
     );
     assert!(
         !home
-            .join(".config/ironlint/adapters/reasonix/hook.sh")
+            .join(".config/ironlint/adapters/codex/hook.sh")
             .exists(),
         "dry-run writes nothing"
     );
@@ -197,11 +204,11 @@ fn uninstall_renders_removal_plan() {
     std::fs::create_dir_all(&project).unwrap();
 
     ironlint(&home, &project)
-        .args(["init", "--hook-only", "--harness", "reasonix", "--yes"])
+        .args(["init", "--hook-only", "--harness", "codex", "--yes"])
         .assert()
         .success();
     let out = ironlint(&home, &project)
-        .args(["init", "--uninstall", "--harness", "reasonix", "--yes"])
+        .args(["init", "--uninstall", "--harness", "codex", "--yes"])
         .assert()
         .success()
         .get_output()
@@ -211,7 +218,7 @@ fn uninstall_renders_removal_plan() {
     assert!(s.contains("ironlint · uninstall"), "uninstall header:\n{s}");
     assert!(
         !home
-            .join(".config/ironlint/adapters/reasonix/hook.sh")
+            .join(".config/ironlint/adapters/codex/hook.sh")
             .exists(),
         "uninstall removes the hook"
     );

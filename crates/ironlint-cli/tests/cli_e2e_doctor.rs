@@ -107,7 +107,7 @@ fn doctor_omits_adapter_rows_on_clean_machine() {
     assert_eq!(out.status.code(), Some(0));
     let s = String::from_utf8_lossy(&out.stdout);
     // No harness is present, so no per-harness adapter row is emitted.
-    for harness in ["claude-code", "reasonix", "pi", "opencode"] {
+    for harness in ["claude-code", "codex", "pi", "opencode"] {
         assert!(
             !s.contains(harness),
             "clean machine must not emit a `{harness}` adapter row: {s}"
@@ -116,11 +116,11 @@ fn doctor_omits_adapter_rows_on_clean_machine() {
 }
 
 #[test]
-fn doctor_reports_installed_reasonix_adapter() {
+fn doctor_reports_installed_codex_adapter() {
     let dir = tempdir().unwrap();
     let home = tempdir().unwrap();
     write_gates_config(dir.path());
-    // Wire the reasonix hook via the real install path, then re-run doctor.
+    // Wire the codex hook via the real install path, then re-run doctor.
     Command::cargo_bin("ironlint")
         .unwrap()
         .env("HOME", home.path())
@@ -130,7 +130,7 @@ fn doctor_reports_installed_reasonix_adapter() {
             "--dir",
             dir.path().to_str().unwrap(),
             "--harness",
-            "reasonix",
+            "codex",
             "--global",
             "--hook-only",
             "--yes",
@@ -141,8 +141,8 @@ fn doctor_reports_installed_reasonix_adapter() {
     assert_eq!(out.status.code(), Some(0));
     let s = String::from_utf8_lossy(&out.stdout);
     assert!(
-        s.contains("reasonix") && s.contains("ok"),
-        "expected a passing `reasonix` adapter row: {s}"
+        s.contains("codex") && s.contains("ok"),
+        "expected a passing `codex` adapter row: {s}"
     );
 }
 
