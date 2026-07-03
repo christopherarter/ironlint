@@ -4,7 +4,7 @@
 //! manifests exist in the project root. ironlint knows nothing about any
 //! tool — checks own their own messages, read stdin, and block by exiting
 //! nonzero. Harness onboarding (wiring ironlint's hook into claude-code,
-//! pi, opencode, reasonix) is a separate phase handled by `onboard.rs`.
+//! codex, pi, opencode) is a separate phase handled by `onboard.rs`.
 
 mod onboard;
 mod render;

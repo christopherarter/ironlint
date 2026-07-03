@@ -268,7 +268,7 @@ mod tests {
     #[test]
     fn select_explicit_all_returns_every_harness() {
         let names = select_harness_names(&["all".to_string()]).unwrap();
-        assert_eq!(names, vec!["claude-code", "reasonix", "pi", "opencode"]);
+        assert_eq!(names, vec!["claude-code", "codex", "pi", "opencode"]);
     }
     #[test]
     fn select_explicit_unknown_errors() {
@@ -283,8 +283,8 @@ mod tests {
     #[test]
     fn format_outcome_covers_every_variant() {
         use ironlint_core::adapter::InstallResult::*;
-        assert!(format_outcome("reasonix", &Installed, "h", false)[0].contains("installed"));
-        assert!(format_outcome("reasonix", &Installed, "h", true)[0].contains("removed"));
+        assert!(format_outcome("codex", &Installed, "h", false)[0].contains("installed"));
+        assert!(format_outcome("codex", &Installed, "h", true)[0].contains("removed"));
         assert!(format_outcome("pi", &Updated, "h", false)[0].contains("updated"));
         assert!(format_outcome("pi", &AlreadyPresent, "h", false)[0].contains("already present"));
         assert!(
