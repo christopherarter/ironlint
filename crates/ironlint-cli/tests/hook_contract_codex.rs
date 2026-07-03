@@ -38,6 +38,18 @@ fn update_payload(cwd: &std::path::Path) -> String {
     .to_string()
 }
 
+/// A two-file Add-File apply_patch payload touching both `foo.py` and
+/// `bar.py` (both in `.ironlint.yml` scope) in a single envelope.
+fn multi_add_payload(cwd: &std::path::Path) -> String {
+    let patch = "*** Begin Patch\n*** Add File: foo.py\n+print('hi')\n*** Add File: bar.py\n+print('bye')\n*** End Patch\n";
+    serde_json::json!({
+        "tool_name": "apply_patch",
+        "cwd": cwd.display().to_string(),
+        "tool_input": { "command": patch },
+    })
+    .to_string()
+}
+
 /// Assert stdout is a well-formed Codex deny verdict whose reason contains `needle`.
 fn assert_deny(stdout: &[u8], needle: &str) {
     let v: serde_json::Value =
@@ -242,4 +254,86 @@ fn non_apply_patch_tool_is_allowed() {
         .success()
         .code(0)
         .stdout(predicates::str::is_empty());
+}
+
+/// A patch touching two files in one envelope must run the per-file gate
+/// loop against both manifest entries — single-file tests can't exercise
+/// that the loop correctly walks a multi-line manifest and still blocks.
+#[test]
+fn multi_file_patch_blocks_when_any_file_blocks() {
+    if !common::hook_tools_available() {
+        eprintln!("skipping");
+        return;
+    }
+    let fx = HookFixture::new(HOOK);
+    fx.stub(
+        2,
+        r#"{"blocks":[{"check":"g","message":"blocked one of the files"}]}"#,
+    );
+    let out = fx
+        .run("pre-tool-use", &multi_add_payload(fx.project.path()), &[])
+        .success()
+        .code(0)
+        .get_output()
+        .stdout
+        .clone();
+    assert_deny(&out, "blocked one of the files");
+}
+
+/// A well-formed `*** Begin Patch … *** End Patch` envelope whose only
+/// section uses an unrecognized op (not Add/Update/Delete File) must fail
+/// CLOSED — an empty manifest from an unrecognized op must never be
+/// mistaken for the legitimate "delete-only, nothing to gate" allow path.
+/// `ironlint` is stubbed to allow (exit 0) and must never be consulted.
+#[test]
+fn envelope_without_recognized_op_fails_closed() {
+    if !common::hook_tools_available() {
+        eprintln!("skipping");
+        return;
+    }
+    let fx = HookFixture::new(HOOK);
+    fx.stub(0, "");
+    let payload = serde_json::json!({
+        "tool_name": "apply_patch",
+        "cwd": fx.project.path().display().to_string(),
+        "tool_input": { "command": "*** Begin Patch\n*** Frobnicate File: foo.py\n*** End Patch" },
+    })
+    .to_string();
+    let out = fx
+        .run("pre-tool-use", &payload, &[])
+        .success()
+        .code(0)
+        .get_output()
+        .stdout
+        .clone();
+    assert_deny(&out, "recognized");
+}
+
+/// Feeds a byte-verbatim, real-Codex-captured payload (`tests/fixtures/codex/
+/// apply_patch_add.json`) through the hook, so those fixtures stop being
+/// orphaned ground-truth files nothing exercises.
+#[test]
+fn real_captured_add_fixture_blocks_on_exit_2() {
+    if !common::hook_tools_available() {
+        eprintln!("skipping");
+        return;
+    }
+    let fx = HookFixture::new(HOOK);
+    fx.stub(
+        2,
+        r#"{"blocks":[{"check":"g","message":"blocked captured add"}]}"#,
+    );
+    let raw = std::fs::read_to_string(common::repo_path(
+        "tests/fixtures/codex/apply_patch_add.json",
+    ))
+    .expect("fixture must exist");
+    let payload = raw.replace("__CWD__", &fx.project.path().display().to_string());
+    let out = fx
+        .run("pre-tool-use", &payload, &[])
+        .success()
+        .code(0)
+        .get_output()
+        .stdout
+        .clone();
+    assert_deny(&out, "blocked captured add");
 }

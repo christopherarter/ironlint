@@ -163,10 +163,12 @@ def apply_update(relpath, hunk):
         out += "\n"
     return out
 
+saw_op = False
 i, N = 0, len(lines)
 while i < N:
     ln = lines[i]
     if ln.startswith("*** Add File: "):
+        saw_op = True
         rel = ln[len("*** Add File: "):].strip(); i += 1
         added = []
         while i < N and not lines[i].startswith("*** "):
@@ -175,6 +177,7 @@ while i < N:
             i += 1
         emit(rel, ("\n".join(added) + "\n") if added else "")
     elif ln.startswith("*** Update File: "):
+        saw_op = True
         rel = ln[len("*** Update File: "):].strip(); i += 1
         dest = rel
         if i < N and lines[i].startswith("*** Move to: "):
@@ -187,9 +190,17 @@ while i < N:
             fail("apply_patch hunk did not apply cleanly to %s" % rel)
         emit(dest, content)
     elif ln.startswith("*** Delete File: "):
+        saw_op = True
         i += 1  # nothing to gate on a deletion
     else:
         i += 1
+
+# A well-formed envelope with zero recognized ops (e.g. every line is an
+# unsupported "*** Frobnicate File:" directive) must fail closed — an empty
+# manifest from an unrecognized envelope must never be mistaken for the
+# legitimate "delete-only patch, nothing to gate" case above.
+if not saw_op:
+    fail("apply_patch envelope has no recognized Add/Update/Delete File operation")
 
 sys.stdout.write("\n".join(manifest))
 if manifest:
