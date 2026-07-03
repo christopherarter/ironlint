@@ -16,6 +16,13 @@ globset.workspace = true
 chrono.workspace = true
 wait-timeout = "0.2"
 fs4.workspace = true
+
+# `nix` is unix-only (process groups / signals for gate.rs's child-process
+# reaping) and does not build on Windows. Every `nix::` reference in this
+# crate is already `#[cfg(unix)]`-gated (gate.rs), so scoping the dependency
+# itself to unix keeps `cargo check --target x86_64-pc-windows-msvc` green
+# without needing any Windows-side shim (readiness review C2 / Task 3.7).
+[target.'cfg(unix)'.dependencies]
 nix = { version = "0.31.3", default-features = false, features = ["signal", "process"] }
 
 [dev-dependencies]

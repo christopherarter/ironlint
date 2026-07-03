@@ -1,0 +1,107 @@
+# cargo-deny configuration — supply-chain gate (readiness review S6 / Task 3.7).
+#
+# Run locally with: cargo deny check advisories licenses bans
+# CI runs the same three checks (see .github/workflows/ci.yml, `deny` job).
+#
+# Schema: cargo-deny 0.16+ (verified against the installed 0.19.9 template via
+# `cargo deny init`). No deprecated keys (no bare `[advisories] vulnerability`,
+# no `unmaintained = "all"`); `version = 2` is set explicitly under each
+# section that supports it, matching the current (non-deprecated) schema.
+
+[graph]
+# No target-specific pruning: `nix` is unix-only (see
+# crates/ironlint-core/Cargo.toml's `[target.'cfg(unix)'.dependencies]`) but
+# we still want its license/advisory posture checked even when reasoning
+# about a Windows build, so all targets stay in the default (unrestricted)
+# graph.
+all-features = false
+no-default-features = false
+
+[output]
+feature-depth = 1
+
+# ---------------------------------------------------------------------------
+# advisories — RUSTSEC vulnerability / yanked / unmaintained-crate database.
+# https://embarkstudios.github.io/cargo-deny/checks/advisories/cfg.html
+# ---------------------------------------------------------------------------
+[advisories]
+version = 2
+ignore = [
+    # `paste` is unmaintained (RUSTSEC-2024-0436, upstream archived). It's a
+    # transitive, compile-time-only proc-macro dependency pulled in by
+    # `ratatui` (the `watch` TUI) — no safe upgrade exists (no drop-in
+    # replacement ratatui has adopted yet) and it has no runtime attack
+    # surface (macro expansion only, not linked into the running binary's
+    # logic). Revisit if ratatui migrates off it or a vulnerability (as
+    # opposed to unmaintained-status) advisory is filed against it.
+    { id = "RUSTSEC-2024-0436", reason = "unmaintained transitive proc-macro dep (via ratatui); no safe upgrade, no runtime attack surface" },
+]
+
+# ---------------------------------------------------------------------------
+# licenses — every license actually present in the dependency graph (workspace
+# is Apache-2.0; deps resolve to MIT/Apache-2.0-family permissive licenses).
+# Allow-list is explicit (not a `allow = []` catch-all) so a newly introduced
+# copyleft or unknown license fails the gate instead of silently passing.
+#
+# Derived from `cargo metadata` across the full workspace graph (2026-07-03,
+# ironlint-cli pulls in axoupdater + ratatui, which is where the wider tail —
+# aws-lc-rs, rustls, image, icu4x, etc. — comes from):
+#   Apache-2.0, Apache-2.0 WITH LLVM-exception, BSD-3-Clause, CC0-1.0,
+#   CDLA-Permissive-2.0, ISC, MIT, MIT-0, Unicode-3.0, Unlicense, Zlib
+# `BSD-2-Clause`, `BSL-1.0` (ryu), and `LGPL-2.1-or-later` (r-efi) also appear
+# in some crates' license expressions, but only as one arm of an `OR` that
+# resolves via MIT/Apache-2.0 already in the allow-list below, so they're
+# intentionally left off the allow-list itself — `cargo deny check licenses`
+# confirmed (via `license-not-encountered`) that no crate actually resolves
+# to them. If a crate ever drops its permissive alternative, the check fails
+# loud instead of silently allowing copyleft in.
+# ---------------------------------------------------------------------------
+[licenses]
+version = 2
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-3-Clause",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0", # webpki-root-certs — permissive data license, no code
+    "ISC",
+    "MIT",
+    "MIT-0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+confidence-threshold = 0.8
+
+[licenses.private]
+ignore = false
+
+# ---------------------------------------------------------------------------
+# bans — duplicate-version and banned-crate policy.
+# https://embarkstudios.github.io/cargo-deny/checks/bans/cfg.html
+# ---------------------------------------------------------------------------
+[bans]
+# `warn`, not `deny`: axoupdater/ratatui's dependency trees legitimately carry
+# a handful of duplicate transitive versions (e.g. windows-sys generations)
+# that aren't worth pinning down manually; surface them without failing CI.
+multiple-versions = "warn"
+# Default (`allow`), not `deny`: our own path-dependency (`ironlint-core` from
+# `ironlint-cli`) has no version pin by convention (workspace-internal, not
+# published independently) and cargo-deny's wildcard check flags that the
+# same as an external `*` requirement. Denying would fail the gate on our own
+# workspace layout, not a real supply-chain risk.
+wildcards = "allow"
+highlight = "all"
+workspace-default-features = "allow"
+external-default-features = "allow"
+allow-workspace = true
+
+# ---------------------------------------------------------------------------
+# sources — only the crates.io registry is trusted; no git dependencies.
+# https://embarkstudios.github.io/cargo-deny/checks/sources/cfg.html
+# ---------------------------------------------------------------------------
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

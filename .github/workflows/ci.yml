@@ -4,6 +4,13 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Weekly run (readiness review S6 / Task 3.7): catches newly published
+  # RUSTSEC advisories and newly stabilized clippy/rustc lints (CI pins
+  # `stable` to a branch ref, see the NOTE below, so `-D warnings` only ever
+  # breaks on the next push otherwise) proactively instead of on the next
+  # unrelated push.
+  schedule:
+    - cron: "0 6 * * 1" # Monday 06:00 UTC
 
 # Cancel superseded runs on the same PR/branch.
 concurrency:
@@ -44,10 +51,10 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: cargo test
-        run: cargo test --workspace --no-fail-fast
+        run: cargo test --locked --workspace --no-fail-fast
 
       - name: cargo build --release
-        run: cargo build --release
+        run: cargo build --locked --release
 
       - name: Upload release binary
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
@@ -63,6 +70,35 @@ jobs:
       - name: IronLint dogfood (.ironlint.yml on own source)
         if: hashFiles('.ironlint.yml') != ''
         run: PATH="$(pwd)/target/release:${PATH}" bash scripts/ci-dogfood.sh
+
+  # Windows CI leg (readiness review C2 / Task 3.7): proves the workspace
+  # *compiles* for Windows — it does not run `cargo test`. ironlint's
+  # execution model (`engine::gate::run_gate`) spawns a POSIX `sh -c` and,
+  # on unix, manages process groups via the `nix` crate (now scoped to
+  # `[target.'cfg(unix)'.dependencies]` in ironlint-core's Cargo.toml); most
+  # gate tests assume a POSIX shell and are not Windows-safe. A native
+  # Windows execution path (readiness review Task 1.4 — fail loud when `sh`
+  # is missing) has not been implemented yet, so this leg is compile-only
+  # until that lands.
+  windows:
+    name: windows (compile only)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+
+      # NOTE: pinning the `stable` branch ref freezes the toolchain channel
+      # to whatever "stable" resolved to on the pin date, rather than
+      # tracking the rolling `stable` channel. Task 3.7 owns the
+      # MSRV/toolchain-version decision; this pin is supply-chain hygiene
+      # only, not a toolchain policy change.
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30  # stable (branch)
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32  # v2
+        with:
+          shared-key: windows
+
+      - name: cargo build --locked (compile only)
+        run: cargo build --locked --workspace
 
   coverage:
     name: coverage gate (≥80% per file)
@@ -89,6 +125,50 @@ jobs:
 
       - name: Per-file coverage gate
         run: bash scripts/ci-coverage.sh
+
+  # Supply-chain audit (readiness review S6 / Task 3.7): fails the build on
+  # a known RUSTSEC advisory, a disallowed license, or a banned/duplicate
+  # crate policy violation. Config: deny.toml at the repo root.
+  deny:
+    name: cargo-deny (advisories, licenses, bans)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+
+      - uses: EmbarkStudios/cargo-deny-action@bb137d7af7e4fb67e5f82a49c4fce4fad40782fe  # v2.0.20
+        with:
+          # The action defaults `arguments` to `--all-features`; override it
+          # to match what's verified locally (`cargo deny check advisories
+          # licenses bans`, no `--all-features` — deny.toml's [graph] section
+          # intentionally checks the workspace as it actually ships).
+          arguments: ""
+          command: check
+          command-arguments: "advisories licenses bans"
+
+  # MSRV enforcement (readiness review S6 / Task 3.7): builds and tests on
+  # exactly the floor declared in `[workspace.package] rust-version` so a
+  # `cargo install`-from-source break is CI-caught, not user-discovered.
+  # 1.87 is the real floor: gate.rs uses `u32::cast_signed()`, stabilized in
+  # that release. Verified locally: `cargo +1.87.0 build --locked --workspace`.
+  msrv:
+    name: msrv (1.87)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30  # stable (branch)
+        with:
+          toolchain: "1.87"
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32  # v2
+        with:
+          shared-key: msrv
+
+      - name: cargo build --locked (MSRV)
+        run: cargo build --locked --workspace
+
+      - name: cargo test --locked (MSRV)
+        run: cargo test --locked --workspace --no-fail-fast
 
   opencode-adapter:
     name: opencode adapter

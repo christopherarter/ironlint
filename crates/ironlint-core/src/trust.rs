@@ -266,6 +266,12 @@ pub fn write_store(path: &Path, store: &TrustStore) -> Result<()> {
 
 /// Sibling lock-file path used to serialize concurrent `bless_in`
 /// read-modify-writes against the same store.
+///
+/// `cfg(unix)`: its only caller, `acquire_store_lock` below, is itself
+/// unix-only (see that fn's doc comment) — gating this the same way avoids
+/// a `dead_code` warning (which `-D warnings` turns into a hard error) on
+/// the Windows compile-only CI leg (Task 3.7 / C2).
+#[cfg(unix)]
 fn lock_path(store_path: &Path) -> PathBuf {
     store_path.with_extension("lock")
 }

@@ -7,6 +7,12 @@ version = "0.7.0"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/christopherarter/ironlint"
+# MSRV floor (readiness review S6 / Task 3.7). gate.rs uses
+# `u32::cast_signed()`, stabilized in Rust 1.87 — that's the in-house floor;
+# nothing else in the workspace or its dependency tree needs newer. Verified
+# locally: `cargo +1.87.0 build --locked --workspace` succeeds. CI enforces
+# this via a dedicated MSRV leg (see .github/workflows/ci.yml).
+rust-version = "1.87"
 
 # Config for 'dist'
 [workspace.metadata.dist]
