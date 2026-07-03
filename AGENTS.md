@@ -82,6 +82,6 @@ Adapters fail-open on exit 3 by default; opt-in fail-closed via `IRONLINT_FAIL_C
 
 - A check is `files` (glob or list) + `run` (a shell string, handed to `sh -c` verbatim) or `steps` (a sequence of `{name, run}`), plus an optional `on` lifecycle and `name` label. There are no engines, no `severity`, no output-parsing modes — a check blocks by exiting nonzero (1–125) and owns its own message. Don't reintroduce per-rule kinds.
 - Test fixtures live in `tests/fixtures/` at the repo root; crate tests use relative paths.
-- `Cargo.lock` is gitignored (workspace policy) — do not commit.
+- `Cargo.lock` is committed (workspace policy) for reproducible release builds — cargo-dist resolves against the locked graph instead of re-resolving fresh on each runner, and users can `cargo install --locked`. CI and release builds use `--locked`; regenerate with `cargo generate-lockfile` (or a plain `cargo build`) when it drifts, then commit the update alongside the dependency bump.
 - Binary is `ironlint`, not `ironlint-cli`.
 - Trust enforcement lives in the CLI `check` command (`commands/check.rs`), not in `IronLintEngine::load`. Read-only commands (`validate`, `explain`, `show-resolved-config`, `doctor`) do not enforce trust. `doctor` is intentionally minimal until a later plan.
