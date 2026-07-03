@@ -166,17 +166,27 @@ fn run_diff(
     let mut elapsed = 0u64;
     for f in non_deleted {
         // A changed file we can't read (deleted between diff-gen and check,
-        // permissions, non-UTF-8 bytes) is a hard error: fabricating empty
-        // content would run every check against "" and let a real violation
-        // pass vacuously. Surface it as exit 1, never a silent empty pass.
-        let content = match std::fs::read_to_string(&f.path) {
+        // permissions, non-UTF-8 bytes) is a SKIP, not a hard error:
+        // fabricating empty content would run every check against "" and let
+        // a real violation pass vacuously, but aborting the whole batch would
+        // hide a real Block in a sibling file. Record the skip, warn loudly,
+        // and move on — the aggregate verdict is still computed honestly from
+        // every file that *could* be read.
+        let content = match read_changed_file(&f.path) {
             Ok(c) => c,
-            Err(e) => {
+            Err(reason) => {
+                let label = reason.label();
                 eprintln!(
-                    "ERROR: failed to read changed file {}: {e}",
+                    "WARNING: skipping changed file {} ({label}): {reason}",
                     f.path.display()
                 );
-                return Ok(1);
+                explains.push(CheckExplain {
+                    check_id: f.path.display().to_string(),
+                    outcome: ExplainOutcome::Skipped {
+                        reason: label.to_string(),
+                    },
+                });
+                continue;
             }
         };
         let r = match engine.check_with_explain(CheckInput::File {
@@ -201,6 +211,53 @@ fn run_diff(
     }
     emit(&verdict, format)?;
     Ok(exit_code(&verdict))
+}
+
+/// Why a diff-referenced file couldn't be turned into check input. Kept
+/// separate from `Skipped`/`Fire`/`Pass` in [`ExplainOutcome`] — a read
+/// failure happens before the engine ever sees the file, so it's classified
+/// here and folded into the engine's existing skip vocabulary at the call
+/// site rather than growing a new one.
+enum SkipReason {
+    /// `read_to_string` failed with `ErrorKind::InvalidData` — the file's
+    /// bytes are not valid UTF-8 (image, UTF-16, other binary fixture).
+    NonUtf8,
+    /// Any other read failure (deleted between diff-gen and check,
+    /// permissions, ...). Carries the io error kind for the stderr note.
+    Unreadable(std::io::ErrorKind),
+}
+
+impl SkipReason {
+    /// Stable, matchable reason string — surfaced in both the stderr warning
+    /// and the `ExplainOutcome::Skipped { reason }` row.
+    fn label(&self) -> &'static str {
+        match self {
+            Self::NonUtf8 => "non_utf8",
+            Self::Unreadable(_) => "unreadable",
+        }
+    }
+}
+
+impl std::fmt::Display for SkipReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NonUtf8 => write!(f, "not valid UTF-8"),
+            Self::Unreadable(kind) => write!(f, "could not be read: {kind}"),
+        }
+    }
+}
+
+/// Read a diff-referenced file's on-disk content, classifying any failure
+/// into a [`SkipReason`] instead of a hard error. Extracted so the `run_diff`
+/// loop body stays under the cognitive-complexity cap.
+fn read_changed_file(path: &Path) -> Result<String, SkipReason> {
+    std::fs::read_to_string(path).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::InvalidData {
+            SkipReason::NonUtf8
+        } else {
+            SkipReason::Unreadable(e.kind())
+        }
+    })
 }
 
 fn validate_check_filter(engine: &IronLintEngine, checks: &[String]) -> Option<i32> {
