@@ -4,8 +4,8 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlanStep {
-    /// A hook artifact (`hook.sh`, `synthesize_diff.sh`) — or, for uninstall,
-    /// the adapter directory that holds them.
+    /// A hook artifact (e.g. `hook.sh`) — or, for uninstall, the adapter
+    /// directory that holds them.
     Hook { path: PathBuf },
     /// A plugin file (`ironlint.ts`).
     Plugin { path: PathBuf },

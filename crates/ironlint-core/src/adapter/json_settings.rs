@@ -82,15 +82,15 @@ mod tests {
     #[test]
     fn sync_inserts_into_empty_settings() {
         let mut s = json!({});
-        let cmd = "\"/h/adapters/claude-code/hook.sh\" post-tool-use";
+        let cmd = "\"/h/adapters/claude-code/hook.sh\" pre-tool-use";
         let r = sync_hook_array(
             &mut s,
-            "PostToolUse",
+            "PreToolUse",
             claude_entry(cmd),
             "/h/adapters/claude-code/",
         );
         assert!(matches!(r, PatchResult::Added));
-        assert_eq!(s["hooks"]["PostToolUse"].as_array().unwrap().len(), 1);
+        assert_eq!(s["hooks"]["PreToolUse"].as_array().unwrap().len(), 1);
     }
 
     #[test]
@@ -125,13 +125,13 @@ mod tests {
 
     #[test]
     fn remove_drops_only_ironlint_entries() {
-        let mut s = json!({"hooks": {"PostToolUse": [
-            claude_entry("\"/h/adapters/claude-code/hook.sh\" post-tool-use"),
+        let mut s = json!({"hooks": {"PreToolUse": [
+            claude_entry("\"/h/adapters/claude-code/hook.sh\" pre-tool-use"),
             {"matcher": "Edit", "hooks": [{"type": "command", "command": "keep me"}]}
         ]}});
-        let removed = remove_from_hook_array(&mut s, "PostToolUse", "/h/adapters/claude-code/");
+        let removed = remove_from_hook_array(&mut s, "PreToolUse", "/h/adapters/claude-code/");
         assert!(removed);
-        let arr = s["hooks"]["PostToolUse"].as_array().unwrap();
+        let arr = s["hooks"]["PreToolUse"].as_array().unwrap();
         assert_eq!(arr.len(), 1);
         assert_eq!(arr[0]["hooks"][0]["command"], "keep me");
     }

@@ -149,7 +149,7 @@ mod tests {
                 },
                 PlanStep::Patch {
                     path: PathBuf::from("/home/u/proj/.claude/settings.json"),
-                    key: "PostToolUse",
+                    key: "PreToolUse",
                 },
                 PlanStep::Skill {
                     path: PathBuf::from("/home/u/proj/.claude/skills/ironlint-config/SKILL.md"),
@@ -166,7 +166,7 @@ mod tests {
         assert!(out.contains("detected"), "source tag:\n{out}");
         assert!(out.contains("hook"), "hook label:\n{out}");
         assert!(out.contains("patch"), "patch label:\n{out}");
-        assert!(out.contains("PostToolUse"), "patch key:\n{out}");
+        assert!(out.contains("PreToolUse"), "patch key:\n{out}");
         assert!(out.contains("skill"), "skill label:\n{out}");
         // path shortening
         assert!(

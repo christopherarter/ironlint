@@ -4,8 +4,6 @@ use std::path::PathBuf;
 
 // --- embedded artifacts (single source of truth = adapters/) -----------------
 const CLAUDE_HOOK: &str = include_str!("../../../../adapters/claude-code/hooks/hook.sh");
-const CLAUDE_SYNTH: &str =
-    include_str!("../../../../adapters/claude-code/hooks/synthesize_diff.sh");
 const REASONIX_HOOK: &str = include_str!("../../../../adapters/reasonix/hooks/hook.sh");
 const PI_PLUGIN: &str = include_str!("../../../../adapters/pi/src/index.ts");
 const OPENCODE_PLUGIN: &str = include_str!("../../../../adapters/opencode/src/index.ts");
@@ -60,13 +58,10 @@ pub(crate) fn reasonix_build_entry(command: &str) -> Value {
 const CLAUDE: JsonHookSpec = JsonHookSpec {
     settings_local: |e| Some(e.project_root.join(".claude").join("settings.json")),
     settings_global: |e| e.home.join(".claude").join("settings.json"),
-    array_key: "PostToolUse",
-    entry_arg: "post-tool-use",
+    array_key: "PreToolUse",
+    entry_arg: "pre-tool-use",
     primary: "hook.sh",
-    files: &[
-        ("hook.sh", CLAUDE_HOOK),
-        ("synthesize_diff.sh", CLAUDE_SYNTH),
-    ],
+    files: &[("hook.sh", CLAUDE_HOOK)],
     build_entry: claude_build_entry,
 };
 
@@ -150,11 +145,16 @@ pub fn all_harnesses() -> Vec<Harness> {
 }
 
 /// Whether `harness` looks installed on this machine.
+///
+/// Keyed on the harness **name**, not `array_key`: claude-code and reasonix
+/// both register a `PreToolUse` hook (see `CLAUDE`/`REASONIX` above), so a
+/// dispatch on `array_key` alone can no longer distinguish them.
 pub(crate) fn is_detected(harness: &Harness, env: &AdapterEnv) -> bool {
     match &harness.kind {
-        HarnessKind::JsonHook(s) => match s.array_key {
-            "PostToolUse" => env.home.join(".claude").is_dir(), // claude-code
-            _ => env.home.join(".reasonix").is_dir(),           // reasonix
+        HarnessKind::JsonHook(_) => match harness.name {
+            "claude-code" => env.home.join(".claude").is_dir(),
+            "reasonix" => env.home.join(".reasonix").is_dir(),
+            _ => false,
         },
         HarnessKind::Plugin(p) => (p.detect)(env),
     }
@@ -197,9 +197,9 @@ mod tests {
 
     #[test]
     fn claude_entry_points_at_command_and_matcher() {
-        let e = claude_build_entry("\"/x/hook.sh\" post-tool-use");
+        let e = claude_build_entry("\"/x/hook.sh\" pre-tool-use");
         assert_eq!(e["matcher"], "Edit|Write");
-        assert_eq!(e["hooks"][0]["command"], "\"/x/hook.sh\" post-tool-use");
+        assert_eq!(e["hooks"][0]["command"], "\"/x/hook.sh\" pre-tool-use");
     }
 
     #[test]
@@ -222,6 +222,46 @@ mod tests {
         assert!(found["pi"]);
         assert!(!found["reasonix"]);
         assert!(!found["opencode"]);
+    }
+
+    #[test]
+    fn claude_and_reasonix_share_pre_tool_use_but_detect_independently() {
+        // Regression guard: claude-code and reasonix both register a
+        // PreToolUse hook now, so `is_detected` must key off the harness
+        // name, not `array_key` — otherwise claude-code would be (mis)detected
+        // via ~/.reasonix, or vice versa.
+        let harnesses = all_harnesses();
+        let claude = harnesses.iter().find(|h| h.name == "claude-code").unwrap();
+        let reasonix = harnesses.iter().find(|h| h.name == "reasonix").unwrap();
+        match (&claude.kind, &reasonix.kind) {
+            (HarnessKind::JsonHook(c), HarnessKind::JsonHook(r)) => {
+                assert_eq!(c.array_key, "PreToolUse");
+                assert_eq!(r.array_key, "PreToolUse");
+            }
+            _ => panic!("expected both to be JsonHook"),
+        }
+
+        // Only ~/.reasonix exists: claude-code must NOT be detected.
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().to_str().unwrap();
+        std::fs::create_dir_all(format!("{home}/.reasonix")).unwrap();
+        let env = env_with(home, home);
+        assert!(
+            !is_detected(claude, &env),
+            "claude-code false-positive via ~/.reasonix"
+        );
+        assert!(is_detected(reasonix, &env));
+
+        // Only ~/.claude exists: reasonix must NOT be detected.
+        let tmp2 = tempfile::tempdir().unwrap();
+        let home2 = tmp2.path().to_str().unwrap();
+        std::fs::create_dir_all(format!("{home2}/.claude")).unwrap();
+        let env2 = env_with(home2, home2);
+        assert!(is_detected(claude, &env2));
+        assert!(
+            !is_detected(reasonix, &env2),
+            "reasonix false-positive via ~/.claude"
+        );
     }
 
     #[test]

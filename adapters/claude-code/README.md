@@ -1,14 +1,16 @@
 # IronLint — Claude Code adapter
 
-`PostToolUse` hook integration for Claude Code. Runs `ironlint check` on every
-`Edit` or `Write` tool call, checking the edit against your project's
-`.ironlint.yml` policy.
+`PreToolUse` hook integration for Claude Code. Runs `ironlint check` on every
+`Edit` or `Write` tool call **before** the edit lands on disk, checking the
+proposed content against your project's `.ironlint.yml` policy.
 
-> **Timing:** this adapter fires on **PostToolUse**, so the edit has *already*
-> been written to disk by the time the hook runs. A block (exit 2) does not
-> revert the write — it surfaces the check's message to the agent as feedback,
-> and the agent is expected to correct it on its next turn. Pre-write blocking
-> (PreToolUse) is planned; the reasonix and pi adapters already gate pre-write.
+> **Timing:** this adapter fires on **PreToolUse**, so ironlint sees the
+> proposed content — `tool_input.content` for `Write`, or `old_string` ->
+> `new_string` applied to the current on-disk file for `Edit` — before Claude
+> Code writes it. A block (exit 2) **prevents the write**: Claude Code never
+> touches disk, and the check's message is surfaced to the model on stderr as
+> the denial reason so it can correct course on its next turn. This mirrors
+> the reasonix and pi adapters, which also gate pre-write.
 
 > **Note:** this adapter installs via a direct settings patch (see below). The
 > `.claude-plugin/` plugin-packaging layout under this directory is kept for
@@ -22,7 +24,7 @@ ironlint init --harness claude-code
 ```
 
 This auto-detects Claude Code and patches `<project>/.claude/settings.json`
-(or `~/.claude/settings.json` with `--global`) to register a `PostToolUse`
+(or `~/.claude/settings.json` with `--global`) to register a `PreToolUse`
 hook matching `Edit|Write`. The adapter artifacts are written atomically to
 `~/.config/ironlint/adapters/claude-code/` and a `.ironlint-adapter.json` sidecar
 (per-file sha256 + version) is placed alongside them. A backup of the prior
@@ -53,16 +55,19 @@ Use these steps if the `ironlint` binary is not available:
 2. Add this plugin via your Claude Code plugin manager.
 3. Run `ironlint init` in a project to scaffold `.ironlint.yml`.
 4. Review the config and run `ironlint trust` to fingerprint it.
-5. Edit any file — the PostToolUse hook will check edits against the policy.
+5. Edit any file — the PreToolUse hook checks the proposed edit against the
+   policy *before* it lands; a violating edit is blocked and never written.
 
 ## Requirements
 
 - `ironlint` binary on PATH.
-- `bash`, `jq`, `awk` on PATH (required at hook runtime).
+- `bash`, `jq`, `python3` on PATH (required at hook runtime — `python3` applies
+  `Edit`'s `old_string`/`new_string` substitution to synthesize the proposed
+  content).
 
 ## How the hooks resolve
 
-`hooks/hooks.json` dispatches the PostToolUse event to `"${CLAUDE_PLUGIN_ROOT}/hooks/hook.sh"`.
+`hooks/hooks.json` dispatches the PreToolUse event to `"${CLAUDE_PLUGIN_ROOT}/hooks/hook.sh"`.
 `CLAUDE_PLUGIN_ROOT` is set by Claude Code at hook-fire time and points to the
 plugin's installed directory (wherever the plugin manager unpacked this adapter).
 You do **not** set it yourself.

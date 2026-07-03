@@ -1,12 +1,12 @@
 {
   "hooks": {
-    "PostToolUse": [
+    "PreToolUse": [
       {
         "matcher": "Edit|Write",
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/hook.sh\" post-tool-use"
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/hook.sh\" pre-tool-use"
           }
         ]
       }

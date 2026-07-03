@@ -643,15 +643,15 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let e = env(tmp.path());
         let steps = plan_install(&harness("claude-code"), &e, Scope::Local);
-        // two hook files + one patch + one skill
+        // one hook file + one patch + one skill
         let hooks = steps
             .iter()
             .filter(|s| matches!(s, PlanStep::Hook { .. }))
             .count();
-        assert_eq!(hooks, 2, "claude-code ships hook.sh + synthesize_diff.sh");
+        assert_eq!(hooks, 1, "claude-code ships hook.sh");
         assert!(steps
             .iter()
-            .any(|s| matches!(s, PlanStep::Patch { key, .. } if *key == "PostToolUse")));
+            .any(|s| matches!(s, PlanStep::Patch { key, .. } if *key == "PreToolUse")));
         assert!(steps.iter().any(|s| matches!(s, PlanStep::Skill { .. })));
     }
 

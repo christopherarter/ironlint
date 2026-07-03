@@ -13,7 +13,7 @@
     "hooks",
     "skills",
     "code-review",
-    "post-tool-use",
+    "pre-tool-use",
     "ai-agents"
   ]
 }
