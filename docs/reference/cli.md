@@ -61,7 +61,7 @@ ironlint validate [--config <path>]
 Scaffold a starter `.ironlint.yml` and wire IronLint into your coding agents. Two phases:
 
 1. **Scaffold + trust.** Detects your stack (Rust / Node / Python, including workspaces) and existing linters (biome / eslint / ruff), writes a `.ironlint.yml`, and trusts it for you. An existing config is left untouched (and not re-trusted — run [`ironlint trust`](#ironlint-trust) yourself if you hand-edit it).
-2. **Wire hooks.** Detects installed agents — Claude Code, Reasonix, pi, OpenCode — and, after you confirm, installs IronLint's edit hook into each. Materialized hook artifacts plus a `.ironlint-adapter.json` sidecar (per-file sha256 + version) land under `~/.config/ironlint/adapters/<harness>/` for settings-hook agents, or the agent's plugin directory for plugin agents. Re-runs are idempotent.
+2. **Wire hooks.** Detects installed agents — Claude Code, Codex, pi, OpenCode — and, after you confirm, installs IronLint's edit hook into each. Materialized hook artifacts plus a `.ironlint-adapter.json` sidecar (per-file sha256 + version) land under `~/.config/ironlint/adapters/<harness>/` for settings-hook agents, or the agent's plugin directory for plugin agents. Re-runs are idempotent.
 
 ```
 ironlint init [--dir <path>] [--harness <name>]... [--global] [--yes]
@@ -71,8 +71,8 @@ ironlint init [--dir <path>] [--harness <name>]... [--global] [--yes]
 | Flag | Default | Notes |
 |------|---------|-------|
 | `--dir <path>` | `.` | Project directory to scaffold and install into. |
-| `--harness <name>` | — | Wire this agent explicitly instead of auto-detecting. Repeatable; `all` selects every supported agent. One of `claude-code`, `reasonix`, `pi`, `opencode`. |
-| `--global` | off | Patch user-level settings (e.g. `~/.claude/settings.json`, `~/.pi/agent/extensions/`) instead of the project. Reasonix is always user-global; OpenCode is always project-scoped, regardless of this flag. |
+| `--harness <name>` | — | Wire this agent explicitly instead of auto-detecting. Repeatable; `all` selects every supported agent. One of `claude-code`, `codex`, `pi`, `opencode`. |
+| `--global` | off | Patch user-level settings (e.g. `~/.claude/settings.json`, `~/.codex/hooks.json`, `~/.pi/agent/extensions/`) instead of the project. OpenCode is always project-scoped, regardless of this flag. |
 | `--yes` | off | Skip the confirmation prompt and install every detected agent. Required to wire hooks non-interactively (CI, pipes) — without a TTY and without `--yes`, init prints what it detected and installs nothing. |
 | `--no-hook` | off | Scaffold and trust the config only; install no hooks. Mutually exclusive with `--hook-only`. |
 | `--hook-only` | off | Skip scaffolding; only wire hooks. |

@@ -10,7 +10,7 @@ proposed content against your project's `.ironlint.yml` policy.
 > Code writes it. A block (exit 2) **prevents the write**: Claude Code never
 > touches disk, and the check's message is surfaced to the model on stderr as
 > the denial reason so it can correct course on its next turn. This mirrors
-> the reasonix and pi adapters, which also gate pre-write.
+> the codex and pi adapters, which also gate pre-write.
 
 > **Note:** this adapter installs via a direct settings patch (see below). The
 > `.claude-plugin/` plugin-packaging layout under this directory is kept for

@@ -10,11 +10,11 @@
 set -euo pipefail
 
 echo "== seeding harness homes for detection =="
-# detect() checks: reasonix -> ~/.reasonix, pi -> ~/.pi,
+# detect() checks: codex -> ~/.codex, pi -> ~/.pi,
 # opencode -> $XDG_CONFIG_HOME/opencode (here ~/.config/opencode).
 # ~/.claude is intentionally NOT created: claude-code is closed-source and
 # excluded from this test, so init must skip it.
-mkdir -p "$HOME/.reasonix" "$HOME/.pi" "$HOME/.config/opencode"
+mkdir -p "$HOME/.codex" "$HOME/.pi" "$HOME/.config/opencode"
 
 echo "== ironlint init --yes (detect + confirm-skipped + install) =="
 cd /work

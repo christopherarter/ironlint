@@ -33,7 +33,7 @@ checks:
 - `$IRONLINT_TMPFILE` — **write only**, set only when your `run` mentions it: an absolute path to a temp file holding the proposed content, placed beside `$IRONLINT_FILE` with the same extension and auto-cleaned. Use it for tools that need a real file on disk (Biome, ESLint file-mode, `tsc`, ruff) instead of stdin. Unset on `pre-commit` (files are already on disk at `$IRONLINT_FILES`).
 - **stdin** — proposed post-edit file content (`write`) or empty (`pre-commit`).
 
-**Read proposed content from stdin, not from `$IRONLINT_FILE`.** On harnesses that gate before the write lands (e.g. reasonix, pi), the file on disk still holds the OLD content, so reading it misses the very change you mean to check. Use `$IRONLINT_FILE` to hand a tool a filename (e.g. a linter's `--stdin-filename`), never as the content source.
+**Read proposed content from stdin, not from `$IRONLINT_FILE`.** On harnesses that gate before the write lands (e.g. codex, pi), the file on disk still holds the OLD content, so reading it misses the very change you mean to check. Use `$IRONLINT_FILE` to hand a tool a filename (e.g. a linter's `--stdin-filename`), never as the content source.
 
 On block, the check's combined stdout+stderr becomes the message the agent sees, so make the command print why it blocked.
 

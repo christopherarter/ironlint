@@ -8,7 +8,7 @@ An adapter wires IronLint into a coding agent so policy runs automatically on ev
 |---------|-------|------------|----------------|
 | [Claude Code](claude-code.md) | Claude Code | `ironlint init --harness claude-code` | `PostToolUse` hook in `.claude/settings.json` |
 | [OpenCode](opencode.md) | OpenCode | `ironlint init --harness opencode` | plugin file in `.opencode/plugins/` (project-scoped) |
-| [Reasonix](../../adapters/reasonix/README.md) | DeepSeek-Reasonix | `ironlint init --harness reasonix` | `PreToolUse` hook in `~/.reasonix/settings.json` (user-global) |
+| [Codex](../../adapters/codex/README.md) | OpenAI Codex | `ironlint init --harness codex` | `PreToolUse` hook in `.codex/hooks.json` (project-scoped, or `~/.codex/hooks.json` with `--global`) |
 | [pi](../../adapters/pi/README.md) | pi | `ironlint init --harness pi` | extension in `.pi/extensions/` |
 
 *Aider, pre-commit, and MCP adapters are planned.*
@@ -43,6 +43,8 @@ Adapters translate [`ironlint check`'s exit codes](../operating/running-checks.m
 | `3` (internal error) | **Fail-open by default** — log and allow. Set `IRONLINT_FAIL_CLOSED_ON_INTERNAL=1` to make internal errors block where the host lifecycle can still block. |
 
 The fail-open default on internal errors is deliberate: a rule that *couldn't run* is not a rule that *found a problem*. To make internal errors blocking instead — for strict CI-style enforcement — set `IRONLINT_FAIL_CLOSED_ON_INTERNAL=1`. See [Running checks](../operating/running-checks.md).
+
+> **Codex is the one exception to this table.** Its `PreToolUse` hook doesn't block via exit code at all — it prints a `permissionDecision:"deny"` JSON object on stdout and exits `0`, and malformed stdout on a would-be block fails open. The codex adapter translates the same `ironlint check` exit codes above into that JSON internally; see the [Codex adapter](../../adapters/codex/README.md) for the exact contract.
 
 ## Requirements
 

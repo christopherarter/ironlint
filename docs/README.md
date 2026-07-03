@@ -36,7 +36,7 @@ Want the big picture first? See the [Visual elevator pitch](visual-elevator-pitc
 - [Adapters overview](adapters/README.md) — what an adapter is, the ABI it speaks, and the fail-open contract
 - [Claude Code](adapters/claude-code.md)
 - [OpenCode](adapters/opencode.md)
-- [Reasonix](../adapters/reasonix/README.md)
+- [Codex](../adapters/codex/README.md)
 - [pi](../adapters/pi/README.md)
 
 ## Running and inspecting

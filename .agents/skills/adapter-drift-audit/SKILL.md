@@ -1,13 +1,13 @@
 ---
 name: adapter-drift-audit
-description: Use when checking whether an IronLint adapter still matches its coding harness's current contract — auditing adapter/harness drift, verifying hook payload shapes, plugin manifest schemas, lifecycle events, or tool names are up to date, or doing periodic adapter maintenance. Takes a harness name (claude-code, pi, opencode, reasonix) as argument.
+description: Use when checking whether a Hector adapter still matches its coding harness's current contract — auditing adapter/harness drift, verifying hook payload shapes, plugin manifest schemas, lifecycle events, or tool names are up to date, or doing periodic adapter maintenance. Takes a harness name (claude-code, codex, pi, opencode) as argument.
 ---
 
 # Adapter Drift Audit
 
-Audit an IronLint adapter against its coding harness's **current** contract and report drift.
+Audit a Hector adapter against its coding harness's **current** contract and report drift.
 
-**Read-only.** You produce findings and recommendations. You do NOT edit adapter files, you do NOT write the watermark, and you do NOT audit `ironlint` core. The maintainer reads the report and decides what to change.
+**Read-only.** You produce findings and recommendations. You do NOT edit adapter files, you do NOT write the watermark, and you do NOT audit `hector` core. The maintainer reads the report and decides what to change.
 
 ## When to use
 
@@ -17,7 +17,14 @@ Audit an IronLint adapter against its coding harness's **current** contract and 
 
 ## Inputs
 
-A harness name as the invocation argument: `claude-code`, `pi`, `opencode`, or `reasonix`. Each maps to `references/<harness>.md`. Only harnesses with a reference file can be audited.
+A harness name as the invocation argument: `claude-code`, `codex`, `pi`, or `opencode`. Each maps to `references/<harness>.md`. Only harnesses with a reference file can be audited.
+
+### Codex specifics
+
+Codex is a `PreToolUse`-hook harness like claude-code, but its own docs frame the hook as a *guardrail*, not a hard enforcement boundary — factor that into impact judgments (a codex drift degrades a guardrail; the same drift on claude-code degrades the enforcement point itself).
+
+- **Doc sources**: `developers.openai.com/codex/hooks` (hooks reference) and the `codex-rs/hooks/` source tree (ground truth for the exit/JSON decision contract — verified this way once already; see the 2026-07-02 codex adapter design spec under `specs/`).
+- **Re-verify first**: the `tool_input.command` `apply_patch` envelope shape (`*** Begin Patch` / `*** Add File:` / `*** Update File:` / `*** Delete File:` / `*** End Patch`) that `adapters/codex/hooks/hook.sh`'s python3 parser depends on. This is the single most drift-prone contract in the codex adapter — the parser fails closed (deny) on an envelope it doesn't recognize, so drift here surfaces as edits getting wrongly blocked rather than silently let through, but it's still the first thing to re-check.
 
 ## Procedure
 

@@ -13,7 +13,7 @@
   <a href="https://github.com/christopherarter/ironlint/releases/latest"><img src="https://img.shields.io/github/v/release/christopherarter/ironlint?label=release" alt="Latest release" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache_2.0-green" alt="Apache 2.0" /></a>
   <img src="https://img.shields.io/badge/built_with-Rust-orange" alt="Built with Rust" />
-  <img src="https://img.shields.io/badge/agents-Claude_Code_·_OpenCode_·_Reasonix_·_pi-5A67D8" alt="Agent adapters" />
+  <img src="https://img.shields.io/badge/agents-Claude_Code_·_OpenCode_·_Codex_·_pi-5A67D8" alt="Agent adapters" />
 </p>
 
 <p align="center">
@@ -62,7 +62,7 @@ Then run `ironlint --version`. Update any time with `ironlint update` (installer
 ironlint init
 ```
 
-It detects Claude Code, Reasonix, pi, and OpenCode, asks before touching anything, and installs the hook. Target one explicitly, wire them all, or patch your user account instead of the project:
+It detects Claude Code, Codex, pi, and OpenCode, asks before touching anything, and installs the hook. Target one explicitly, wire them all, or patch your user account instead of the project:
 
 ```sh
 ironlint init --harness opencode   # just one agent
@@ -143,7 +143,7 @@ Every check receives, on its environment:
 - `$IRONLINT_TMPFILE` — a materialized temp file holding the proposed content, set only when your `run`/`steps` reference it.
 - **stdin** — proposed post-edit content (`write`) or empty (`pre-commit`).
 
-Read proposed content from **stdin**, not from `$IRONLINT_FILE`. On harnesses that gate before the write lands (reasonix, pi), the file on disk still holds the old content.
+Read proposed content from **stdin**, not from `$IRONLINT_FILE`. On harnesses that gate before the write lands (codex, pi), the file on disk still holds the old content.
 
 ## Architecture
 
@@ -184,6 +184,8 @@ Each adapter collapses one harness's edit hook into the ABI above and runs `iron
 | 4 | Untrusted config/gates — run `ironlint trust` |
 
 Adapters fail-open on exit 3 by default. Opt-in fail-closed: `IRONLINT_FAIL_CLOSED_ON_INTERNAL=1`. Exit 4 is different: adapters must surface it loudly, and pre-write adapters (every shipped adapter) treat it as fail-closed and block the tool call outright — an untrusted config is never silently allowed through.
+
+The codex adapter reads these same exit codes but doesn't block through its own exit code — it translates them into a `permissionDecision:"deny"` JSON object on stdout, because that's how Codex's `PreToolUse` hook contract blocks a tool call. See [adapters/codex/README.md](adapters/codex/README.md).
 </details>
 
 <details>
@@ -211,7 +213,7 @@ Add `# ironlint-disable: <check-id>` anywhere in a file to suppress that check f
 
 - **Claude Code** — `adapters/claude-code/`. PostToolUse hook, plus three skills. See [docs/adapters/claude-code.md](docs/adapters/claude-code.md).
 - **OpenCode** — `adapters/opencode/`. `tool.execute.before` gates proposed edits. See [docs/adapters/opencode.md](docs/adapters/opencode.md).
-- **Reasonix** — `adapters/reasonix/`. PreToolUse hook for `write_file` / `edit_file`. See [adapters/reasonix/README.md](adapters/reasonix/README.md).
+- **Codex** — `adapters/codex/`. PreToolUse hook for `apply_patch`, blocking via a `permissionDecision` JSON on stdout rather than an exit code; requires a one-time review+trust step inside Codex. See [adapters/codex/README.md](adapters/codex/README.md).
 - **pi** — `adapters/pi/`. `tool_call` hook gates proposed edits before they're written. See [adapters/pi/README.md](adapters/pi/README.md).
 - *Aider, pre-commit, MCP — planned.*
 </details>

@@ -5,7 +5,7 @@
 # Builds a Linux `ironlint` in Docker, runs a bare `ironlint init --yes` in a clean
 # container against seeded harness homes, and asserts the materialized hook
 # artifacts + settings patches appear in the gitignored, bind-mounted output
-# dirs. Targets the open-source, no-auth harnesses only (reasonix, pi, opencode);
+# dirs. Targets the open-source, no-auth harnesses only (codex, pi, opencode);
 # claude-code is excluded by not seeding ~/.claude.
 #
 # Usage:   bash tests/e2e/init/run.sh
@@ -58,15 +58,18 @@ contains() {
 
 echo "== assertions =="
 
-# reasonix: user-global settings patch + materialized hook under the ironlint dir.
-exists "$HOME_DIR/.reasonix/settings.json" "reasonix settings.json present"
-contains "$HOME_DIR/.reasonix/settings.json" "PreToolUse" "reasonix PreToolUse entry"
-contains "$HOME_DIR/.reasonix/settings.json" "adapters/reasonix/hook.sh" "reasonix hook command path"
-contains "$HOME_DIR/.reasonix/settings.json" "pre-tool-use" "reasonix entry arg"
-exists "$HOME_DIR/.config/ironlint/adapters/reasonix/hook.sh" "reasonix hook.sh materialized"
-executable "$HOME_DIR/.config/ironlint/adapters/reasonix/hook.sh" "reasonix hook.sh is executable"
-exists "$HOME_DIR/.config/ironlint/adapters/reasonix/.ironlint-adapter.json" "reasonix sidecar present"
-contains "$HOME_DIR/.config/ironlint/adapters/reasonix/.ironlint-adapter.json" "sha256:" "reasonix sidecar has sha256"
+# codex: project-local hooks.json patch (a bare `init --yes` is Scope::Local,
+# and unlike the removed Reasonix adapter, codex is not forced user-global —
+# it respects --global exactly like claude-code) + materialized hook under the
+# ironlint dir.
+exists "$PROJ_DIR/.codex/hooks.json" "codex hooks.json present"
+contains "$PROJ_DIR/.codex/hooks.json" "PreToolUse" "codex PreToolUse entry"
+contains "$PROJ_DIR/.codex/hooks.json" "adapters/codex/hook.sh" "codex hook command path"
+contains "$PROJ_DIR/.codex/hooks.json" "pre-tool-use" "codex entry arg"
+exists "$HOME_DIR/.config/ironlint/adapters/codex/hook.sh" "codex hook.sh materialized"
+executable "$HOME_DIR/.config/ironlint/adapters/codex/hook.sh" "codex hook.sh is executable"
+exists "$HOME_DIR/.config/ironlint/adapters/codex/.ironlint-adapter.json" "codex sidecar present"
+contains "$HOME_DIR/.config/ironlint/adapters/codex/.ironlint-adapter.json" "sha256:" "codex sidecar has sha256"
 
 # pi: project-local plugin drop-in.
 exists "$PROJ_DIR/.pi/extensions/ironlint.ts" "pi plugin ironlint.ts"
@@ -79,7 +82,7 @@ exists "$PROJ_DIR/.opencode/plugins/.ironlint-adapter.json" "opencode sidecar pr
 # Authoring skill: ironlint init installs ironlint-config/SKILL.md into each wired
 # agent's skills dir (project-local; claude-code excluded so opencode is not
 # deduped here).
-exists "$PROJ_DIR/.reasonix/skills/ironlint-config/SKILL.md" "reasonix authoring skill"
+exists "$PROJ_DIR/.codex/skills/ironlint-config/SKILL.md" "codex authoring skill"
 exists "$PROJ_DIR/.pi/skills/ironlint-config/SKILL.md" "pi authoring skill"
 exists "$PROJ_DIR/.opencode/skills/ironlint-config/SKILL.md" "opencode authoring skill"
 contains "$PROJ_DIR/.pi/skills/ironlint-config/SKILL.md" "name: ironlint-config" "pi skill has frontmatter"
@@ -115,7 +118,7 @@ status_pass() {
     miss "doctor: $1 status not pass"
   fi
 }
-for h in reasonix pi opencode; do status_pass "$h"; done
+for h in codex pi opencode; do status_pass "$h"; done
 
 echo
 if [ "$fail" -eq 0 ]; then

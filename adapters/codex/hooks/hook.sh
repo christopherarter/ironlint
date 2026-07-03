@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Codex adapter for ironlint. Gates `apply_patch` edits via Codex's PreToolUse
-# hook — see specs/2026-07-02-drop-reasonix-add-codex-adapter-design.md.
+# hook — see the 2026-07-02 codex adapter design spec under specs/.
 #
 # Codex's block contract is unlike the exit-code hooks:
 #   ALLOW = exit 0 with EMPTY stdout.

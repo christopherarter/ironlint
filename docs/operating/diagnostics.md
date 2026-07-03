@@ -24,7 +24,7 @@ For a machine-readable report, add `--format json`. The rest of this page is the
 | `check_scripts` | For each check whose `run` is a single-token path beginning with `.ironlint/`, that the path exists and is executable. Inline commands (anything with a space) are skipped. `fail` lists the offending check(s). |
 | `trust` | The config and every file under `.ironlint/gates/` is blessed in the out-of-repo trust store. `warn` (not `fail`) when unblessed — `doctor` is read-only, and trust is enforced only at the `check` layer. Remediation: `ironlint trust`. |
 | `claude-code` | Harness adapter check: `~/.claude/settings.json` (or project `.claude/settings.json`) exists and the registered `PostToolUse` hook artifact is present and unmodified. `fail` if registered but artifact is missing; `warn` if not installed or artifact is modified/outdated. Omitted if the harness is neither present nor registered. |
-| `reasonix` | Harness adapter check: `~/.reasonix/settings.json` exists and the registered `PreToolUse` hook artifact is present and unmodified. Same `fail`/`warn` rules as above. |
+| `codex` | Harness adapter check: `~/.codex/hooks.json` (or project `.codex/hooks.json`) exists and the registered `PreToolUse` hook artifact is present and unmodified. Same `fail`/`warn` rules as above. This only checks that ironlint's file-system writes are present — it cannot see whether Codex has *reviewed and trusted* the hook, which Codex requires before it will actually run (see the [Codex adapter](../../adapters/codex/README.md)). |
 | `pi` | Harness adapter check: the `ironlint.ts` plugin artifact in `.pi/extensions/` (or `~/.pi/agent/extensions/`) is present and unmodified. Same `fail`/`warn` rules as above. |
 | `opencode` | Harness adapter check: the `ironlint.ts` plugin artifact in `.opencode/plugins/` is present and unmodified. Same `fail`/`warn` rules as above. |
 | `hooks` | Always-present summary row over the adapter checks. `warn` when zero coding-agent hooks are wired (the most common first-run failure mode — the tool's entire effect happens through hooks). Remediation: `ironlint init`. |
@@ -67,7 +67,7 @@ Each check object:
 
 | Field | Type | Meaning |
 |---|---|---|
-| `name` | string | Stable check id. For harness adapter checks, the name is the harness name: `claude-code`, `reasonix`, `pi`, or `opencode`. |
+| `name` | string | Stable check id. For harness adapter checks, the name is the harness name: `claude-code`, `codex`, `pi`, or `opencode`. |
 | `status` | `"pass"` \| `"warn"` \| `"fail"` | Outcome. Any `fail` → exit `1`; otherwise → exit `0`. |
 | `detail` | string | One short sentence on what was checked and found. May contain absolute paths or version numbers. |
 | `remediation` | string \| null | Actionable hint when `status` is not `pass`; `null` on pass. |

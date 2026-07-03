@@ -2,6 +2,26 @@
 
 Notable changes to IronLint, newest first. In-flight work lives in `plans/`.
 
+## [Unreleased]
+
+### Changed
+
+- Removed the Reasonix adapter; added Codex (`apply_patch` PreToolUse gate).
+  Codex is a `JsonHookSpec` harness like claude-code: `ironlint init --harness
+  codex` writes `<project>/.codex/hooks.json` (or `~/.codex/hooks.json` with
+  `--global`) — never `config.toml` — registering a `PreToolUse` hook matching
+  `apply_patch|Edit|Write`. Unlike the exit-code adapters, the codex hook
+  blocks by printing a `permissionDecision:"deny"` JSON object on stdout and
+  exiting `0`; malformed stdout on a would-be block fails open, so
+  `adapters/codex/hooks/hook.sh` builds every deny payload defensively (`jq`
+  with a static fallback). After `ironlint init`, Codex will not run the hook
+  until it's reviewed and trusted inside Codex — a manual step unique to this
+  adapter. Codex itself documents `PreToolUse` as a guardrail rather than a
+  complete enforcement boundary (a model can route around it via
+  un-intercepted tool paths like `unified_exec`); see
+  [adapters/codex/README.md](adapters/codex/README.md). Supported harnesses
+  are now `claude-code`, `codex`, `pi`, `opencode`.
+
 ## [0.7.0] — 2026-07-01 — Hector is now IronLint
 
 ### Changed
@@ -88,7 +108,7 @@ Notable changes to IronLint, newest first. In-flight work lives in `plans/`.
   `no-merge-markers` (both read proposed content from stdin) — plus commented,
   copy-paste examples showing the stdin and `$IRONLINT_TMPFILE` patterns. Harness
   onboarding (installing ironlint's hook into claude-code / pi / opencode /
-  reasonix) is unchanged.
+  codex) is unchanged.
 
 ## [0.4.0] — 2026-06-29 — checks pipeline redesign
 
@@ -130,7 +150,7 @@ Notable changes to IronLint, newest first. In-flight work lives in `plans/`.
   the same guide that `ironlint init` installs for each coding agent.
 - **`ironlint init` harness onboarding.** `ironlint init` now installs ironlint's
   hook into detected coding agents with a detect-then-confirm UX. Bare `ironlint
-  init` auto-detects installed harnesses (claude-code, reasonix, pi, opencode)
+  init` auto-detects installed harnesses (claude-code, codex, pi, opencode)
   and prompts before writing anything. New flags: `--harness <name|all>`
   (repeatable; selects explicitly), `--yes` (skip prompt), `--hook-only` (skip
   config scaffold), `--no-hook` (config only, legacy behaviour), `--dry-run`
@@ -142,7 +162,7 @@ Notable changes to IronLint, newest first. In-flight work lives in `plans/`.
   state. Re-runs are idempotent.
 - **`ironlint doctor` per-harness adapter status.** `doctor` now reports a row
   for each installed harness inside the existing `checks[]` array — name is the
-  harness id (`claude-code`, `reasonix`, `pi`, `opencode`), same
+  harness id (`claude-code`, `codex`, `pi`, `opencode`), same
   `{name, status, detail, remediation}` shape as other checks. A registered
   harness with a missing artifact → `fail` → exit 1; modified or outdated
   artifact → `warn`; ok → `pass`; not installed/registered → row omitted.
