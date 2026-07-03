@@ -64,9 +64,12 @@ jobs:
           retention-days: 1
 
       # The claude-code and reasonix adapter contract tests are Rust
-      # integration tests under crates/ironlint-cli/tests/ — they run as part of
-      # `cargo test --workspace` above (they spawn the adapter hook.sh against
-      # the just-built binary; jq/python3/bash are present on the runners).
+      # integration tests — crates/ironlint-cli/tests/hook_contract_claude_code.rs
+      # and hook_contract_reasonix.rs — that run as part of `cargo test
+      # --workspace` above. Each spawns `bash adapters/<harness>/hooks/hook.sh`
+      # with a stub `ironlint` on PATH (not the just-built binary — the stub's
+      # exit code drives the case under test) against every exit-code branch
+      # (0/2/3/4 + malformed input); jq/python3/bash are present on the runners.
       - name: IronLint dogfood (.ironlint.yml on own source)
         if: hashFiles('.ironlint.yml') != ''
         run: PATH="$(pwd)/target/release:${PATH}" bash scripts/ci-dogfood.sh

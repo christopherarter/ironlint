@@ -49,6 +49,18 @@ trap cleanup EXIT
 
 # Parse the event JSON for the tool and the changed file.
 EVENT=$(cat)
+
+# Guard: an unparseable payload must never crash the hook. Without this,
+# `jq`'s parse failure below propagates through `set -e`/`pipefail` and kills
+# the script with jq's own exit status (5) plus a raw "jq: parse error: ..."
+# dump on stderr — an undocumented exit code Claude Code's PreToolUse runner
+# has no defined handling for. Skip gracefully instead: a malformed event
+# must not brick the agent.
+if ! echo "${EVENT}" | jq empty >/dev/null 2>&1; then
+  echo "ironlint: malformed event JSON on stdin — skipping (allow)" >&2
+  exit 0
+fi
+
 TOOL_NAME=$(echo "${EVENT}" | jq -r '.tool_name // empty')
 FILE=$(echo "${EVENT}" | jq -r '.tool_input.file_path // .tool_input.path // empty')
 if [[ -z "${FILE}" ]]; then

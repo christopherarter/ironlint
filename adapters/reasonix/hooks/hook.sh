@@ -30,6 +30,17 @@ MODE="${1:-pre-tool-use}"
 
 EVENT=$(cat)
 
+# Guard: an unparseable payload must never crash the hook. Without this,
+# `jq`'s parse failure below propagates through `set -e`/`pipefail` and kills
+# the script with jq's own exit status (5) plus a raw "jq: parse error: ..."
+# dump on stderr — an undocumented exit code Reasonix's PreToolUse runner has
+# no defined handling for. Skip gracefully instead: a malformed event must
+# not brick the agent.
+if ! echo "${EVENT}" | jq empty >/dev/null 2>&1; then
+  echo "ironlint: malformed event JSON on stdin — skipping (allow)" >&2
+  exit 0
+fi
+
 PROJECT_ROOT=$(echo "${EVENT}" | jq -r '.cwd // empty')
 if [[ -z "${PROJECT_ROOT}" ]]; then
   PROJECT_ROOT="$(pwd)"
