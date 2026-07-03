@@ -13,6 +13,8 @@ pub enum ChangeOp {
     Modified,
     /// The file was removed — `--- a/<path>` + `+++ /dev/null`.
     Deleted,
+    /// The file was renamed — `rename from <old>` + `rename to <new>`.
+    Renamed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,6 +44,59 @@ fn validate_path(path: &str) -> Result<()> {
     Ok(())
 }
 
+/// Undo git's C-style quoting (`core.quotePath`). Git wraps paths in `"`
+/// and escapes non-ASCII bytes as `\NNN` octal. We also handle the
+/// standard C escapes `\n`, `\t`, `\r`, `\\`, `\"`. Returns the unquoted
+/// UTF-8 string; returns an error if the quoted bytes are not valid UTF-8.
+fn unquote_git_path(s: &str) -> Result<String> {
+    if s.len() < 2 || !s.starts_with('"') || !s.ends_with('"') {
+        return Ok(s.to_string());
+    }
+    let inner = &s[1..s.len() - 1];
+    let mut out = Vec::new();
+    let mut chars = inner.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            // Non-escape characters are added as UTF-8 bytes. In a git-quoted
+            // context, printable ASCII passes through literally.
+            out.extend_from_slice(c.to_string().as_bytes());
+            continue;
+        }
+        match chars.next() {
+            None => return Err(anyhow!("truncated escape in quoted diff path")),
+            Some('n') => out.push(b'\n'),
+            Some('t') => out.push(b'\t'),
+            Some('r') => out.push(b'\r'),
+            Some('\\') => out.push(b'\\'),
+            Some('"') => out.push(b'"'),
+            Some(d) if d.is_ascii_digit() => {
+                let mut octal = String::new();
+                octal.push(d);
+                for _ in 0..2 {
+                    if let Some(&next) = chars.peek() {
+                        if next.is_ascii_digit() {
+                            octal.push(next);
+                            chars.next();
+                        } else {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+                }
+                let byte = u8::from_str_radix(&octal, 8).map_err(|e| {
+                    anyhow!("invalid octal escape \\{octal} in quoted diff path: {e}")
+                })?;
+                out.push(byte);
+            }
+            Some(other) => return Err(anyhow!("unsupported escape \\{other} in quoted diff path")),
+        }
+    }
+
+    String::from_utf8(out).map_err(|e| anyhow!("invalid UTF-8 in quoted diff path: {e}"))
+}
+
 /// Parse a unified diff string into a list of changed files.
 ///
 /// Tracks both `---` and `+++` headers as a two-step state machine so
@@ -61,14 +116,9 @@ pub fn parse_unified(input: &str) -> Result<Vec<ChangedFile>> {
             if let Some(f) = current.take() {
                 files.push(f);
             }
-            // Strip the optional tab+timestamp suffix POSIX diff appends.
-            let minus = minus.split('\t').next().unwrap_or(minus);
+            let minus = unquote_git_path(minus)?;
+            let minus = minus.split('\t').next().unwrap_or(&minus);
             let minus = minus.trim_end_matches('\r');
-            // `--- /dev/null` means the new side is an addition; any other
-            // non-`a/` form is unrecognised and treated as if we saw nothing.
-            // Validate the `--- a/<path>` segment too — deletion diffs store
-            // this path in pending_minus, which surfaces in
-            // `ChangedFile { op: Deleted }` and telemetry.
             pending_minus = if let Some(path_str) = minus.strip_prefix("a/") {
                 validate_path(path_str)?;
                 Some(PathBuf::from(path_str))
@@ -76,14 +126,11 @@ pub fn parse_unified(input: &str) -> Result<Vec<ChangedFile>> {
                 None
             };
         } else if let Some(plus) = raw.strip_prefix("+++ ") {
-            // Strip the optional tab+timestamp suffix POSIX diff appends.
-            let plus = plus.split('\t').next().unwrap_or(plus);
+            let plus = unquote_git_path(plus)?;
+            let plus = plus.split('\t').next().unwrap_or(&plus);
             let plus = plus.trim_end_matches('\r');
 
             if plus == "/dev/null" {
-                // Deletion — old side was a real file, new side is /dev/null.
-                // `/dev/null` → `/dev/null` is nonsensical; only register when
-                // we have a real pending `--- a/` path.
                 if let Some(p) = pending_minus.take() {
                     current = Some(ChangedFile {
                         path: p,
@@ -91,23 +138,33 @@ pub fn parse_unified(input: &str) -> Result<Vec<ChangedFile>> {
                     });
                 }
             } else if let Some(p) = plus.strip_prefix("b/") {
-                // Reject paths that would escape the workspace.
                 validate_path(p)?;
                 let pb = PathBuf::from(p);
-                // If we saw a `--- a/` header, this is a modification;
-                // if `---` was `/dev/null` (pending_minus is None), it's an addition.
                 let op = if pending_minus.take().is_some() {
                     ChangeOp::Modified
                 } else {
                     ChangeOp::Added
                 };
                 current = Some(ChangedFile { path: pb, op });
+            } else {
+                return Err(anyhow!("unrecognized +++ header in diff: {plus}"));
             }
-            // Any other `+++ ` form (e.g. unquoted or unusual) is ignored.
+        } else if let Some(rename_to) = raw.strip_prefix("rename to ") {
+            // Flush any in-progress file; a rename section starts a new entry.
+            if let Some(f) = current.take() {
+                files.push(f);
+            }
+            let rename_to = unquote_git_path(rename_to)?;
+            let rename_to = rename_to.split('\t').next().unwrap_or(&rename_to);
+            let rename_to = rename_to.trim_end_matches('\r');
+            validate_path(rename_to)?;
+            current = Some(ChangedFile {
+                path: PathBuf::from(rename_to),
+                op: ChangeOp::Renamed,
+            });
+            pending_minus = None;
         }
-        // All other lines (@@ hunk headers, content lines) are ignored:
-        // ironlint check evaluates the whole post-edit file, so per-line
-        // tracking is not needed.
+        // All other lines (@@ headers, content, "rename from", etc.) are ignored.
     }
     if let Some(f) = current {
         files.push(f);

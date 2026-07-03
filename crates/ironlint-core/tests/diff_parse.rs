@@ -201,3 +201,49 @@ fn parse_unified_rejects_absolute_in_deletion_minus_path() {
         "deletion with absolute path must be rejected at parse time"
     );
 }
+
+/// A pure `git mv` diff (no ---/+++ pair, only rename from/to headers)
+/// must surface the renamed file in the changed set.
+#[test]
+fn parse_unified_recognizes_rename() {
+    use ironlint_core::diff::parser::{ChangeOp, ChangedFile};
+    use std::path::PathBuf;
+
+    let input = "diff --git a/old.rs b/new.rs\n\
+        similarity index 100%\n\
+        rename from old.rs\n\
+        rename to new.rs\n";
+    let files = ironlint_core::diff::parser::parse_unified(input).expect("parses");
+    assert_eq!(files.len(), 1);
+    assert_eq!(
+        files[0],
+        ChangedFile {
+            path: PathBuf::from("new.rs"),
+            op: ChangeOp::Renamed,
+        }
+    );
+}
+
+/// Paths are C-quoted by git when core.quotePath=true and the path
+/// contains non-ASCII bytes. The parser must unquote them.
+#[test]
+fn parse_unified_unquotes_c_quoted_path() {
+    let input = "--- \"a/caf\\303\\251.rs\"\n+++ \"b/caf\\303\\251.rs\"\n@@ -1,1 +1,1 @@\n-a\n+b\n";
+    let files = ironlint_core::diff::parser::parse_unified(input).expect("parses");
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].path, std::path::PathBuf::from("café.rs"));
+}
+
+/// An unrecognized +++ header must fail closed (parse error), not be
+/// silently dropped, so a changed file cannot bypass the gate.
+#[test]
+fn parse_unified_rejects_unrecognized_plus_plus_plus_header() {
+    let input = "--- a/foo.rs\n+++ c/foo.rs\n@@ -1,1 +1,1 @@\n-a\n+b\n";
+    let err = ironlint_core::diff::parser::parse_unified(input)
+        .expect_err("unrecognized +++ header must be a hard parse error");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("+++") || msg.contains("unrecognized"),
+        "error should mention the malformed +++ header; got: {msg}"
+    );
+}
