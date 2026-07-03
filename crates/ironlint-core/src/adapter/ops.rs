@@ -428,24 +428,24 @@ mod tests {
     }
 
     #[test]
-    fn install_reasonix_writes_artifact_sidecar_and_patches_settings() {
+    fn install_codex_writes_artifact_sidecar_and_patches_settings() {
         let tmp = tempfile::tempdir().unwrap();
         let e = env(tmp.path());
-        let out = install(&harness("reasonix"), &e, Scope::Global).unwrap();
+        let out = install(&harness("codex"), &e, Scope::Global).unwrap();
         assert!(matches!(out.result, InstallResult::Installed));
-        let hook = e.config_home.join("ironlint/adapters/reasonix/hook.sh");
+        let hook = e.config_home.join("ironlint/adapters/codex/hook.sh");
         assert!(hook.exists());
         assert!(crate::adapter::read_sidecar(hook.parent().unwrap())
             .unwrap()
             .is_some());
         let settings: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(tmp.path().join(".reasonix/settings.json")).unwrap(),
+            &std::fs::read_to_string(tmp.path().join(".codex/hooks.json")).unwrap(),
         )
         .unwrap();
-        let cmd = settings["hooks"]["PreToolUse"][0]["command"]
+        let cmd = settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
             .as_str()
             .unwrap();
-        assert!(cmd.contains("adapters/reasonix/hook.sh"));
+        assert!(cmd.contains("adapters/codex/hook.sh"));
         assert!(cmd.ends_with("pre-tool-use"));
     }
 
@@ -453,8 +453,8 @@ mod tests {
     fn install_is_idempotent() {
         let tmp = tempfile::tempdir().unwrap();
         let e = env(tmp.path());
-        install(&harness("reasonix"), &e, Scope::Global).unwrap();
-        let again = install(&harness("reasonix"), &e, Scope::Global).unwrap();
+        install(&harness("codex"), &e, Scope::Global).unwrap();
+        let again = install(&harness("codex"), &e, Scope::Global).unwrap();
         assert!(matches!(again.result, InstallResult::AlreadyPresent));
     }
 
@@ -474,15 +474,15 @@ mod tests {
     fn uninstall_removes_artifact_and_entry() {
         let tmp = tempfile::tempdir().unwrap();
         let e = env(tmp.path());
-        install(&harness("reasonix"), &e, Scope::Global).unwrap();
-        let out = uninstall(&harness("reasonix"), &e, Scope::Global).unwrap();
+        install(&harness("codex"), &e, Scope::Global).unwrap();
+        let out = uninstall(&harness("codex"), &e, Scope::Global).unwrap();
         assert!(matches!(out.result, InstallResult::Installed)); // "removed" reuses Installed-style ok
         assert!(!e
             .config_home
-            .join("ironlint/adapters/reasonix/hook.sh")
+            .join("ironlint/adapters/codex/hook.sh")
             .exists());
         let settings: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(tmp.path().join(".reasonix/settings.json")).unwrap(),
+            &std::fs::read_to_string(tmp.path().join(".codex/hooks.json")).unwrap(),
         )
         .unwrap();
         assert_eq!(settings["hooks"]["PreToolUse"].as_array().unwrap().len(), 0);
@@ -492,9 +492,9 @@ mod tests {
     fn status_reports_installed_and_intact_after_install() {
         let tmp = tempfile::tempdir().unwrap();
         let e = env(tmp.path());
-        std::fs::create_dir_all(tmp.path().join(".reasonix")).unwrap();
-        install(&harness("reasonix"), &e, Scope::Global).unwrap();
-        let st = status(&harness("reasonix"), &e, Scope::Global).unwrap();
+        std::fs::create_dir_all(tmp.path().join(".codex")).unwrap();
+        install(&harness("codex"), &e, Scope::Global).unwrap();
+        let st = status(&harness("codex"), &e, Scope::Global).unwrap();
         assert!(st.detected && st.installed && st.registered);
         assert_eq!(st.intact, Some(true));
         assert_eq!(st.current, Some(true));
@@ -504,10 +504,10 @@ mod tests {
     fn install_jsonhook_idempotent_leaves_settings_byte_identical() {
         let tmp = tempfile::tempdir().unwrap();
         let e = env(tmp.path());
-        install(&harness("reasonix"), &e, Scope::Global).unwrap();
-        let settings_path = tmp.path().join(".reasonix/settings.json");
+        install(&harness("codex"), &e, Scope::Global).unwrap();
+        let settings_path = tmp.path().join(".codex/hooks.json");
         let before = std::fs::read_to_string(&settings_path).unwrap();
-        install(&harness("reasonix"), &e, Scope::Global).unwrap();
+        install(&harness("codex"), &e, Scope::Global).unwrap();
         let after = std::fs::read_to_string(&settings_path).unwrap();
         assert_eq!(
             before, after,
@@ -545,7 +545,7 @@ mod tests {
     fn status_before_install_is_not_installed() {
         let tmp = tempfile::tempdir().unwrap();
         let e = env(tmp.path());
-        let st = status(&harness("reasonix"), &e, Scope::Global).unwrap();
+        let st = status(&harness("codex"), &e, Scope::Global).unwrap();
         assert!(!st.installed);
         assert!(!st.registered);
         assert!(st.intact.is_none());
@@ -556,10 +556,10 @@ mod tests {
     fn status_detects_on_disk_tamper() {
         let tmp = tempfile::tempdir().unwrap();
         let e = env(tmp.path());
-        let h = harness("reasonix");
+        let h = harness("codex");
         install(&h, &e, Scope::Global).unwrap();
         // Tamper with the installed artifact, leaving the sidecar untouched.
-        let hook = e.config_home.join("ironlint/adapters/reasonix/hook.sh");
+        let hook = e.config_home.join("ironlint/adapters/codex/hook.sh");
         let mut bytes = std::fs::read(&hook).unwrap();
         bytes.extend_from_slice(b"\n# tampered\n");
         std::fs::write(&hook, bytes).unwrap();
@@ -669,19 +669,19 @@ mod tests {
     fn plan_install_writes_nothing() {
         let tmp = tempfile::tempdir().unwrap();
         let e = env(tmp.path());
-        let _ = plan_install(&harness("reasonix"), &e, Scope::Global);
+        let _ = plan_install(&harness("codex"), &e, Scope::Global);
         assert!(!e
             .config_home
-            .join("ironlint/adapters/reasonix/hook.sh")
+            .join("ironlint/adapters/codex/hook.sh")
             .exists());
-        assert!(!tmp.path().join(".reasonix/settings.json").exists());
+        assert!(!tmp.path().join(".codex/hooks.json").exists());
     }
 
     #[test]
     fn plan_uninstall_jsonhook_lists_dir_patch_and_skill() {
         let tmp = tempfile::tempdir().unwrap();
         let e = env(tmp.path());
-        let steps = plan_uninstall(&harness("reasonix"), &e, Scope::Global);
+        let steps = plan_uninstall(&harness("codex"), &e, Scope::Global);
         assert!(steps.iter().any(|s| matches!(s, PlanStep::Hook { .. })));
         assert!(steps.iter().any(|s| matches!(s, PlanStep::Patch { .. })));
         assert!(steps.iter().any(|s| matches!(s, PlanStep::Skill { .. })));

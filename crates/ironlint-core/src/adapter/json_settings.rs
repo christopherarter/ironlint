@@ -95,12 +95,12 @@ mod tests {
 
     #[test]
     fn sync_is_idempotent_for_identical_entry() {
-        let cmd = "\"/h/adapters/reasonix/hook.sh\" pre-tool-use";
-        let entry = json!({"command": cmd, "match": "^(write_file|edit_file|multi_edit)$",
+        let cmd = "\"/h/adapters/codex/hook.sh\" pre-tool-use";
+        let entry = json!({"command": cmd, "match": "apply_patch|Edit|Write",
                            "description": "ironlint", "timeout": 30000});
         let mut s = json!({});
-        sync_hook_array(&mut s, "PreToolUse", entry.clone(), "/h/adapters/reasonix/");
-        let r = sync_hook_array(&mut s, "PreToolUse", entry, "/h/adapters/reasonix/");
+        sync_hook_array(&mut s, "PreToolUse", entry.clone(), "/h/adapters/codex/");
+        let r = sync_hook_array(&mut s, "PreToolUse", entry, "/h/adapters/codex/");
         assert!(matches!(r, PatchResult::AlreadyPresent));
         assert_eq!(s["hooks"]["PreToolUse"].as_array().unwrap().len(), 1);
     }
@@ -108,19 +108,19 @@ mod tests {
     #[test]
     fn sync_strips_stale_ironlint_entry_and_keeps_foreign() {
         let mut s = json!({"hooks": {"PreToolUse": [
-            {"command": "\"/h/adapters/reasonix/hook.sh\" pre-tool-use", "match": "old"},
+            {"command": "\"/h/adapters/codex/hook.sh\" pre-tool-use", "match": "old"},
             {"command": "other-tool guard", "match": "x"}
         ]}});
-        let new_cmd = "\"/h/adapters/reasonix/hook.sh\" pre-tool-use";
-        let entry = json!({"command": new_cmd, "match": "^(write_file|edit_file|multi_edit)$"});
-        let r = sync_hook_array(&mut s, "PreToolUse", entry, "/h/adapters/reasonix/");
+        let new_cmd = "\"/h/adapters/codex/hook.sh\" pre-tool-use";
+        let entry = json!({"command": new_cmd, "match": "apply_patch|Edit|Write"});
+        let r = sync_hook_array(&mut s, "PreToolUse", entry, "/h/adapters/codex/");
         assert!(matches!(r, PatchResult::Added));
         let arr = s["hooks"]["PreToolUse"].as_array().unwrap();
         assert_eq!(arr.len(), 2); // foreign kept, single ironlint entry refreshed
         assert!(arr.iter().any(|e| e["command"] == "other-tool guard"));
         assert!(arr
             .iter()
-            .any(|e| e["match"] == "^(write_file|edit_file|multi_edit)$"));
+            .any(|e| e["match"] == "apply_patch|Edit|Write"));
     }
 
     #[test]
