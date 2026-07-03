@@ -69,12 +69,13 @@ pub fn run_gate(
     content: Option<&[u8]>,
     timeout: Duration,
 ) -> GateOutcome {
-    let files_str = env
-        .files
-        .iter()
-        .map(|p| p.display().to_string())
-        .collect::<Vec<_>>()
-        .join("\n");
+    let mut files_os = OsString::new();
+    for (i, p) in env.files.iter().enumerate() {
+        if i > 0 {
+            files_os.push("\n");
+        }
+        files_os.push(p.as_os_str());
+    }
     let mut cmd = Command::new("sh");
     cmd.arg("-c")
         .arg(run)
@@ -90,7 +91,7 @@ pub fn run_gate(
     cmd.env_clear();
     cmd.envs(build_check_env(
         env,
-        &files_str,
+        &files_os,
         &std::env::vars_os().collect::<Vec<_>>(),
     ));
     // Put the child in its own new process group (pgid == its own pid, since
@@ -209,7 +210,7 @@ const ALLOWED_ENV_VARS: &[&str] = &["PATH", "HOME", "LANG", "TZ", "TMPDIR"];
 /// process-global environment.
 fn build_check_env(
     env: &GateEnv,
-    files_str: &str,
+    files_str: &std::ffi::OsStr,
     source: &[(OsString, OsString)],
 ) -> Vec<(OsString, OsString)> {
     let mut out: Vec<(OsString, OsString)> = source
@@ -226,7 +227,7 @@ fn build_check_env(
         env.root.as_os_str().to_os_string(),
     ));
     out.push((OsString::from("IRONLINT_EVENT"), OsString::from(env.event)));
-    out.push((OsString::from("IRONLINT_FILES"), OsString::from(files_str)));
+    out.push((OsString::from("IRONLINT_FILES"), files_str.to_os_string()));
     if let Some(f) = env.file {
         out.push((
             OsString::from("IRONLINT_FILE"),
@@ -630,6 +631,32 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn ironlint_files_preserves_non_utf8_path_bytes() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        // A filename that is not valid UTF-8: 0xFF byte.
+        let bad = std::ffi::OsString::from_vec(vec![0xFF]);
+        let bad_path = dir.path().join(&bad);
+        let files = vec![bad_path];
+
+        // Gate blocks iff $IRONLINT_FILES contains the exact raw byte 0xFF.
+        // If display() -> U+FFFD replacement happened, the check would see
+        // 0xEF 0xBF 0xBD and pass, proving the bug.
+        let out = run_gate(
+            "printf '%s' \"$IRONLINT_FILES\" | od -An -tx1 | grep -q 'ff' && exit 2 || exit 0",
+            &env_with_files(dir.path(), &files),
+            None,
+            t(),
+        );
+        assert!(
+            matches!(out, GateOutcome::Block { .. }),
+            "$IRONLINT_FILES must preserve non-UTF8 path bytes; got: {out:?}"
+        );
+    }
+
     #[test]
     fn build_check_env_scrubs_secrets_and_keeps_allowlist() {
         // Synthetic source env — never touches real process env (process-global
@@ -655,7 +682,7 @@ mod tests {
             event: "write",
             tmpfile: Some(&tmp),
         };
-        let files_str = "irrelevant-files-str";
+        let files_str = std::ffi::OsStr::new("irrelevant-files-str");
 
         let result = build_check_env(&env, files_str, &source);
         let get = |k: &str| {
@@ -706,7 +733,7 @@ mod tests {
             tmpfile: None,
         };
 
-        let result = build_check_env(&env, "", &source);
+        let result = build_check_env(&env, std::ffi::OsStr::new(""), &source);
         let has = |k: &str| result.iter().any(|(name, _)| name == k);
 
         assert!(!has("IRONLINT_FILE"), "no file → var must be unset");
