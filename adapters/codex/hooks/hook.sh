@@ -18,8 +18,14 @@ set -euo pipefail
 
 WORKDIR=""
 cleanup() {
+  # `|| true`: this runs in an EXIT trap, so its own exit status — not the
+  # `exit 0`/`exit N` that fired the trap — becomes the script's final exit
+  # code if it's nonzero (a documented bash quirk, verified empirically).
+  # Every deny() path relies on exiting 0 alongside its emitted JSON; letting
+  # a stray `rm -rf` failure silently overwrite that would corrupt the exit
+  # code out from under an already-decided verdict.
   if [[ -n "${WORKDIR}" && -d "${WORKDIR}" ]]; then
-    rm -rf "${WORKDIR}"
+    rm -rf "${WORKDIR}" || true
   fi
 }
 trap cleanup EXIT

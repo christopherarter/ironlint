@@ -12,7 +12,6 @@
 mod common;
 
 use common::HookFixture;
-use predicates::prelude::*;
 
 const HOOK: &str = "adapters/codex/hooks/hook.sh";
 
