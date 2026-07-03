@@ -47,7 +47,10 @@ fn assert_deny(stdout: &[u8], needle: &str) {
     let reason = v["hookSpecificOutput"]["permissionDecisionReason"]
         .as_str()
         .unwrap_or_default();
-    assert!(reason.contains(needle), "reason {reason:?} lacks {needle:?}");
+    assert!(
+        reason.contains(needle),
+        "reason {reason:?} lacks {needle:?}"
+    );
 }
 
 #[test]
@@ -71,7 +74,10 @@ fn add_block_on_exit_2_emits_deny_json() {
         return;
     }
     let fx = HookFixture::new(HOOK);
-    fx.stub(2, r#"{"blocks":[{"check":"g","message":"no print statements"}]}"#);
+    fx.stub(
+        2,
+        r#"{"blocks":[{"check":"g","message":"no print statements"}]}"#,
+    );
     let out = fx
         .run("pre-tool-use", &add_payload(fx.project.path()), &[])
         .success()
@@ -90,7 +96,10 @@ fn update_block_on_exit_2_emits_deny_json() {
     }
     let fx = HookFixture::new(HOOK);
     std::fs::write(fx.file("foo.py"), "print('old')\n").unwrap();
-    fx.stub(2, r#"{"blocks":[{"check":"g","message":"blocked update"}]}"#);
+    fx.stub(
+        2,
+        r#"{"blocks":[{"check":"g","message":"blocked update"}]}"#,
+    );
     let out = fx
         .run("pre-tool-use", &update_payload(fx.project.path()), &[])
         .success()
