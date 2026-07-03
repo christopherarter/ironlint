@@ -4,6 +4,7 @@
 //! `126`/`127`/`≥128`/signal/timeout → InternalError (broken-gate fail-open).
 //! On Block the combined trimmed stdout+stderr is the message.
 
+use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -78,18 +79,20 @@ pub fn run_gate(
     cmd.arg("-c")
         .arg(run)
         .current_dir(env.root)
-        .env("IRONLINT_ROOT", env.root)
-        .env("IRONLINT_EVENT", env.event)
-        .env("IRONLINT_FILES", files_str)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    if let Some(f) = env.file {
-        cmd.env("IRONLINT_FILE", f);
-    }
-    if let Some(tf) = env.tmpfile {
-        cmd.env("IRONLINT_TMPFILE", tf);
-    }
+    // Scrub the child's environment to an explicit allowlist + the IRONLINT_*
+    // ABI — a check must not be able to read the agent's full credential set
+    // (ANTHROPIC_API_KEY, GITHUB_TOKEN, AWS_*, ...) just because it inherited
+    // the parent process environment. env_clear() must run before envs(): the
+    // reverse order would wipe out the very vars we just added.
+    cmd.env_clear();
+    cmd.envs(build_check_env(
+        env,
+        &files_str,
+        &std::env::vars_os().collect::<Vec<_>>(),
+    ));
     // Put the child in its own new process group (pgid == its own pid, since
     // it is the group leader). A compound `run` (`cargo check | head`) has
     // `sh` fork-exec the real tool as a group member; on timeout we kill the
@@ -191,6 +194,52 @@ pub fn run_gate(
     let stderr = String::from_utf8_lossy(&err_handle.join().unwrap_or_default()).into_owned();
 
     classify(status, &stdout, &stderr)
+}
+
+/// Vars a check may legitimately need to find and run tools, pulled through
+/// from `source` (normally `std::env::vars_os()`). Everything else in the
+/// parent environment — API keys, tokens, anything else `sh` inherited — is
+/// scrubbed. `LC_*` is a prefix match (locale vars are unbounded: `LC_ALL`,
+/// `LC_CTYPE`, `LC_COLLATE`, ...); the rest are exact names.
+const ALLOWED_ENV_VARS: &[&str] = &["PATH", "HOME", "LANG", "TZ", "TMPDIR"];
+
+/// Build the child process environment for a check: an allowlisted subset of
+/// `source` plus the `IRONLINT_*` ABI. Pure (no process-env access) so it is
+/// unit-testable against a synthetic `source` instead of the real, shared,
+/// process-global environment.
+fn build_check_env(
+    env: &GateEnv,
+    files_str: &str,
+    source: &[(OsString, OsString)],
+) -> Vec<(OsString, OsString)> {
+    let mut out: Vec<(OsString, OsString)> = source
+        .iter()
+        .filter(|(name, _)| {
+            let name = name.to_string_lossy();
+            ALLOWED_ENV_VARS.contains(&name.as_ref()) || name.starts_with("LC_")
+        })
+        .cloned()
+        .collect();
+
+    out.push((
+        OsString::from("IRONLINT_ROOT"),
+        env.root.as_os_str().to_os_string(),
+    ));
+    out.push((OsString::from("IRONLINT_EVENT"), OsString::from(env.event)));
+    out.push((OsString::from("IRONLINT_FILES"), OsString::from(files_str)));
+    if let Some(f) = env.file {
+        out.push((
+            OsString::from("IRONLINT_FILE"),
+            f.as_os_str().to_os_string(),
+        ));
+    }
+    if let Some(tf) = env.tmpfile {
+        out.push((
+            OsString::from("IRONLINT_TMPFILE"),
+            tf.as_os_str().to_os_string(),
+        ));
+    }
+    out
 }
 
 /// Kill the child's whole process group (it is the group leader — see the
@@ -579,6 +628,92 @@ mod tests {
             elapsed < Duration::from_secs(3),
             "timeout branch with setsid'd descendant took {elapsed:?} — should detach and return promptly"
         );
+    }
+
+    #[test]
+    fn build_check_env_scrubs_secrets_and_keeps_allowlist() {
+        // Synthetic source env — never touches real process env (process-global
+        // mutation via std::env::set_var would be flaky across parallel tests).
+        let source = vec![
+            (OsString::from("PATH"), OsString::from("/usr/bin:/bin")),
+            (OsString::from("HOME"), OsString::from("/home/x")),
+            (OsString::from("LC_ALL"), OsString::from("C")),
+            (OsString::from("SECRET_TOKEN"), OsString::from("shhh")),
+            (
+                OsString::from("ANTHROPIC_API_KEY"),
+                OsString::from("sk-xxx"),
+            ),
+        ];
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("x.txt");
+        let tmp = dir.path().join("ironlint-tmp-1.txt");
+        let files = vec![f.clone()];
+        let env = GateEnv {
+            file: Some(&f),
+            files: &files,
+            root: dir.path(),
+            event: "write",
+            tmpfile: Some(&tmp),
+        };
+        let files_str = "irrelevant-files-str";
+
+        let result = build_check_env(&env, files_str, &source);
+        let get = |k: &str| {
+            result
+                .iter()
+                .find(|(name, _)| name == k)
+                .map(|(_, v)| v.clone())
+        };
+
+        // Allowlisted vars pass through with their values.
+        assert_eq!(get("PATH"), Some(OsString::from("/usr/bin:/bin")));
+        assert_eq!(get("HOME"), Some(OsString::from("/home/x")));
+        assert_eq!(get("LC_ALL"), Some(OsString::from("C")));
+
+        // Non-allowlisted vars — including secrets — are scrubbed.
+        assert!(
+            get("SECRET_TOKEN").is_none(),
+            "secret must not leak through"
+        );
+        assert!(
+            get("ANTHROPIC_API_KEY").is_none(),
+            "API key must not leak through"
+        );
+
+        // The IRONLINT_* ABI is still fully present.
+        assert_eq!(
+            get("IRONLINT_ROOT"),
+            Some(dir.path().as_os_str().to_os_string())
+        );
+        assert_eq!(get("IRONLINT_EVENT"), Some(OsString::from("write")));
+        assert_eq!(get("IRONLINT_FILES"), Some(OsString::from(files_str)));
+        assert_eq!(get("IRONLINT_FILE"), Some(f.as_os_str().to_os_string()));
+        assert_eq!(
+            get("IRONLINT_TMPFILE"),
+            Some(tmp.as_os_str().to_os_string())
+        );
+    }
+
+    #[test]
+    fn build_check_env_omits_file_and_tmpfile_when_absent() {
+        let source: Vec<(OsString, OsString)> = vec![];
+        let dir = tempfile::tempdir().unwrap();
+        let env = GateEnv {
+            file: None,
+            files: &[],
+            root: dir.path(),
+            event: "pre-commit",
+            tmpfile: None,
+        };
+
+        let result = build_check_env(&env, "", &source);
+        let has = |k: &str| result.iter().any(|(name, _)| name == k);
+
+        assert!(!has("IRONLINT_FILE"), "no file → var must be unset");
+        assert!(!has("IRONLINT_TMPFILE"), "no tmpfile → var must be unset");
+        assert!(has("IRONLINT_ROOT"));
+        assert!(has("IRONLINT_EVENT"));
+        assert!(has("IRONLINT_FILES"));
     }
 
     #[test]

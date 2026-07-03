@@ -43,6 +43,8 @@ checks:
 
 `run` receives no string templating — there is no `{file}`. The path under check arrives as `$IRONLINT_FILE`, the project root as `$IRONLINT_ROOT`, the trigger as `$IRONLINT_EVENT`, and the proposed post-edit content on stdin. For `write` checks whose `run` references it, `$IRONLINT_TMPFILE` holds the absolute path to a temp file beside `$IRONLINT_FILE` containing the proposed content (same extension, auto-cleaned). `run` may be an inline command or a path to a script under `.ironlint/gates/`; the shell makes no distinction.
 
+`run` executes with a **scrubbed environment**, not your full shell environment: only `$PATH`, `$HOME`, locale (`$LANG`/`$LC_*`), `$TZ`, `$TMPDIR`, and the `$IRONLINT_*` vars above are set. Secrets in the parent environment (API keys, tokens) are not passed through. See [trust and the execution model](../security/trust.md#checks-run-with-a-scrubbed-environment).
+
 ## Execution
 
 ```yaml

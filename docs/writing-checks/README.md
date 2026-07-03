@@ -54,6 +54,8 @@ IronLint hands each check the same four things. Nothing is spliced into the comm
 
 There is no `{file}` token. The path travels only as `$IRONLINT_FILE`.
 
+**The environment is scrubbed, not inherited.** A check does not see your full shell environment — IronLint runs it with only `$PATH`, `$HOME`, locale (`$LANG`/`$LC_*`), `$TZ`, `$TMPDIR`, and the `$IRONLINT_*` vars above. Secrets sitting in the parent process's environment (`$ANTHROPIC_API_KEY`, `$GITHUB_TOKEN`, `$AWS_*`, etc.) are not passed through. If a check genuinely needs a credential, read it from a file or a secrets manager inside the check itself — don't rely on ambient env vars. See [trust and the execution model](../security/trust.md#checks-run-with-a-scrubbed-environment).
+
 ### Reading the proposed edit vs. the file on disk
 
 This is the one subtlety worth understanding. When an adapter intercepts an edit *before* it lands, the new bytes arrive on **stdin**, while `$IRONLINT_FILE` may still point at the old on-disk content. So:

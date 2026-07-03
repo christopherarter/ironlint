@@ -76,6 +76,10 @@ The trust store answers "have I reviewed what runs?", not "what can it do once i
 
 If you need real isolation from a config you don't fully trust, run IronLint inside an OS-level sandbox — a container, a fresh user, or `bwrap` — in addition to blessing it.
 
+## Checks run with a scrubbed environment
+
+A blessed check still doesn't see your whole shell environment. Before spawning a check, IronLint clears the child process's environment and rebuilds it from an explicit allowlist: `$PATH`, `$HOME`, locale (`$LANG` and any `$LC_*`), `$TZ`, `$TMPDIR`, plus the [`$IRONLINT_*` ABI vars](../writing-checks/README.md#the-abi-what-every-check-receives). Everything else in the parent process's environment — `$ANTHROPIC_API_KEY`, `$GITHUB_TOKEN`, `$AWS_*`, any other secret or token the agent process holds — is **not** passed through, even to a fully blessed check. This bounds what a compromised or careless check script can read, on top of (not instead of) trust review.
+
 ## See also
 
 - [Sharing config with `extends:`](../configuring/inheritance.md) — blessing a config that inherits
