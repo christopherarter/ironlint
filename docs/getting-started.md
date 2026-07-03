@@ -66,7 +66,7 @@ The blank page is optional, and so is wiring your agent by hand. From a fresh pr
 ironlint init
 ```
 
-`ironlint init` detects your stack and writes a starter `.ironlint.yml` (the same shape as the check above, tuned for Rust, Node, or Python), trusts it for you, then detects your installed agents — Claude Code, Reasonix, pi, OpenCode — and, after you confirm, installs IronLint's edit hook into each. From then on the check runs on every edit the agent makes; you never call `ironlint check` by hand.
+`ironlint init` detects your stack and writes a starter `.ironlint.yml` (the same shape as the check above, tuned for Rust, Node, or Python), trusts it for you, then detects your installed agents — Claude Code, Codex, pi, OpenCode — and, after you confirm, installs IronLint's edit hook into each. From then on the check runs on every edit the agent makes; you never call `ironlint check` by hand.
 
 Review the generated checks and adjust. If you change the config after init, re-run `ironlint trust`. Target a single agent with `--harness <name>`, wire all four with `--harness all`, or preview the writes with `--dry-run` — see the [CLI reference](reference/cli.md#ironlint-init) for every flag and the [adapter docs](adapters/README.md) for per-agent details.
 
