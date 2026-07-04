@@ -56,6 +56,10 @@ Every adapter follows the [same lifecycle](README.md#what-adapters-do); here is 
 
 **After every edit.** When Claude finishes an `Edit` or `Write`, the adapter runs `ironlint check --file <path>`. A block rejects the edit and Claude retries. This is the check you saw above.
 
+## Timeout budget
+
+This hook sets no ironlint-specific timeout of its own, so it isn't affected by [IronLint's default per-check cap](README.md#timeout-budget). If you hand-add a `timeout` to this hook's entry in `.claude/settings.json`, keep it at or above your worst-case sequential-check budget (`K × execution.timeout_secs` for `K` checks matching a file) — the same rule that applies to any JSON-hook harness, so Claude Code never kills the hook before ironlint can report a verdict.
+
 ## Author and review checks from inside Claude
 
 `ironlint init --harness claude-code` installs the **`ironlint-config`** authoring skill into `.claude/skills/ironlint-config/` — the check schema, the exit-code contract, and common patterns with a fixture-test loop. Run `ironlint schema` any time to print the same guide at the terminal. `/ironlint-init` and `/ironlint-review` ship with the Claude Code **plugin** instead (see [Managing policy from inside the agent](README.md#managing-policy-from-inside-the-agent)).

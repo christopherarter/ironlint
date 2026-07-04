@@ -70,6 +70,21 @@ file is on disk — that's a filesystem fact. Whether Codex has trusted it and
 will actually run it is a Codex-side decision doctor cannot observe, so a
 `pass` from `ironlint doctor` does not by itself mean edits are being gated.
 
+## Timeout budget
+
+This hook's own `timeout` is registered at **120s** — 4× IronLint's default
+per-check wall-clock cap (`execution.timeout_secs`, 30s by default; see
+[Timeout budget](../../docs/adapters/README.md#timeout-budget) for the general
+rule). Checks dispatch sequentially, so a file matching several slow checks
+can burn multiples of that cap before `ironlint check` reports a verdict. If
+this hook's timeout were lower than that worst case, Codex would kill the hook
+process first and the edit would land **ungated**, with no signal to anyone —
+a silent bypass, not the fail-open behavior on exit `3` described above.
+
+If you raise `execution.timeout_secs` above the default, re-run `ironlint init
+--harness codex` so the regenerated `hooks.json` entry keeps enough headroom
+(or hand-edit `timeout` in `hooks.json` to at least `4 × timeout_secs`).
+
 ## Guardrail, not a hard boundary
 
 Codex's own documentation describes `PreToolUse` as something a model "can
@@ -89,7 +104,8 @@ Use these steps if the `ironlint` binary is not available:
 2. Copy `hooks/hook.sh` from this directory into place and register it in
    Codex's `hooks.json` under `hooks.PreToolUse`, matcher
    `apply_patch|Edit|Write`, `command` pointed at the script's absolute path
-   plus the argument `pre-tool-use`, `timeout` `30` (seconds).
+   plus the argument `pre-tool-use`, `timeout` `120` (seconds — see
+   [Timeout budget](#timeout-budget) above for why).
 3. Run `ironlint init` in a project to scaffold `.ironlint.yml`.
 4. Review the config and run `ironlint trust` to fingerprint it.
 5. In Codex, review and trust the newly registered hook (see above) — it will

@@ -48,9 +48,15 @@ pub(crate) fn claude_build_entry(command: &str) -> Value {
 }
 
 pub(crate) fn codex_build_entry(command: &str) -> Value {
+    // 120s = 4x IronLint's default per-check wall-clock cap (30s,
+    // `execution.timeout_secs` default). Checks run sequentially, so a file
+    // matching several slow checks can take multiples of that cap; this
+    // hook timeout must exceed the worst-case sequential-check budget or
+    // Codex kills the hook process first and the edit lands ungated with no
+    // signal to anyone. See docs/adapters/README.md "Timeout budget".
     json!({"matcher": "apply_patch|Edit|Write",
            "hooks": [{"type": "command", "command": command,
-                      "timeout": 30, "statusMessage": "ironlint check"}]})
+                      "timeout": 120, "statusMessage": "ironlint check"}]})
 }
 
 // --- registry ----------------------------------------------------------------
@@ -201,12 +207,30 @@ mod tests {
         assert_eq!(e["hooks"][0]["command"], "\"/x/hook.sh\" pre-tool-use");
     }
 
+    // IronLint's default per-check wall-clock cap is 30s
+    // (`config::types::default_timeout_secs`, pinned separately by
+    // `execution_timeout_defaults_to_30` in config/types.rs). Checks run
+    // sequentially, so a file matching several slow checks can burn
+    // multiples of that cap before ironlint reports a verdict. Codex's own
+    // hook `timeout` must clear that worst case, or Codex kills the hook
+    // process first and the edit lands ungated — a silent bypass.
+    const DEFAULT_PER_CHECK_CAP_SECS: u64 = 30;
+
     #[test]
     fn codex_entry_matches_apply_patch() {
         let e = codex_build_entry("\"/x/hook.sh\" pre-tool-use");
         assert_eq!(e["matcher"], "apply_patch|Edit|Write");
         assert_eq!(e["hooks"][0]["command"], "\"/x/hook.sh\" pre-tool-use");
-        assert_eq!(e["hooks"][0]["timeout"], 30);
+
+        // Assert the *relationship*, not just the current literal, so a
+        // future bump to either number can't quietly erode the headroom.
+        let hook_timeout = e["hooks"][0]["timeout"].as_u64().expect("timeout is a u64");
+        assert!(
+            hook_timeout >= 4 * DEFAULT_PER_CHECK_CAP_SECS,
+            "codex hook timeout ({hook_timeout}s) must be >= 4x the default \
+             per-check cap ({DEFAULT_PER_CHECK_CAP_SECS}s) so several \
+             sequential slow checks don't blow the harness's own hook budget"
+        );
     }
 
     #[test]

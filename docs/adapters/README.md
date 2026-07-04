@@ -46,6 +46,16 @@ The fail-open default on internal errors is deliberate: a rule that *couldn't ru
 
 > **Codex is the one exception to this table.** Its `PreToolUse` hook doesn't block via exit code at all — it prints a `permissionDecision:"deny"` JSON object on stdout and exits `0`, and malformed stdout on a would-be block fails open. The codex adapter translates the same `ironlint check` exit codes above into that JSON internally; see the [Codex adapter](../../adapters/codex/README.md) for the exact contract.
 
+## Timeout budget
+
+IronLint's default per-check wall-clock cap is 30s (`execution.timeout_secs` in [the config schema](../reference/config-schema.md#execution)). Checks dispatch **sequentially** — one `run` invocation per matching file for `write`, one per check for `pre-commit` — so a file that matches `K` checks can take up to `K × timeout_secs` before ironlint reports a verdict.
+
+Some JSON-hook harnesses impose their own timeout on the whole hook process, on top of that. If the harness's hook timeout is shorter than the worst-case sequential-check budget, the harness kills the hook before ironlint can report a verdict — and the edit lands **ungated**, with no verdict to fail open on. That's a silent bypass, not the fail-open behavior exit code `3` describes above.
+
+Codex sets a hook-level timeout of its own; see the [Codex adapter](../../adapters/codex/README.md#timeout-budget) for the registered value and why. Claude Code's hook does not set one (see [its adapter page](claude-code.md#timeout-budget)).
+
+If you raise `execution.timeout_secs` in your config, raise any harness-side hook timeout to match it — and re-run `ironlint init` for that harness if it's the one that set the timeout, so the regenerated hook entry picks up the new headroom.
+
 ## Requirements
 
 Every adapter needs:
