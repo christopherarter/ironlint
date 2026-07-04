@@ -340,7 +340,7 @@ fn emit(v: &Verdict, format: OutputFormat) -> Result<()> {
             // JSON mode: no extra stdout (the verdict already carries
             // passed=[] for a no-match run; CI detects it from the shape).
             // --require-match still affects the EXIT code, handled by the
-            // caller via exit_code_for(v, require_match).
+            // caller via exit_code(v, require_match).
             println!("{}", serde_json::to_string_pretty(v)?);
         }
         OutputFormat::Human => {
