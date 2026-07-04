@@ -221,9 +221,10 @@ pub fn read_since(path: &Path, offset: &mut u64) -> Result<(Vec<LogEntry>, bool)
 fn read_complete_lines_from(path: &Path, start: u64, len: u64) -> Result<(Vec<LogEntry>, u64)> {
     use std::io::{Read, Seek, SeekFrom};
     let mut file = std::fs::File::open(path)?;
-    if start > 0 {
-        file.seek(SeekFrom::Start(start))?;
-    }
+    // Seek to `start` unconditionally: for `start == 0` this is a no-op (a
+    // freshly opened file is already positioned at 0), so a `start > 0` guard
+    // would only add a branch with no observable effect.
+    file.seek(SeekFrom::Start(start))?;
     let mut buf = Vec::with_capacity(len.saturating_sub(start) as usize);
     file.read_to_end(&mut buf)?;
     let parsed = match buf.iter().rposition(|&b| b == b'\n') {
@@ -241,6 +242,17 @@ fn read_complete_lines_from(path: &Path, start: u64, len: u64) -> Result<(Vec<Lo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The rotation threshold is a deliberate operational contract (the design
+    /// promises "10 MiB"). Rotation *behavior* is exercised via an injectable
+    /// cap (`rotate_if_oversized_with_max`), so nothing else pins the production
+    /// constant's actual value — a wrong literal (KiB/GiB fat-finger, or a
+    /// `*`→`+` slip) would otherwise ship silently.
+    #[test]
+    fn max_log_bytes_is_ten_mib() {
+        assert_eq!(MAX_LOG_BYTES, 10 * 1024 * 1024);
+        assert_eq!(MAX_LOG_BYTES, 10_485_760);
+    }
 
     /// Write-lifecycle record: `file` is present, `set_size` is absent.
     #[test]
