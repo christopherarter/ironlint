@@ -337,8 +337,18 @@ fn event_loop<B: Backend>(
 ) -> Result<()> {
     let log = dir.join(".ironlint/log.jsonl");
     let mut state = ViewState::default();
+    // Incremental tail: accumulate entries across ticks, reading only the bytes
+    // appended since the last tick instead of re-parsing the whole log each time.
+    let mut entries: Vec<LogEntry> = Vec::new();
+    let mut offset: u64 = 0;
     loop {
-        let entries = ironlint_core::telemetry::read_all_quiet(&log).unwrap_or_default();
+        // On a transient read error, keep the prior view (entries/offset unchanged).
+        if let Ok((new, reset)) = ironlint_core::telemetry::read_since(&log, &mut offset) {
+            if reset {
+                entries.clear();
+            }
+            entries.extend(new);
+        }
         let summary = summarize(&entries, armed);
         let clock = short_time(&chrono::Utc::now().to_rfc3339());
         terminal.draw(|f| {

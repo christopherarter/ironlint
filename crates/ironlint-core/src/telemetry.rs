@@ -179,6 +179,65 @@ pub fn read_all_quiet(path: &Path) -> Result<Vec<LogEntry>> {
     Ok(entries)
 }
 
+/// Read entries appended to `path` since byte `*offset`, advancing `*offset` to
+/// the end of the last COMPLETE line consumed. Returns `(entries, reset)`:
+/// - `reset == false`: incremental — `entries` are the newly-appended lines; the
+///   caller should EXTEND its accumulated view.
+/// - `reset == true`: the file is shorter than `*offset` (rotation/truncation)
+///   or missing — `*offset` was reset to 0 and `entries` is the full re-read of
+///   the current file (empty if missing); the caller should REPLACE its view.
+///
+/// Bytes after the last `\n` (a partial line still being written) are NOT
+/// consumed — `*offset` is left before them so they are re-read once completed.
+/// Malformed lines are dropped silently (same policy as [`read_all_quiet`], so a
+/// TUI tick never bleeds `eprintln!` through raw mode).
+///
+/// `*offset` is mutated only on the success path; on an I/O `Err` it is left
+/// unchanged and the error propagates.
+pub fn read_since(path: &Path, offset: &mut u64) -> Result<(Vec<LogEntry>, bool)> {
+    if !path.exists() {
+        *offset = 0;
+        return Ok((Vec::new(), true));
+    }
+    let len = std::fs::metadata(path)?.len();
+    if len < *offset {
+        // Shrink (rotation from log rotation, or truncation): reset and re-read
+        // the whole current file from the top.
+        let (entries, consumed) = read_complete_lines_from(path, 0, len)?;
+        *offset = consumed;
+        return Ok((entries, true));
+    }
+    // Incremental: consume only the bytes appended since `*offset`.
+    let (entries, consumed) = read_complete_lines_from(path, *offset, len)?;
+    *offset += consumed;
+    Ok((entries, false))
+}
+
+/// Seek to `start`, read `[start, len)`, and parse only the lines terminated by
+/// a `\n` within that window. Returns `(entries, consumed)` where `consumed` is
+/// the byte count up to and INCLUDING the last `\n` (0 when the window holds no
+/// complete line — a partial line still mid-write). Bytes past the last `\n` are
+/// left unconsumed so they are re-read once completed.
+fn read_complete_lines_from(path: &Path, start: u64, len: u64) -> Result<(Vec<LogEntry>, u64)> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = std::fs::File::open(path)?;
+    if start > 0 {
+        file.seek(SeekFrom::Start(start))?;
+    }
+    let mut buf = Vec::with_capacity(len.saturating_sub(start) as usize);
+    file.read_to_end(&mut buf)?;
+    let parsed = match buf.iter().rposition(|&b| b == b'\n') {
+        Some(idx) => {
+            // Parse through the last `\n`; anything after it is a partial line.
+            let text = String::from_utf8_lossy(&buf[..=idx]);
+            let (entries, _dropped) = parse_entries(&text);
+            (entries, (idx + 1) as u64)
+        }
+        None => (Vec::new(), 0),
+    };
+    Ok(parsed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -416,5 +475,159 @@ mod tests {
         let log = dir.path().join("absent.jsonl");
         rotate_if_oversized_with_max(&log, 0);
         assert!(!dir.path().join("absent.jsonl.1").exists());
+    }
+
+    /// Append raw bytes to `path` (used to simulate partial writes and shrink).
+    fn append_raw(path: &Path, bytes: &[u8]) {
+        let mut f = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .unwrap();
+        f.write_all(bytes).unwrap();
+    }
+
+    /// After a first read, `read_since` returns ONLY the newly-appended lines and
+    /// advances `offset` to the file end.
+    #[test]
+    fn read_since_returns_only_new_tail() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("log.jsonl");
+        for _ in 0..3 {
+            append(&log, &sample_entry()).unwrap();
+        }
+        let mut offset = 0u64;
+
+        // First read consumes the existing 3 lines (initial full read, not a reset
+        // since len >= offset).
+        let (first, reset) = read_since(&log, &mut offset).unwrap();
+        assert_eq!(first.len(), 3, "first read returns all existing lines");
+        assert!(!reset, "len >= offset is incremental, not a reset");
+        assert_eq!(
+            offset,
+            std::fs::metadata(&log).unwrap().len(),
+            "offset advances to end of file"
+        );
+
+        // Append 2 more; the next read returns EXACTLY those 2, not all 5.
+        append(&log, &sample_entry()).unwrap();
+        append(&log, &sample_entry()).unwrap();
+        let (second, reset2) = read_since(&log, &mut offset).unwrap();
+        assert_eq!(second.len(), 2, "second read returns only the new tail");
+        assert!(!reset2);
+        assert_eq!(offset, std::fs::metadata(&log).unwrap().len());
+    }
+
+    /// No new bytes since the last read → empty, no reset, offset unchanged.
+    #[test]
+    fn read_since_no_new_bytes_is_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("log.jsonl");
+        append(&log, &sample_entry()).unwrap();
+        let mut offset = 0u64;
+        let _ = read_since(&log, &mut offset).unwrap();
+        let at_end = offset;
+
+        let (entries, reset) = read_since(&log, &mut offset).unwrap();
+        assert!(entries.is_empty(), "no appends means no new entries");
+        assert!(!reset);
+        assert_eq!(offset, at_end, "offset does not move without new bytes");
+    }
+
+    /// A file shorter than `offset` (rotation/truncation) resets to a full
+    /// re-read: `reset == true`, offset back to the new boundary, current content.
+    #[test]
+    fn read_since_shrink_resets_to_full_reread() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("log.jsonl");
+        for _ in 0..4 {
+            append(&log, &sample_entry()).unwrap();
+        }
+        let mut offset = 0u64;
+        let _ = read_since(&log, &mut offset).unwrap();
+        assert!(offset > 0);
+
+        // Shrink: replace with a single fresh line, far shorter than `offset`.
+        let one = format!("{}\n", valid_jsonl_line());
+        std::fs::write(&log, &one).unwrap();
+        assert!((one.len() as u64) < offset, "precondition: file shrank");
+
+        let (entries, reset) = read_since(&log, &mut offset).unwrap();
+        assert!(reset, "a shorter file forces a reset");
+        assert_eq!(
+            entries.len(),
+            1,
+            "reset returns the current (small) content"
+        );
+        assert_eq!(
+            offset,
+            one.len() as u64,
+            "offset resets to the new boundary"
+        );
+    }
+
+    /// A trailing partial line (no `\n`) is not consumed; once completed it parses
+    /// on the next read and the offset advances past it.
+    #[test]
+    fn read_since_holds_partial_line_until_complete() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("log.jsonl");
+        let full = format!("{}\n", valid_jsonl_line());
+        let bytes = full.as_bytes();
+        let split = bytes.len() / 2;
+
+        // Write the first half only — no newline yet.
+        append_raw(&log, &bytes[..split]);
+        let mut offset = 0u64;
+        let (partial, reset) = read_since(&log, &mut offset).unwrap();
+        assert!(partial.is_empty(), "partial line yields no entries");
+        assert!(!reset);
+        assert_eq!(offset, 0, "offset stays before the incomplete line");
+
+        // Write the rest incl. the newline — now the line is complete.
+        append_raw(&log, &bytes[split..]);
+        let (done, reset2) = read_since(&log, &mut offset).unwrap();
+        assert_eq!(done.len(), 1, "the completed line parses on the next read");
+        assert!(!reset2);
+        assert_eq!(
+            offset,
+            full.len() as u64,
+            "offset advances past the full line"
+        );
+    }
+
+    /// A missing file resets: `(empty, reset=true)` and `offset` set to 0.
+    #[test]
+    fn read_since_missing_file_resets() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("nonexistent.jsonl");
+        let mut offset = 42u64;
+        let (entries, reset) = read_since(&log, &mut offset).unwrap();
+        assert!(entries.is_empty());
+        assert!(reset, "missing file is a reset");
+        assert_eq!(offset, 0, "offset resets to 0 on a missing file");
+    }
+
+    /// End-to-end rotation ↔ tail: crossing the cap rotates the file, and the next
+    /// `read_since` sees `len < offset` and resets (commit 1 ↔ commit 2 seam).
+    #[test]
+    fn rotation_then_read_since_resets() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("log.jsonl");
+        for _ in 0..6 {
+            append(&log, &sample_entry()).unwrap();
+        }
+        let mut offset = 0u64;
+        let _ = read_since(&log, &mut offset).unwrap();
+        assert!(offset > 0);
+
+        // Rotate over a tiny injected cap, then recreate a fresh, smaller log.
+        rotate_if_oversized_with_max(&log, 100);
+        assert!(dir.path().join("log.jsonl.1").exists());
+        append(&log, &sample_entry()).unwrap();
+
+        let (entries, reset) = read_since(&log, &mut offset).unwrap();
+        assert!(reset, "post-rotation file is shorter → reset");
+        assert_eq!(entries.len(), 1, "view replaced with post-rotation entries");
     }
 }
