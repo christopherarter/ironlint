@@ -1,4 +1,5 @@
 use crate::cli::OutputFormat;
+use crate::commands::error_report::emit_error;
 use anyhow::{Context, Result};
 use ironlint_core::runner::{
     CheckExplain, CheckInput, CheckOptions, ExplainOutcome, IronLintEngine,
@@ -31,8 +32,7 @@ pub(crate) fn shell_available(cmd: &str) -> bool {
 /// Message printed (to stderr) and exit-1'd at the top of `check::run` when no
 /// POSIX shell is on PATH. Exit 1 (config tier), NOT 3 — 3 is InternalError,
 /// which adapters fail-open on; a missing shell must fail loud, never silent.
-const NO_SHELL_MSG: &str =
-    "error: no POSIX shell (`sh`) found on PATH. IronLint runs checks via `sh -c`\
+const NO_SHELL_MSG: &str = "no POSIX shell (`sh`) found on PATH. IronLint runs checks via `sh -c`\
      \nand cannot enforce anything without it. On Windows, run IronLint inside \
      \nGit Bash or WSL. See docs/getting-started.md.";
 
@@ -53,23 +53,22 @@ pub fn run(
 ) -> Result<i32> {
     let config = match crate::commands::config::resolve_config(config) {
         Ok(p) => p,
-        Err(msg) => {
-            eprintln!("ERROR: {msg}");
-            return Ok(1);
-        }
+        Err(msg) => return Ok(emit_error(format, &msg, 1)),
     };
     let config = config.as_path();
     if force && checks.is_empty() {
-        eprintln!("ERROR: --force requires at least one --check <id>");
-        return Ok(1);
+        return Ok(emit_error(
+            format,
+            "--force requires at least one --check <id>",
+            1,
+        ));
     }
     // Fail loud when the POSIX shell the engine spawns is absent (stock
     // Windows). Without `sh` every check fails to spawn → exit 3 → adapters
     // fail open → the user "enforces" nothing. We surface this as a config-tier
     // exit 1 (not 3) so nobody is fooled into thinking enforcement is active.
     if !shell_available(POSIX_SHELL) {
-        eprintln!("{NO_SHELL_MSG}");
-        return Ok(1);
+        return Ok(emit_error(format, NO_SHELL_MSG, 1));
     }
     // Trust gate: refuse an unblessed or tampered config/checks before the engine
     // loads or any check runs. This hashes the config + `.ironlint/gates/` now; a
@@ -87,12 +86,10 @@ pub fn run(
     match ironlint_core::trust::check_trust(config) {
         Ok(TrustOutcome::Trusted) => {}
         Ok(TrustOutcome::Untrusted(e)) => {
-            eprintln!("ERROR: {e:#}");
-            return Ok(4);
+            return Ok(emit_error(format, &format!("{e:#}"), 4));
         }
         Ok(TrustOutcome::Unverifiable(e)) | Err(e) => {
-            eprintln!("ERROR: {e:#}");
-            return Ok(1);
+            return Ok(emit_error(format, &format!("{e:#}"), 1));
         }
     }
     let options = CheckOptions {
@@ -103,12 +100,9 @@ pub fn run(
     };
     let mut engine = match IronLintEngine::builder().with_options(options).load(config) {
         Ok(e) => e,
-        Err(e) => {
-            eprintln!("ERROR: {:#}", e);
-            return Ok(1);
-        }
+        Err(e) => return Ok(emit_error(format, &format!("{e:#}"), 1)),
     };
-    if let Some(code) = validate_check_filter(&engine, &checks) {
+    if let Some(code) = validate_check_filter(&engine, &checks, format) {
         return Ok(code);
     }
     engine.set_check_filter(checks.into_iter().collect());
@@ -116,10 +110,11 @@ pub fn run(
     match (file, diff) {
         (Some(f), None) => run_file(&engine, f, content, format, explain, require_match),
         (None, Some(d)) => run_diff(&engine, &d, format, explain, require_match),
-        _ => {
-            eprintln!("ERROR: provide exactly one of --file or --diff");
-            Ok(1)
-        }
+        _ => Ok(emit_error(
+            format,
+            "provide exactly one of --file or --diff",
+            1,
+        )),
     }
 }
 
@@ -144,8 +139,7 @@ fn run_file(
         Err(e) => {
             // e.g. an external path resolving outside config_dir: an
             // argument/config error, so exit 1 (mirrors the load-error path).
-            eprintln!("ERROR: {e:#}");
-            return Ok(1);
+            return Ok(emit_error(format, &format!("{e:#}"), 1));
         }
     };
     if explain {
@@ -171,8 +165,7 @@ fn run_diff(
     let unified = std::fs::read_to_string(diff)?;
     let changed = ironlint_core::diff::parser::parse_unified(&unified)?;
     if changed.is_empty() {
-        eprintln!("ERROR: no changed files in diff");
-        return Ok(1);
+        return Ok(emit_error(format, "no changed files in diff", 1));
     }
     let non_deleted: Vec<_> = changed
         .iter()
@@ -224,8 +217,7 @@ fn run_diff(
         }) {
             Ok(r) => r,
             Err(e) => {
-                eprintln!("ERROR: {e:#}");
-                return Ok(1);
+                return Ok(emit_error(format, &format!("{e:#}"), 1));
             }
         };
         elapsed = elapsed.saturating_add(r.verdict.elapsed_ms);
@@ -289,7 +281,11 @@ fn read_changed_file(path: &Path) -> Result<String, SkipReason> {
     })
 }
 
-fn validate_check_filter(engine: &IronLintEngine, checks: &[String]) -> Option<i32> {
+fn validate_check_filter(
+    engine: &IronLintEngine,
+    checks: &[String],
+    format: OutputFormat,
+) -> Option<i32> {
     if checks.is_empty() {
         return None;
     }
@@ -302,8 +298,11 @@ fn validate_check_filter(engine: &IronLintEngine, checks: &[String]) -> Option<i
     if unknown.is_empty() {
         None
     } else {
-        eprintln!("ERROR: unknown check id(s): {}", unknown.join(", "));
-        Some(1)
+        Some(emit_error(
+            format,
+            &format!("unknown check id(s): {}", unknown.join(", ")),
+            1,
+        ))
     }
 }
 

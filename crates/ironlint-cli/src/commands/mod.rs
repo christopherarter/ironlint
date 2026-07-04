@@ -1,6 +1,7 @@
 pub mod check;
 pub mod config;
 pub mod doctor;
+pub mod error_report;
 pub mod explain;
 pub mod init;
 pub mod schema;

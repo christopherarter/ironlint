@@ -76,6 +76,8 @@ pub enum Command {
     Validate {
         #[arg(long, default_value = ".ironlint.yml")]
         config: PathBuf,
+        #[arg(long, default_value = "human")]
+        format: OutputFormat,
     },
     /// Detect stack and scaffold a starter .ironlint.yml, then wire ironlint's hook
     /// into your coding agents.

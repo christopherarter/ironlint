@@ -49,7 +49,7 @@ fn main() -> Result<()> {
             require_match,
         )?,
         Command::Trust { config } => commands::trust::run(&config)?,
-        Command::Validate { config } => commands::validate::run(&config)?,
+        Command::Validate { config, format } => commands::validate::run(&config, format)?,
         Command::Init {
             dir,
             harnesses,
