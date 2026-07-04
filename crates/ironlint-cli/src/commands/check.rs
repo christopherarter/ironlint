@@ -143,7 +143,7 @@ fn run_file(
     if explain {
         print_explain(&report.explain);
     }
-    emit(&report.verdict, format, require_match)?;
+    emit(&report.verdict, format)?;
     Ok(exit_code(&report.verdict, require_match))
 }
 
@@ -175,7 +175,7 @@ fn run_diff(
     if engine.event() == "pre-commit" {
         let paths: Vec<PathBuf> = non_deleted.iter().map(|f| f.path.clone()).collect();
         let verdict = engine.check_set(&paths)?;
-        emit(&verdict, format, require_match)?;
+        emit(&verdict, format)?;
         return Ok(exit_code(&verdict, require_match));
     }
 
@@ -230,7 +230,7 @@ fn run_diff(
     if explain {
         print_explain(&explains);
     }
-    emit(&verdict, format, require_match)?;
+    emit(&verdict, format)?;
     Ok(exit_code(&verdict, require_match))
 }
 
@@ -323,8 +323,7 @@ fn exit_code(v: &Verdict, require_match: bool) -> i32 {
     }
 }
 
-#[allow(unused_variables)]
-fn emit(v: &Verdict, format: OutputFormat, require_match: bool) -> Result<()> {
+fn emit(v: &Verdict, format: OutputFormat) -> Result<()> {
     let no_match = v.status == Status::Pass
         && v.passed.is_empty()
         && v.blocks.is_empty()
