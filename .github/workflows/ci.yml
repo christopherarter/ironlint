@@ -151,17 +151,19 @@ jobs:
   # MSRV enforcement (readiness review S6 / Task 3.7): builds and tests on
   # exactly the floor declared in `[workspace.package] rust-version` so a
   # `cargo install`-from-source break is CI-caught, not user-discovered.
-  # 1.87 is the real floor: gate.rs uses `u32::cast_signed()`, stabilized in
-  # that release. Verified locally: `cargo +1.87.0 build --locked --workspace`.
+  # Floor raised 1.87 -> 1.88: transitive deps (darling 0.23, image 0.25,
+  # instability 0.3, homedir 0.3, via ratatui/axoupdater/serde tooling) now
+  # require rustc 1.88, so the graph is unbuildable on 1.87. gate.rs's
+  # `u32::cast_signed()` (stabilized 1.87) is comfortably below the new floor.
   msrv:
-    name: msrv (1.87)
+    name: msrv (1.88)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
 
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30  # stable (branch)
         with:
-          toolchain: "1.87"
+          toolchain: "1.88"
 
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32  # v2
         with:

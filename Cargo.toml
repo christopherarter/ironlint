@@ -7,12 +7,13 @@ version = "0.8.0"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/christopherarter/ironlint"
-# MSRV floor (readiness review S6 / Task 3.7). gate.rs uses
-# `u32::cast_signed()`, stabilized in Rust 1.87 — that's the in-house floor;
-# nothing else in the workspace or its dependency tree needs newer. Verified
-# locally: `cargo +1.87.0 build --locked --workspace` succeeds. CI enforces
-# this via a dedicated MSRV leg (see .github/workflows/ci.yml).
-rust-version = "1.87"
+# MSRV floor (readiness review S6 / Task 3.7). In-house code needs only 1.87
+# (gate.rs `u32::cast_signed()`), but the dependency tree raises the effective
+# floor to 1.88: darling 0.23, image 0.25, instability 0.3, and homedir 0.3
+# (pulled via ratatui/axoupdater/serde tooling) all require rustc 1.88, so the
+# locked graph is unbuildable on 1.87. CI enforces this via a dedicated MSRV
+# leg (see .github/workflows/ci.yml).
+rust-version = "1.88"
 
 # Config for 'dist'
 [workspace.metadata.dist]
@@ -30,6 +31,13 @@ pr-run-mode = "plan"
 install-path = "CARGO_HOME"
 # Whether to install an updater program
 install-updater = false
+# release.yml is hand-hardened beyond dist's template (the per-job `permissions:`
+# scoping — see the github-action-commits note below — which dist has no config
+# knob for), so it permanently diverges from `dist generate` output. Tell dist's
+# plan-time consistency check to accept the hand-edited CI file rather than
+# failing the release on it. Without this the `plan` job errors "run 'dist init'
+# to update the file". Task 3.6 hardening companion.
+allow-dirty = ["ci"]
 # Supply-chain hardening (Task 3.6 / readiness review S4): pin the
 # third-party GitHub Actions dist emits into release.yml to immutable
 # commit SHAs instead of the mutable version tags it defaults to. This is
