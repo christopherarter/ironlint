@@ -97,14 +97,27 @@ fn classify_run_result(result: AxoupdateResult<Option<UpdateResult>>) -> Outcome
     }
 }
 
+/// Appended to a successful-update message. A newer binary can embed newer hook
+/// artifacts than the copies already materialized into the user's coding agents,
+/// and `update` deliberately touches only the binary — so nudge them to
+/// re-materialize the hooks. `ironlint init --hook-only` re-wires hooks
+/// idempotently without rescaffolding the config.
+const REFRESH_HINT: &str =
+    "  hooks may be newer in this build — refresh them: ironlint init --hook-only";
+
 /// Turn an `Outcome` into a user-facing message and exit code. Pure.
 fn render(outcome: &Outcome) -> (String, i32) {
     match outcome {
         Outcome::Updated {
             old: Some(old),
             new,
-        } => (format!("updated ironlint v{old} → v{new}"), 0),
-        Outcome::Updated { old: None, new } => (format!("updated ironlint to v{new}"), 0),
+        } => (
+            format!("updated ironlint v{old} → v{new}\n{REFRESH_HINT}"),
+            0,
+        ),
+        Outcome::Updated { old: None, new } => {
+            (format!("updated ironlint to v{new}\n{REFRESH_HINT}"), 0)
+        }
         Outcome::AlreadyCurrent => (
             format!(
                 "ironlint is already up to date (v{}).",
@@ -146,6 +159,9 @@ mod tests {
             msg.contains("v0.3.0") && msg.contains("v0.4.0") && msg.contains('→'),
             "{msg}"
         );
+        // A fresh binary may ship newer hooks; the update output must nudge the
+        // user to re-materialize them via the existing hook-only init path.
+        assert!(msg.contains("ironlint init --hook-only"), "{msg}");
     }
 
     #[test]
@@ -156,6 +172,7 @@ mod tests {
         });
         assert_eq!(code, 0);
         assert!(msg.contains("v0.4.0") && !msg.contains('→'), "{msg}");
+        assert!(msg.contains("ironlint init --hook-only"), "{msg}");
     }
 
     #[test]
@@ -164,6 +181,8 @@ mod tests {
         assert_eq!(code, 0);
         assert!(msg.contains("up to date"), "{msg}");
         assert!(msg.contains(env!("CARGO_PKG_VERSION")), "{msg}");
+        // Nothing changed, so there's nothing to refresh — no hook hint.
+        assert!(!msg.contains("hook-only"), "{msg}");
     }
 
     #[test]
@@ -187,6 +206,8 @@ mod tests {
         });
         assert_eq!(code, 1);
         assert!(msg.contains("network unreachable"), "{msg}");
+        // A failed update leaves the binary as-is — no hook refresh to suggest.
+        assert!(!msg.contains("hook-only"), "{msg}");
     }
 
     #[test]
