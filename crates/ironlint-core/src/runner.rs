@@ -462,7 +462,7 @@ fn unique_tmp_name(ext: Option<&str>) -> String {
 /// well under this 1h threshold — a check configured with an hours-long
 /// timeout would put its own still-live tmpfile at risk of being swept as a
 /// leak.
-const TMPFILE_SWEEP_MAX_AGE: Duration = Duration::from_secs(60 * 60);
+const TMPFILE_SWEEP_MAX_AGE: Duration = Duration::from_hours(1);
 
 /// Best-effort reclaim of `$IRONLINT_TMPFILE` leaks in `root`'s immediate
 /// directory: removes only files whose name starts with `TMPFILE_PREFIX` and
@@ -1756,7 +1756,7 @@ mod gate_dispatch_tests {
         std::fs::write(&unrelated, "keep me").unwrap();
         backdate_mtime(&unrelated, 2 * 60 * 60);
 
-        sweep_stale_tmpfiles(dir.path(), Duration::from_secs(60 * 60));
+        sweep_stale_tmpfiles(dir.path(), Duration::from_hours(1));
 
         assert!(!stale.exists(), "stale ironlint-tmp-* file must be swept");
         assert!(
@@ -1790,7 +1790,7 @@ mod gate_dispatch_tests {
         // Best-effort: a root that doesn't exist (or vanished) must not panic.
         let dir = TempDir::new().unwrap();
         let missing = dir.path().join("does-not-exist");
-        sweep_stale_tmpfiles(&missing, Duration::from_secs(60 * 60));
+        sweep_stale_tmpfiles(&missing, Duration::from_hours(1));
     }
 
     #[test]
