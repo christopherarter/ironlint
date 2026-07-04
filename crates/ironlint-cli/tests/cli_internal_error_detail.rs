@@ -5,12 +5,15 @@ use std::fs;
 use tempfile::tempdir;
 
 #[test]
-fn internal_error_renders_detail_with_run_and_timeout() {
+fn internal_error_detail_names_the_run_command() {
     let tmp = tempdir().unwrap();
     let cfg = tmp.path().join(".ironlint.yml");
     // A check whose `run` references a command that won't be found -> not_found
-    // internal error. Short timeout to exercise the timeout path is racy; this
-    // test asserts the not_found detail shape, which is deterministic.
+    // internal error. Exercises the `detail_for` non-timeout arm, which renders
+    // "<reason> running: <cmd>". The timeout arm is unit-tested in core
+    // (`detail_for` formats "timeout after Ns"); a CLI timeout case is racy
+    // (timing-dependent), so this test sticks to the deterministic not_found
+    // path and asserts the run command appears in the rendered detail.
     fs::write(
         &cfg,
         "checks:\n  boom:\n    files: [\"*.py\"]\n    run: \"definitely-not-a-real-cmd-xyz\"\n",

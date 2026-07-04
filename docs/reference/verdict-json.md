@@ -94,7 +94,7 @@ Adapters fail-open on `3` by default; opt into fail-closed with `IRONLINT_FAIL_C
 
 ## Versioning
 
-`schema_version` is `6` and bumps only on a breaking change — a field removal or rename, a type change, an enum-variant removal, or a re-interpretation of an existing field. Additive changes (a new optional field, a new enum variant) do not bump it.
+`schema_version` is `6` and bumps only on a breaking change — a field removal or rename, a type change, an enum-variant removal, or a re-interpretation of an existing field. Additive changes (a new optional field, a new enum variant) do not bump it. The v5→v6 bump for `GateError.detail` is a deliberate exception to that rule: `detail` is additive and nullable, but the readiness review flagged internal-error opacity as a contract gap consumers should be able to detect, so the bump signals "you may now rely on a remediation string being present (possibly `null`)." Future additive changes resume the no-bump default.
 
 Consumers should range-check (`schema_version >= 6`) rather than hard-code `== 6`, so a future additive bump doesn't break them.
 
