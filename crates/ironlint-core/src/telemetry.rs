@@ -20,6 +20,10 @@ use std::path::Path;
 /// number of files in the checked set).
 pub const SCHEMA_VERSION: u32 = 5;
 
+/// Rotate the log once it grows past this many bytes (10 MiB). Keeps exactly
+/// one old copy (`log.jsonl.1`); the next append recreates a fresh `log.jsonl`.
+const MAX_LOG_BYTES: u64 = 10 * 1024 * 1024;
+
 /// Per-check outcome line carried inside a [`LogEntry::Check`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PerCheckRecord {
@@ -89,7 +93,35 @@ pub fn append(path: &Path, entry: &LogEntry) -> Result<()> {
     #[cfg(not(unix))]
     file.write_all(line.as_bytes())?;
 
+    // Write-first, rotate-after (design §4): the entry is durably on disk before
+    // any rename, so a rotation failure can never lose the just-appended line.
+    rotate_if_oversized_with_max(path, MAX_LOG_BYTES);
+
     Ok(())
+}
+
+/// Rotate `path` → `path.1` when it exceeds `max` bytes, keeping one old copy.
+///
+/// Best-effort and called AFTER the entry is durably written (write-first
+/// ordering, design §4): any failure here leaves the just-appended entry intact
+/// and rotation simply retries on the next append. Errors are swallowed — a
+/// telemetry rotation must never break a check run. `rename` overwrites an
+/// existing `.1`, so at most one archived generation is kept.
+///
+/// The cap is a parameter so tests can drive rotation with a tiny threshold
+/// deterministically; the public [`append`] path always passes [`MAX_LOG_BYTES`].
+fn rotate_if_oversized_with_max(path: &Path, max: u64) {
+    let Ok(meta) = std::fs::metadata(path) else {
+        // No file / unstattable → nothing to rotate.
+        return;
+    };
+    if meta.len() <= max {
+        return;
+    }
+    // Append `.1` to the FULL path (filename-agnostic): `…/log.jsonl` → `…/log.jsonl.1`.
+    let mut rotated = path.as_os_str().to_os_string();
+    rotated.push(".1");
+    let _ = std::fs::rename(path, rotated);
 }
 
 /// Parse raw JSONL text into entries and dropped lines.
@@ -273,5 +305,116 @@ mod tests {
         let log = dir.path().join("nonexistent.jsonl");
         let result = read_all_quiet(&log).unwrap();
         assert!(result.is_empty());
+    }
+
+    /// One `LogEntry::Check` for size-driving tests.
+    fn sample_entry() -> LogEntry {
+        LogEntry::Check {
+            ts: "2026-07-04T00:00:00Z".into(),
+            file: Some("foo.rs".into()),
+            set_size: None,
+            event: "write".into(),
+            status: Status::Pass,
+            elapsed_ms: 1,
+            checks: vec![],
+        }
+    }
+
+    /// Crossing an injected cap rotates `log.jsonl` → `log.jsonl.1`; the archived
+    /// copy holds the pre-rotation entries and the next append recreates a small
+    /// fresh `log.jsonl`. Drives rotation with a tiny cap so it stays fast.
+    #[test]
+    fn rotates_at_injected_cap_and_keeps_one_archive() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("log.jsonl");
+        let rotated = dir.path().join("log.jsonl.1");
+        let cap = 200u64;
+
+        // Append until the file comfortably exceeds the tiny cap.
+        for _ in 0..10 {
+            append(&log, &sample_entry()).unwrap();
+        }
+        let before = std::fs::metadata(&log).unwrap().len();
+        assert!(before > cap, "precondition: log must exceed the cap");
+        let n_entries = read_all(&log).unwrap().len();
+
+        // Rotate with the injected cap.
+        rotate_if_oversized_with_max(&log, cap);
+
+        assert!(rotated.exists(), "rotation must create the .1 archive");
+        assert!(
+            !log.exists(),
+            "current log is renamed away until the next append"
+        );
+        assert_eq!(
+            read_all(&rotated).unwrap().len(),
+            n_entries,
+            "archive holds every pre-rotation entry"
+        );
+
+        // The next append recreates a small, fresh current log.
+        append(&log, &sample_entry()).unwrap();
+        assert!(log.exists());
+        assert_eq!(
+            read_all(&log).unwrap().len(),
+            1,
+            "fresh log holds only the post-rotation entry"
+        );
+        assert!(
+            std::fs::metadata(&log).unwrap().len() < before,
+            "fresh log is smaller than the rotated one"
+        );
+        assert!(
+            rotated.exists(),
+            "archive is preserved after the fresh append"
+        );
+    }
+
+    /// Under the cap, no rotation happens and no `.1` archive is created (control).
+    #[test]
+    fn does_not_rotate_under_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("log.jsonl");
+        let rotated = dir.path().join("log.jsonl.1");
+
+        append(&log, &sample_entry()).unwrap();
+        // A cap far above one entry: nothing to rotate.
+        rotate_if_oversized_with_max(&log, MAX_LOG_BYTES);
+
+        assert!(log.exists(), "log stays in place under the cap");
+        assert!(!rotated.exists(), "no archive is created under the cap");
+        assert_eq!(read_all(&log).unwrap().len(), 1);
+    }
+
+    /// A second rotation overwrites the first `.1` — exactly one archive is kept.
+    #[test]
+    fn second_rotation_overwrites_prior_archive() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("log.jsonl");
+        let rotated = dir.path().join("log.jsonl.1");
+
+        // First generation → rotate → recreate.
+        append(&log, &sample_entry()).unwrap();
+        rotate_if_oversized_with_max(&log, 0);
+        assert!(rotated.exists());
+        // Second generation with two entries → rotate again over the tiny cap.
+        append(&log, &sample_entry()).unwrap();
+        append(&log, &sample_entry()).unwrap();
+        rotate_if_oversized_with_max(&log, 0);
+
+        assert_eq!(
+            read_all(&rotated).unwrap().len(),
+            2,
+            "the .1 archive reflects only the most recent rotation"
+        );
+    }
+
+    /// Rotation is best-effort: a missing file is a no-op (no panic, no `.1`).
+    #[test]
+    fn rotate_missing_file_is_noop() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("absent.jsonl");
+        rotate_if_oversized_with_max(&log, 0);
+        assert!(!dir.path().join("absent.jsonl.1").exists());
     }
 }
