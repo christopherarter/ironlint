@@ -16,7 +16,7 @@ pub fn resolve(root: &Path) -> Result<Config> {
 fn resolve_inner(path: &Path, seen: &mut HashSet<PathBuf>) -> Result<Config> {
     let canonical = path
         .canonicalize()
-        .with_context(|| format!("canonicalizing {}", path.display()))?;
+        .with_context(|| format!("resolving {}", path.display()))?;
     if !seen.insert(canonical.clone()) {
         return Err(anyhow!("extends cycle detected at {}", canonical.display()));
     }
@@ -57,7 +57,7 @@ fn collect_paths(
 ) -> Result<()> {
     let canonical = path
         .canonicalize()
-        .with_context(|| format!("canonicalizing {}", path.display()))?;
+        .with_context(|| format!("resolving {}", path.display()))?;
     if !on_path.insert(canonical.clone()) {
         return Err(anyhow!("extends cycle detected at {}", canonical.display()));
     }
@@ -103,7 +103,7 @@ fn resolve_inner_with_origin(
 ) -> Result<Config> {
     let canonical = path
         .canonicalize()
-        .with_context(|| format!("canonicalizing {}", path.display()))?;
+        .with_context(|| format!("resolving {}", path.display()))?;
     if !seen.insert(canonical.clone()) {
         return Err(anyhow!("extends cycle detected at {}", canonical.display()));
     }

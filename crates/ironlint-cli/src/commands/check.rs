@@ -51,6 +51,14 @@ pub fn run(
     force: bool,
     require_match: bool,
 ) -> Result<i32> {
+    let config = match crate::commands::config::resolve_config(config) {
+        Ok(p) => p,
+        Err(msg) => {
+            eprintln!("ERROR: {msg}");
+            return Ok(1);
+        }
+    };
+    let config = config.as_path();
     if force && checks.is_empty() {
         eprintln!("ERROR: --force requires at least one --check <id>");
         return Ok(1);

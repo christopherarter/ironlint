@@ -1,4 +1,5 @@
 pub mod check;
+pub mod config;
 pub mod doctor;
 pub mod explain;
 pub mod init;
