@@ -88,7 +88,7 @@ fn show_resolved_config_missing_config_exits_one() {
     assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.starts_with("ERROR: "),
-        "stderr must lead with ERROR: prefix: {stderr}"
+        stderr.starts_with("error: "),
+        "stderr must lead with error: prefix: {stderr}"
     );
 }

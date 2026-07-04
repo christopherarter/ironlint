@@ -33,14 +33,14 @@ pub fn run(file: &Path, format: OutputFormat, config: &Path) -> Result<i32> {
     let config = match crate::commands::config::resolve_config(config) {
         Ok(p) => p,
         Err(msg) => {
-            eprintln!("ERROR: {msg}");
+            eprintln!("error: {msg}");
             return Ok(1);
         }
     };
     let engine = match IronLintEngine::load(&config) {
         Ok(e) => e,
         Err(e) => {
-            eprintln!("ERROR: {:#}", e);
+            eprintln!("error: {:#}", e);
             return Ok(1);
         }
     };

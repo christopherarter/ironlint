@@ -24,14 +24,14 @@ pub fn run(config: &Path, format: ShowFormat) -> Result<i32> {
     let config = match crate::commands::config::resolve_config(config) {
         Ok(p) => p,
         Err(msg) => {
-            eprintln!("ERROR: {msg}");
+            eprintln!("error: {msg}");
             return Ok(1);
         }
     };
     let (cfg, origins) = match ironlint_core::config::extends::resolve_with_origin(&config) {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("ERROR: {:#}", e);
+            eprintln!("error: {:#}", e);
             return Ok(1);
         }
     };

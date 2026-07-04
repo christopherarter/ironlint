@@ -68,13 +68,13 @@ if [[ -z "${FILE}" ]]; then
   exit 0
 fi
 
-# R3: short-circuit on edits to the policy file itself. The on-disk sha will
-# not match `trust:` while the user is mid-edit; any `ironlint` invocation
-# would fail the trust gate and surface a misleading "internal error" to the
-# user. Match by basename so the skip works for both relative and absolute
-# paths Claude Code may send.
+# Short-circuit on edits to the policy file itself: the on-disk hash won't
+# match the trusted store while the user is mid-edit, so any `ironlint`
+# invocation would fail the trust gate and surface a misleading "internal
+# error" to the user. Match by basename so the skip works for both relative
+# and absolute paths Claude Code may send.
 BASENAME="${FILE##*/}"
-if [[ "${BASENAME}" == ".ironlint.yml" || "${BASENAME}" == ".bully.yml" ]]; then
+if [[ "${BASENAME}" == ".ironlint.yml" ]]; then
   exit 0
 fi
 

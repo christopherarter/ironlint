@@ -103,7 +103,7 @@ fn explain_missing_config_exits_one() {
     assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("ERROR"),
-        "missing config must surface a stderr ERROR: {stderr}"
+        stderr.contains("error:"),
+        "missing config must surface a stderr error: {stderr}"
     );
 }
