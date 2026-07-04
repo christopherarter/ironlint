@@ -9,7 +9,7 @@ use ironlint_core::verdict::{Status, Verdict};
 use std::collections::HashSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 /// The POSIX shell the engine spawns checks through (`engine/gate.rs`).
 pub(crate) const POSIX_SHELL: &str = "sh";
@@ -24,6 +24,28 @@ pub(crate) fn shell_available(cmd: &str) -> bool {
     Command::new(cmd)
         .arg("-c")
         .arg("exit 0")
+        .status()
+        .map(|_| true)
+        .unwrap_or(false)
+}
+
+/// Probes whether `name` is a runnable binary on PATH by spawning
+/// `name --version` with every stdio stream nulled — so its version banner
+/// never leaks to the caller's terminal and it can never block reading stdin.
+/// Returns `false` on `ErrorKind::NotFound` or any other spawn failure; the
+/// process's own exit code is irrelevant (a binary that runs at all is
+/// "present"). `--version` is a universal, side-effect-free flag that `jq`,
+/// `python3`, and `sh` all exit from without reading stdin.
+///
+/// `doctor` calls this to surface the JSON-hook adapters' runtime deps
+/// (`jq`, `python3`): if either is absent the hook fails OPEN and every edit
+/// is silently un-gated. Kept simple to stay under the cognitive-complexity cap.
+pub(crate) fn binary_available(name: &str) -> bool {
+    Command::new(name)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status()
         .map(|_| true)
         .unwrap_or(false)
@@ -405,5 +427,18 @@ mod tests {
         // On a Unix dev/CI machine `sh` is always present; this documents the
         // happy path and guards against a regression that breaks the probe.
         assert!(shell_available("sh"));
+    }
+
+    #[test]
+    fn binary_available_false_for_nonexistent_command() {
+        assert!(!binary_available(NO_SUCH_SHELL));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn binary_available_true_for_sh_on_unix() {
+        // `sh` is always present on a Unix dev/CI box; the generic PATH probe
+        // must resolve it regardless of what `sh --version` prints or exits.
+        assert!(binary_available("sh"));
     }
 }

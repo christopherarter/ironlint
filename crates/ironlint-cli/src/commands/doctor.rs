@@ -25,7 +25,9 @@
 use crate::cli::OutputFormat;
 use crate::commands::check;
 use anyhow::Result;
-use ironlint_core::adapter::{all_harnesses, status, AdapterEnv, HarnessStatus, Scope};
+use ironlint_core::adapter::{
+    all_harnesses, status, AdapterEnv, HarnessKind, HarnessStatus, Scope,
+};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
@@ -69,16 +71,7 @@ pub fn run(dir: &Path, format: OutputFormat) -> Result<i32> {
         shell_row(),
         trust_row(&ctx),
     ];
-    // The hooks summary row comes after the per-harness rows so a healthy
-    // install reads: each adapter `ok`, then `hooks — N wired`.
-    let adapter_rows = if let Ok(env) = AdapterEnv::from_process(dir.to_path_buf()) {
-        check_adapters(&env)
-    } else {
-        Vec::new()
-    };
-    let hooks = hooks_row(&adapter_rows);
-    checks.extend(adapter_rows);
-    checks.push(hooks);
+    checks.extend(adapter_section(dir));
     let report = Report {
         ironlint_version: env!("CARGO_PKG_VERSION").to_string(),
         checks,
@@ -392,6 +385,102 @@ fn check_adapters(env: &AdapterEnv) -> Vec<CheckResult> {
         .filter_map(|h| status(h, env, Scope::Local).ok())
         .filter_map(|s| adapter_check(&s))
         .collect()
+}
+
+/// The adapter block of the report: per-harness rows, the `hook deps` row (only
+/// when a JSON-hook adapter is wired), and the always-present `hooks` summary.
+/// Ordering reads as: each adapter, then its runtime deps, then the summary.
+/// When the adapter environment can't be resolved, no adapter is detectable,
+/// so only the (warning) hooks summary over an empty set is emitted.
+fn adapter_section(dir: &Path) -> Vec<CheckResult> {
+    let Ok(env) = AdapterEnv::from_process(dir.to_path_buf()) else {
+        return vec![hooks_row(&[])];
+    };
+    let adapter_rows = check_adapters(&env);
+    let hooks = hooks_row(&adapter_rows);
+    let mut section = adapter_rows;
+    if let Some(deps) = hook_deps_row(&env) {
+        section.push(deps);
+    }
+    section.push(hooks);
+    section
+}
+
+/// True when at least one JSON-hook adapter (claude-code / codex) is installed
+/// or registered on this machine. Those hooks shell out to `jq` and `python3`;
+/// the TS-plugin harnesses (pi / opencode) don't, so they're excluded. A merely
+/// *detected* harness (ironlint hook not wired in) doesn't count — the hook
+/// can't fire, so its deps aren't yet relevant.
+fn json_hook_adapter_wired(env: &AdapterEnv) -> bool {
+    all_harnesses()
+        .iter()
+        .filter(|h| matches!(h.kind, HarnessKind::JsonHook(_)))
+        .filter_map(|h| status(h, env, Scope::Local).ok())
+        .any(|s| s.installed || s.registered)
+}
+
+/// Pure decision for the `hook deps` row, split from PATH probing so it's
+/// unit-testable without depending on what's installed on the test machine.
+/// - not wired → `None` (no JSON-hook adapter → jq/python3 irrelevant, no row)
+/// - wired, both present → `Some(Pass, [])`
+/// - wired, any missing → `Some(Fail, [missing names in a stable order])`
+fn hook_deps_verdict(
+    wired: bool,
+    jq_present: bool,
+    python3_present: bool,
+) -> Option<(Status, Vec<&'static str>)> {
+    if !wired {
+        return None;
+    }
+    let mut missing: Vec<&'static str> = Vec::new();
+    if !jq_present {
+        missing.push("jq");
+    }
+    if !python3_present {
+        missing.push("python3");
+    }
+    let status = if missing.is_empty() {
+        Status::Pass
+    } else {
+        Status::Fail
+    };
+    Some((status, missing))
+}
+
+/// Render the pure [`hook_deps_verdict`] decision into a `CheckResult`. A Fail
+/// names the missing binaries and spells out the consequence: a missing dep
+/// makes the JSON-hook adapters fail OPEN, silently un-gating every edit.
+fn build_hook_deps_result((status, missing): (Status, Vec<&'static str>)) -> CheckResult {
+    if status == Status::Pass {
+        return CheckResult {
+            name: "hook deps",
+            status: Status::Pass,
+            detail: "`jq` and `python3` found on PATH".into(),
+            remediation: None,
+        };
+    }
+    let pronoun = if missing.len() > 1 { "them" } else { "it" };
+    CheckResult {
+        name: "hook deps",
+        status: Status::Fail,
+        detail: format!("missing on PATH: {}", missing.join(", ")),
+        remediation: Some(format!(
+            "install {} — the claude-code/codex hook needs {pronoun} or it fails open \
+             (every edit is silently un-gated)",
+            missing.join(" and "),
+        )),
+    }
+}
+
+/// The `hook deps` row: probe `jq`/`python3` on PATH, but only when a JSON-hook
+/// adapter is actually wired (otherwise the deps are irrelevant → `None`).
+fn hook_deps_row(env: &AdapterEnv) -> Option<CheckResult> {
+    let verdict = hook_deps_verdict(
+        json_hook_adapter_wired(env),
+        check::binary_available("jq"),
+        check::binary_available("python3"),
+    )?;
+    Some(build_hook_deps_result(verdict))
 }
 
 #[cfg(test)]
@@ -708,5 +797,116 @@ mod tests {
             "detail must count only wired rows: {}",
             r.detail
         );
+    }
+
+    // --- Task 5.23 Part 2: hook-dependency (jq/python3) probe -------------
+
+    #[test]
+    fn hook_deps_omitted_when_no_json_hook_adapter() {
+        // No JSON-hook adapter wired → jq/python3 irrelevant → no row at all,
+        // regardless of what happens to be on PATH.
+        assert!(hook_deps_verdict(false, true, true).is_none());
+        assert!(hook_deps_verdict(false, false, false).is_none());
+    }
+
+    #[test]
+    fn hook_deps_pass_when_both_present() {
+        let (status, missing) = hook_deps_verdict(true, true, true).expect("wired → a row");
+        assert_eq!(status, Status::Pass);
+        assert!(missing.is_empty(), "nothing missing: {missing:?}");
+    }
+
+    #[test]
+    fn hook_deps_fail_names_missing_jq() {
+        let (status, missing) = hook_deps_verdict(true, false, true).expect("wired → a row");
+        assert_eq!(status, Status::Fail);
+        assert_eq!(missing, vec!["jq"]);
+    }
+
+    #[test]
+    fn hook_deps_fail_names_missing_python3() {
+        let (status, missing) = hook_deps_verdict(true, true, false).expect("wired → a row");
+        assert_eq!(status, Status::Fail);
+        assert_eq!(missing, vec!["python3"]);
+    }
+
+    #[test]
+    fn hook_deps_fail_names_both_when_both_missing() {
+        let (status, missing) = hook_deps_verdict(true, false, false).expect("wired → a row");
+        assert_eq!(status, Status::Fail);
+        assert_eq!(missing, vec!["jq", "python3"]);
+    }
+
+    #[test]
+    fn hook_deps_result_fail_has_remediation_naming_missing() {
+        let r = build_hook_deps_result((Status::Fail, vec!["jq"]));
+        assert_eq!(r.name, "hook deps");
+        assert_eq!(r.status, Status::Fail);
+        assert!(
+            r.detail.contains("jq"),
+            "detail names the missing dep: {}",
+            r.detail
+        );
+        let rem = r.remediation.expect("fail row must remediate");
+        assert!(
+            rem.contains("jq"),
+            "remediation names the missing dep: {rem}"
+        );
+        assert!(
+            rem.contains("fails open"),
+            "remediation must explain the fail-open consequence: {rem}"
+        );
+    }
+
+    #[test]
+    fn hook_deps_result_pass_has_no_remediation() {
+        let r = build_hook_deps_result((Status::Pass, vec![]));
+        assert_eq!(r.name, "hook deps");
+        assert_eq!(r.status, Status::Pass);
+        assert!(r.remediation.is_none());
+    }
+
+    #[test]
+    fn json_hook_adapter_wired_false_on_clean_env() {
+        let tmp = tempfile::tempdir().unwrap();
+        let env = adapter_env(tmp.path());
+        assert!(!json_hook_adapter_wired(&env));
+    }
+
+    #[test]
+    fn json_hook_adapter_wired_true_when_codex_installed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let env = adapter_env(tmp.path());
+        let h = ironlint_core::adapter::all_harnesses()
+            .into_iter()
+            .find(|h| h.name == "codex")
+            .unwrap();
+        ironlint_core::adapter::install(&h, &env, ironlint_core::adapter::Scope::Local).unwrap();
+        assert!(json_hook_adapter_wired(&env));
+    }
+
+    #[test]
+    fn hook_deps_row_none_when_no_json_hook_adapter() {
+        // A clean env has no wired JSON-hook adapter → no deps row, even though
+        // jq/python3 may be present on the machine running the test.
+        let tmp = tempfile::tempdir().unwrap();
+        let env = adapter_env(tmp.path());
+        assert!(hook_deps_row(&env).is_none());
+    }
+
+    #[test]
+    fn hook_deps_row_present_when_json_hook_adapter_wired() {
+        // Installing a JSON-hook adapter makes the row fire. The Pass/Fail
+        // status depends on whether the machine has jq/python3, but a row is
+        // ALWAYS produced once wired — that Some/None split is machine-agnostic.
+        let tmp = tempfile::tempdir().unwrap();
+        let env = adapter_env(tmp.path());
+        let h = ironlint_core::adapter::all_harnesses()
+            .into_iter()
+            .find(|h| h.name == "codex")
+            .unwrap();
+        ironlint_core::adapter::install(&h, &env, ironlint_core::adapter::Scope::Local).unwrap();
+        let r = hook_deps_row(&env).expect("wired adapter → a deps row");
+        assert_eq!(r.name, "hook deps");
     }
 }
