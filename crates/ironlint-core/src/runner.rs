@@ -1,5 +1,5 @@
 use crate::config::{Check, Config};
-use crate::engine::{run_gate, GateEnv, GateOutcome};
+use crate::engine::{run_gate, GateEnv, GateOutcome, InternalReason};
 use crate::telemetry::{LogEntry, PerCheckRecord};
 use crate::verdict::{Block, GateError, Status, Verdict};
 use anyhow::{Context, Result};
@@ -100,6 +100,7 @@ enum CheckStatus {
     Error {
         step: Option<String>,
         reason: String,
+        detail: Option<String>,
         elapsed: u64,
     },
 }
@@ -176,6 +177,7 @@ impl Collected {
             CheckStatus::Error {
                 step,
                 reason,
+                detail,
                 elapsed,
             } => {
                 self.errors.push(GateError {
@@ -183,6 +185,7 @@ impl Collected {
                     step: step.clone(),
                     file: file.map(|f| f.to_string()),
                     reason: reason.clone(),
+                    detail: detail.clone(),
                 });
                 self.records.push(PerCheckRecord {
                     check: check_id.to_string(),
@@ -804,6 +807,28 @@ impl IronLintEngine {
         Ok(Some(TmpFileGuard { path }))
     }
 
+    /// Build the human-readable `GateError.detail` string for an internal error:
+    /// names the (truncated) run command and, for timeouts, the effective
+    /// timeout that fired. One line.
+    fn detail_for(reason: &InternalReason, run: &str, timeout: Duration) -> String {
+        const MAX_RUN_LEN: usize = 80;
+        let run_trunc = if run.len() > MAX_RUN_LEN {
+            format!("{}…", &run[..MAX_RUN_LEN])
+        } else {
+            run.to_string()
+        };
+        match reason {
+            InternalReason::Timeout => {
+                format!(
+                    "timeout after {}s running: {}",
+                    timeout.as_secs(),
+                    run_trunc
+                )
+            }
+            _ => format!("{} running: {}", reason.as_str(), run_trunc),
+        }
+    }
+
     /// Execute a check's step pipeline against `env` with optional `content` on
     /// stdin. Fails fast on the first Block or Internal — never panics.
     fn run_steps(&self, check: &Check, env: &GateEnv, content: Option<&[u8]>) -> CheckStatus {
@@ -824,6 +849,7 @@ impl IronLintEngine {
                     return CheckStatus::Error {
                         step: step.name.clone(),
                         reason: reason.as_str(),
+                        detail: Some(Self::detail_for(&reason, &step.run, self.timeout)),
                         elapsed,
                     };
                 }
@@ -851,6 +877,7 @@ impl IronLintEngine {
                 return CheckStatus::Error {
                     step: Some("<tmpfile>".to_string()),
                     reason: format!("tmpfile_write_failed:{e}"),
+                    detail: None,
                     elapsed: 0,
                 }
             }

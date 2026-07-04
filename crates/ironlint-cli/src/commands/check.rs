@@ -356,6 +356,9 @@ fn emit(v: &Verdict, format: OutputFormat) -> Result<()> {
                     e.file.as_deref().unwrap_or(""),
                     e.reason
                 );
+                if let Some(d) = &e.detail {
+                    eprintln!("  {d}");
+                }
             }
             let line = match v.status {
                 Status::Pass if no_match => "pass (no checks matched)",

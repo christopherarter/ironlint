@@ -3,7 +3,7 @@ source: crates/ironlint-core/src/verdict.rs
 expression: verdict
 ---
 {
-  "schema_version": 5,
+  "schema_version": 6,
   "ironlint_version": "[version]",
   "status": "block",
   "blocks": [
@@ -19,7 +19,8 @@ expression: verdict
       "check": "flaky",
       "step": null,
       "file": "src/b.rs",
-      "reason": "not_found"
+      "reason": "not_found",
+      "detail": "not_found running: missing-cmd"
     }
   ],
   "passed": [

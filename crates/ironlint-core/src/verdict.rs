@@ -1,9 +1,11 @@
 use serde::{Deserialize, Serialize};
 
-/// Verdict JSON schema version. Bumped to 5 for the checks pipeline redesign:
-/// `Block.gate`→`check`, `GateError.gate`→`check`, both `file` fields
-/// are nullable, and `step: Option<String>` added to both.
-pub const SCHEMA_VERSION: u32 = 5;
+/// Verdict JSON schema version.
+///
+/// Bumped to 6 for `GateError.detail`: an internal-error verdict now carries a
+/// human-readable remediation string naming the effective timeout and the
+/// (truncated) run command that crashed.
+pub const SCHEMA_VERSION: u32 = 6;
 
 /// Floor schema version all current verdicts satisfy.
 pub const MIN_REQUIRED_SCHEMA_VERSION: u32 = 4;
@@ -54,6 +56,10 @@ pub struct GateError {
     pub file: Option<String>,
     /// Stable reason string from `InternalReason::as_str`.
     pub reason: String,
+    /// Human-readable remediation: names the run command (truncated) and, for
+    /// timeouts, the effective timeout that fired. `null` when no detail is
+    /// available (e.g. a synthetic error). Added in schema v6.
+    pub detail: Option<String>,
 }
 
 impl Verdict {
@@ -132,6 +138,7 @@ mod tests {
                 step: None,
                 file: Some("f".into()),
                 reason: "timeout".into(),
+                detail: None,
             }],
             vec![],
             0,
@@ -152,6 +159,7 @@ mod tests {
                 step: None,
                 file: Some("f".into()),
                 reason: "not_found".into(),
+                detail: None,
             }],
             vec![],
             0,
@@ -160,13 +168,13 @@ mod tests {
     }
 
     #[test]
-    fn schema_version_is_5() {
-        assert_eq!(SCHEMA_VERSION, 5);
+    fn schema_version_is_6() {
+        assert_eq!(SCHEMA_VERSION, 6);
     }
 
     /// Locks the full verdict-JSON wire shape: top-level keys, `Status`
     /// string casing, and `schema_version` (visible and literal — must show
-    /// `5`). Covers a block, an internal error, and a passed entry in one
+    /// `6`). Covers a block, an internal error, and a passed entry in one
     /// verdict so every array shape is exercised. `elapsed_ms` and
     /// `ironlint_version` are redacted — the former is caller-supplied
     /// timing, the latter tracks `CARGO_PKG_VERSION` and would break this
@@ -185,6 +193,7 @@ mod tests {
                 step: None,
                 file: Some("src/b.rs".into()),
                 reason: "not_found".into(),
+                detail: Some("not_found running: missing-cmd".into()),
             }],
             vec!["fmt".into()],
             1234,

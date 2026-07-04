@@ -4,7 +4,7 @@
 
 ```json
 {
-  "schema_version": 5,
+  "schema_version": 6,
   "ironlint_version": "0.4.0",
   "status": "block",
   "blocks": [
@@ -25,7 +25,7 @@
 
 | Field | Type | Notes |
 |-------|------|-------|
-| `schema_version` | integer | Currently `5`. See [Versioning](#versioning). |
+| `schema_version` | integer | Currently `6`. See [Versioning](#versioning). |
 | `ironlint_version` | string | Version of the binary that produced the verdict. |
 | `status` | enum | `pass`, `block`, or `internal_error`. |
 | `blocks` | array | One [Block](#block) per check that blocked. Empty on a clean pass. |
@@ -66,6 +66,7 @@ A check that failed to run to a verdict. (`GateError` is the type's name in the 
 | `step` | string \| null | The step name that crashed, when the check uses `steps:`. `null` otherwise. |
 | `file` | string \| null | Path it was checking. `null` for a `pre-commit` (run-once) check. |
 | `reason` | string | A stable reason string (see below). |
+| `detail` | string \| null | Human-readable remediation: names the run command (truncated to 80 characters) and, for timeouts, the effective timeout that fired. `null` when no detail is available (e.g. a synthetic error). Added in schema v6. |
 
 `reason` is one of:
 
@@ -93,9 +94,9 @@ Adapters fail-open on `3` by default; opt into fail-closed with `IRONLINT_FAIL_C
 
 ## Versioning
 
-`schema_version` is `5` and bumps only on a breaking change — a field removal or rename, a type change, an enum-variant removal, or a re-interpretation of an existing field. Additive changes (a new optional field, a new enum variant) do not bump it.
+`schema_version` is `6` and bumps only on a breaking change — a field removal or rename, a type change, an enum-variant removal, or a re-interpretation of an existing field. Additive changes (a new optional field, a new enum variant) do not bump it.
 
-Consumers should range-check (`schema_version >= 5`) rather than hard-code `== 5`, so a future additive bump doesn't break them.
+Consumers should range-check (`schema_version >= 6`) rather than hard-code `== 6`, so a future additive bump doesn't break them.
 
 ## See also
 
