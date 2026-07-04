@@ -1,16 +1,16 @@
 ---
 name: ironlint
-description: Interprets ironlint PostToolUse hook output after Edit/Write -- fixes the blocked edits it reports.
+description: Interprets ironlint PreToolUse hook output after Edit/Write -- fixes the blocked edits it reports.
 metadata:
   author: dynamik-dev
   version: 2.1.0
   category: workflow-automation
-  tags: [linting, hooks, code-quality, post-tool-use]
+  tags: [linting, hooks, code-quality, pre-tool-use]
 ---
 
 # Agentic Lint
 
-Interpret and act on ironlint PostToolUse hook output. Not user-invocable.
+Interpret and act on ironlint PreToolUse hook output. Not user-invocable.
 
 ## When blocked (hook exited 2)
 

@@ -6,7 +6,7 @@ An adapter wires IronLint into a coding agent so policy runs automatically on ev
 
 | Adapter | Agent | Wire it in | Under the hood |
 |---------|-------|------------|----------------|
-| [Claude Code](claude-code.md) | Claude Code | `ironlint init --harness claude-code` | `PostToolUse` hook in `.claude/settings.json` |
+| [Claude Code](claude-code.md) | Claude Code | `ironlint init --harness claude-code` | `PreToolUse` hook in `.claude/settings.local.json` (project-scoped, or `~/.claude/settings.json` with `--global`) |
 | [OpenCode](opencode.md) | OpenCode | `ironlint init --harness opencode` | plugin file in `.opencode/plugins/` (project-scoped) |
 | [Codex](../../adapters/codex/README.md) | OpenAI Codex | `ironlint init --harness codex` | `PreToolUse` hook in `.codex/hooks.json` (project-scoped, or `~/.codex/hooks.json` with `--global`) |
 | [pi](../../adapters/pi/README.md) | pi | `ironlint init --harness pi` | extension in `.pi/extensions/` |

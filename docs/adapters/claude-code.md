@@ -12,7 +12,7 @@ With the `ironlint` binary and `jq` on your `PATH`, one command wires the hook a
 ironlint init --harness claude-code
 ```
 
-This patches `<project>/.claude/settings.local.json` (or `~/.claude/settings.json` with `--global`) to register a `PreToolUse` hook matching `Edit|Write|MultiEdit|NotebookEdit`, and materializes the hook scripts to `~/.config/ironlint/adapters/claude-code/` with a `.ironlint-adapter.json` sidecar (per-file sha256 + version). A local (project-scope) install always targets `settings.local.json` — the personal, gitignored settings file Claude Code merges in — never the committable `settings.json`, so the machine-specific absolute hook path never lands in version control. A backup of the prior settings file is written as `<settings>.bak` on the first patch; re-runs are idempotent. Restart (or reload) Claude Code so it picks up the new hook, then verify:
+This patches `<project>/.claude/settings.local.json` (or `~/.claude/settings.json` with `--global`) to register a `PreToolUse` hook matching `Edit|Write|MultiEdit|NotebookEdit`, and materializes the hook scripts to `~/.config/ironlint/adapters/claude-code/` with a `.ironlint-adapter.json` sidecar (per-file sha256). A local (project-scope) install always targets `settings.local.json` — the personal, gitignored settings file Claude Code merges in — never the committable `settings.json`, so the machine-specific absolute hook path never lands in version control. A backup of the prior settings file is written as `<settings>.bak` on the first patch; re-runs are idempotent. Restart (or reload) Claude Code so it picks up the new hook, then verify:
 
 ```bash
 ironlint doctor
@@ -75,13 +75,13 @@ The plugin layout lives in this repo at `adapters/claude-code/`. For local devel
 ln -sf "$(pwd)/adapters/claude-code" ~/.claude/plugins/data/ironlint
 ```
 
-Once IronLint is published to the plugin marketplace you can skip the symlink and run `/plugin install ironlint` instead. The plugin registers the same `PostToolUse` check, so install it *or* run `ironlint init --harness claude-code` — not both.
+Once IronLint is published to the plugin marketplace you can skip the symlink and run `/plugin install ironlint` instead. The plugin registers the same `PreToolUse` check, so install it *or* run `ironlint init --harness claude-code` — not both.
 
 ## When edits aren't being gated
 
 If Claude edits a file and nothing happens, walk through these in order:
 
-1. Confirm the hook is where Claude Code expects it. For an `init` install, that's the `PostToolUse` entry in `.claude/settings.local.json` (or `~/.claude/settings.json` with `--global`) pointing at `~/.config/ironlint/adapters/claude-code/hook.sh`, and that file must be executable. For a plugin install, the hook resolves to `${CLAUDE_PLUGIN_ROOT}/hooks/hook.sh`. A `hook.sh: No such file or directory` means the install didn't land — re-run `ironlint init --harness claude-code` or re-create the plugin symlink.
+1. Confirm the hook is where Claude Code expects it. For an `init` install, that's the `PreToolUse` entry in `.claude/settings.local.json` (or `~/.claude/settings.json` with `--global`) pointing at `~/.config/ironlint/adapters/claude-code/hook.sh`, and that file must be executable. For a plugin install, the hook resolves to `${CLAUDE_PLUGIN_ROOT}/hooks/hook.sh`. A `hook.sh: No such file or directory` means the install didn't land — re-run `ironlint init --harness claude-code` or re-create the plugin symlink.
 2. Confirm `ironlint --version` runs on your `PATH`.
 3. Confirm `.ironlint.yml` exists in the project root.
 4. Confirm the config is trusted (`ironlint init` does this; otherwise run `ironlint trust`).

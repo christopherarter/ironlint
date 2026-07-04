@@ -1,8 +1,9 @@
 # IronLint — Claude Code adapter
 
 `PreToolUse` hook integration for Claude Code. Runs `ironlint check` on every
-`Edit` or `Write` tool call **before** the edit lands on disk, checking the
-proposed content against your project's `.ironlint.yml` policy.
+`Edit`, `Write`, `MultiEdit`, or `NotebookEdit` tool call **before** the edit
+lands on disk, checking the proposed content against your project's
+`.ironlint.yml` policy.
 
 > **Timing:** this adapter fires on **PreToolUse**, so ironlint sees the
 > proposed content — `tool_input.content` for `Write`, or `old_string` ->
@@ -23,11 +24,15 @@ proposed content against your project's `.ironlint.yml` policy.
 ironlint init --harness claude-code
 ```
 
-This auto-detects Claude Code and patches `<project>/.claude/settings.json`
+This auto-detects Claude Code and patches `<project>/.claude/settings.local.json`
 (or `~/.claude/settings.json` with `--global`) to register a `PreToolUse`
-hook matching `Edit|Write`. The adapter artifacts are written atomically to
+hook matching `Edit|Write|MultiEdit|NotebookEdit`. A local (project-scope)
+install always targets `settings.local.json` — the personal, gitignored
+settings file Claude Code merges in — never the committable `settings.json`,
+so the machine-specific absolute hook path never lands in version control.
+The adapter artifacts are written atomically to
 `~/.config/ironlint/adapters/claude-code/` and a `.ironlint-adapter.json` sidecar
-(per-file sha256 + version) is placed alongside them. A backup of the prior
+(per-file sha256) is placed alongside them. A backup of the prior
 settings file is saved as `<settings>.bak` on the first write; re-runs are
 idempotent (unchanged → "already present", changed artifact → "updated").
 

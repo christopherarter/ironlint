@@ -119,7 +119,7 @@ The two adapters share the same contract: shell out to `ironlint`, reject edits 
 | Aspect | Claude Code | OpenCode |
 |--------|-------------|----------|
 | Language | bash + `jq` | TypeScript on Bun |
-| Reject an edit | `PostToolUse` exit `2` | `tool.execute.before` throw |
+| Reject an edit | `PreToolUse` exit `2` | `tool.execute.before` throw |
 | Skills | `ironlint-config` (via `ironlint init`) + `/ironlint-init`, `/ironlint-review` (plugin) | `ironlint-config` (via `ironlint init`) |
 
 ## See also

@@ -35,7 +35,7 @@ ironlint init
 
 This creates `.ironlint.yml` with one or two starter checks for the detected stack
 (and, outside this Claude session, can also wire hooks into other agents — not
-needed here, the PostToolUse hook is already running). Review the generated checks.
+needed here, the PreToolUse hook is already running). Review the generated checks.
 
 ## Step 2: Wrap the project's linters as checks
 
@@ -71,7 +71,7 @@ write into `.ironlint.yml`. Any later edit invalidates the fingerprint, and
 
 ## Step 4: Verify
 
-Edit any in-scope file. The PostToolUse hook runs ironlint and either passes (clean)
+Edit any in-scope file. The PreToolUse hook runs ironlint and either passes (clean)
 or blocks (with the check's message). See the `ironlint` skill for how to read a
 block verdict.
 
