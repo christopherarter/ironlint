@@ -337,3 +337,51 @@ fn real_captured_add_fixture_blocks_on_exit_2() {
         .clone();
     assert_deny(&out, "blocked captured add");
 }
+
+/// Task 5.23 Part 3: an Update-File patch targeting a file whose ON-DISK bytes
+/// are not valid UTF-8 must DENY (fail CLOSED) with a CLEAN reason. The
+/// synthesizer's `apply_update` reads the file with `open(..., encoding="utf-8")`
+/// and raised `UnicodeDecodeError` — a `ValueError`, NOT an `OSError`, so the
+/// `except OSError` handler missed it and Python died with a raw traceback that
+/// then rode into the deny reason. The fix catches the decode error and emits a
+/// single clean line naming UTF-8. The deny DIRECTION is unchanged (undecodable
+/// stays blocked); only the reason text is cleaned up.
+#[test]
+fn update_on_non_utf8_file_denies_with_clean_reason() {
+    if !common::hook_tools_available() {
+        eprintln!("skipping");
+        return;
+    }
+    let fx = HookFixture::new(HOOK);
+    // ironlint must never be consulted — the decode error short-circuits first.
+    fx.stub(0, "");
+    std::fs::write(fx.file("foo.py"), b"\xff\xfe not utf8\n").unwrap();
+    let out = fx
+        .run("pre-tool-use", &update_payload(fx.project.path()), &[])
+        .success()
+        .code(0)
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).expect("deny must be well-formed JSON");
+    assert_eq!(v["hookSpecificOutput"]["permissionDecision"], "deny");
+    let reason = v["hookSpecificOutput"]["permissionDecisionReason"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        reason.contains("UTF-8"),
+        "reason must name UTF-8: {reason:?}"
+    );
+    assert!(
+        reason.contains("decode"),
+        "reason must mention decode: {reason:?}"
+    );
+    assert!(
+        !reason.contains("Traceback"),
+        "reason must not leak a Python traceback: {reason:?}"
+    );
+    assert!(
+        !reason.contains("UnicodeDecodeError"),
+        "reason must not leak the raw exception name: {reason:?}"
+    );
+}

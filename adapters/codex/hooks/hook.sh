@@ -128,6 +128,12 @@ def apply_update(relpath, hunk):
     try:
         with open(os.path.join(root, relpath), "r", encoding="utf-8") as f:
             cur = f.read()
+    except UnicodeDecodeError:
+        # UnicodeDecodeError subclasses ValueError, NOT OSError, so the handler
+        # below would miss it and Python would die with a raw traceback that
+        # rode into the deny reason. Fail CLOSED (unchanged direction) with a
+        # clean, single-line reason instead.
+        fail("cannot decode %s as UTF-8 — ironlint gates UTF-8 text files only" % relpath)
     except OSError as ex:
         fail("cannot read %s for update: %s" % (relpath, ex))
     final_nl = cur.endswith("\n")

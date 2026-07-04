@@ -185,6 +185,16 @@ path = os.environ["IRONLINT_FILE"]
 try:
     with open(path, "r", encoding="utf-8") as f:
         content = f.read()
+except UnicodeDecodeError:
+    # UnicodeDecodeError subclasses ValueError, NOT OSError, so the handler
+    # below would miss it and Python would dump a raw traceback to stderr
+    # before falling to the `*) exit 2` arm. Block (unchanged direction) with a
+    # clean, single-line reason instead of the traceback.
+    print(
+        f"ironlint: cannot decode {path} as UTF-8 — ironlint gates UTF-8 text files only",
+        file=sys.stderr,
+    )
+    sys.exit(2)
 except OSError as e:
     print(f"ironlint: cannot read {path}: {e}", file=sys.stderr)
     sys.exit(2)

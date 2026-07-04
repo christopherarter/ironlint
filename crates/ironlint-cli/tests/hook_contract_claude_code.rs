@@ -203,3 +203,32 @@ fn malformed_json_payload_is_skipped_gracefully() {
         .stderr(predicates::str::contains("malformed"))
         .stderr(predicates::str::contains("parse error").not());
 }
+
+/// Task 5.23 Part 3: an Edit targeting a file whose ON-DISK bytes are not valid
+/// UTF-8 must BLOCK (exit 2, fail CLOSED) with a CLEAN message. The Edit
+/// branch synthesizes post-edit content by reading the current file with
+/// `open(path, encoding="utf-8")`, which raised `UnicodeDecodeError` — a
+/// `ValueError`, NOT an `OSError`, so the `except OSError` handler missed it and
+/// Python dumped a raw traceback to stderr before falling to the `*) exit 2`
+/// arm. The fix catches the decode error and prints a single clean line naming
+/// UTF-8. The block DIRECTION is unchanged (undecodable stays blocked); only the
+/// message text is cleaned up.
+#[test]
+fn edit_on_non_utf8_file_blocks_with_clean_message() {
+    if !common::hook_tools_available() {
+        eprintln!("skipping: jq/python3 not available on this machine");
+        return;
+    }
+    let fx = HookFixture::new(HOOK);
+    // ironlint must never be consulted — the decode error short-circuits first.
+    fx.stub(0, "");
+    let file = fx.file("foo.py");
+    std::fs::write(&file, b"\xff\xfe not utf8\n").unwrap();
+    fx.run("PreToolUse", &edit_payload(&file), &[])
+        .failure()
+        .code(2)
+        .stderr(predicates::str::contains("decode"))
+        .stderr(predicates::str::contains("UTF-8"))
+        .stderr(predicates::str::contains("Traceback").not())
+        .stderr(predicates::str::contains("UnicodeDecodeError").not());
+}
