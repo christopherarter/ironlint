@@ -1,4 +1,5 @@
 use assert_cmd::Command;
+use predicates::prelude::*;
 use std::fs;
 
 /// `ironlint trust` writes a blessed entry into the XDG-redirected store.
@@ -25,6 +26,69 @@ fn trust_writes_a_store_entry() {
     assert!(store.exists(), "trust must create the store file");
     let body = fs::read_to_string(&store).unwrap();
     assert!(body.contains("sha256:"), "store must hold a hash: {body}");
+}
+
+/// Task 5.31: `ironlint trust` prints a summary of exactly what it blessed —
+/// the config hash (first 16 hex chars), every gate file, and every in-repo
+/// script referenced by a check's `run:`/`steps[].run` — so the operator can
+/// eyeball trust coverage instead of taking it on faith.
+#[test]
+fn trust_prints_blessed_summary() {
+    let proj = tempfile::tempdir().unwrap();
+    let xdg = tempfile::tempdir().unwrap();
+    let cfg = proj.path().join(".ironlint.yml");
+    fs::write(
+        &cfg,
+        "checks:\n  g:\n    files: \"*.rs\"\n    run: \"bash scripts/lint.sh\"\n",
+    )
+    .unwrap();
+    let gates = proj.path().join(".ironlint/gates");
+    fs::create_dir_all(&gates).unwrap();
+    fs::write(gates.join("g.sh"), "#!/bin/sh\nexit 0\n").unwrap();
+    let scripts = proj.path().join("scripts");
+    fs::create_dir_all(&scripts).unwrap();
+    fs::write(scripts.join("lint.sh"), "#!/bin/sh\nexit 0\n").unwrap();
+
+    Command::cargo_bin("ironlint")
+        .unwrap()
+        .env("XDG_CONFIG_HOME", xdg.path())
+        .args(["trust", "--config"])
+        .arg(&cfg)
+        .assert()
+        .success()
+        .stdout(
+            predicates::str::contains("config sha256:")
+                .and(predicates::str::contains("gates: 1"))
+                .and(predicates::str::contains("g.sh"))
+                .and(predicates::str::contains("scripts: 1"))
+                .and(predicates::str::contains("scripts/lint.sh")),
+        );
+}
+
+/// Sibling guard: with no gates dir and no referenced scripts, the `scripts:`
+/// block is omitted entirely (not printed as `scripts: 0`) but `gates: 0` is
+/// still printed.
+#[test]
+fn trust_summary_omits_scripts_block_when_empty() {
+    let proj = tempfile::tempdir().unwrap();
+    let xdg = tempfile::tempdir().unwrap();
+    let cfg = proj.path().join(".ironlint.yml");
+    fs::write(
+        &cfg,
+        "checks:\n  g:\n    files: \"*.rs\"\n    run: \"true\"\n",
+    )
+    .unwrap();
+
+    Command::cargo_bin("ironlint")
+        .unwrap()
+        .env("XDG_CONFIG_HOME", xdg.path())
+        .args(["trust", "--config"])
+        .arg(&cfg)
+        .assert()
+        .success()
+        .stdout(
+            predicates::str::contains("gates: 0").and(predicates::str::contains("scripts:").not()),
+        );
 }
 
 /// Blessing a config that does not parse fails (exit 1), writes nothing.

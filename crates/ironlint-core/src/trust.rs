@@ -20,7 +20,7 @@ fn hash_entry(hasher: &mut Sha256, label: &str, bytes: &[u8]) {
 /// `symlink_metadata` (which does **not** follow symlinks) rather than
 /// `is_dir()`/`is_file()` (which do).
 #[derive(Debug)]
-enum EntryKind {
+pub(crate) enum EntryKind {
     Dir,
     File,
     Missing,
@@ -43,7 +43,7 @@ enum EntryKind {
 /// plain file sits where `.ironlint/` should be) is treated the same as
 /// missing: there is nothing there to hash, and this isn't the
 /// symlink/non-regular-file class of problem the walk is guarding against.
-fn classify_entry(path: &Path) -> Result<EntryKind> {
+pub(crate) fn classify_entry(path: &Path) -> Result<EntryKind> {
     match std::fs::symlink_metadata(path) {
         Ok(meta) => {
             let file_type = meta.file_type();
@@ -78,7 +78,7 @@ fn classify_entry(path: &Path) -> Result<EntryKind> {
 
 /// Recursively collect `(relative-path, bytes)` for every file under `dir`,
 /// with `/`-separated relative paths for cross-platform determinism.
-fn collect_gate_files(dir: &Path) -> Result<Vec<(String, Vec<u8>)>> {
+pub(crate) fn collect_gate_files(dir: &Path) -> Result<Vec<(String, Vec<u8>)>> {
     let mut out = Vec::new();
     collect_into(dir, dir, &mut out)?;
     out.sort_by(|a, b| a.0.cmp(&b.0));
@@ -199,7 +199,7 @@ fn candidate_repo_relative(token: &str, root: &Path, gate_dirs: &[PathBuf]) -> O
 /// resolves to a real in-repo regular file, since a missed script (false
 /// negative) is the actual danger — a coincidental match (false positive)
 /// only adds harmless extra bytes to the hash.
-fn referenced_repo_files(
+pub(crate) fn referenced_repo_files(
     cfg: &Config,
     root: &Path,
     gate_dirs: &[PathBuf],
@@ -271,6 +271,26 @@ fn fold_referenced_scripts(
 /// reordering nor relabeling can produce a collision. A no-`extends:` config
 /// resolves to a one-element closure and keeps its prior behaviour: its own
 /// edits, and edits to its own gate scripts, still revoke trust.
+/// Derive the sorted, deduped `.ironlint/gates` directories participating in
+/// an extends closure — one per distinct config-file directory in
+/// `config_paths`. Shared by [`compute_hash`] (which folds these into the
+/// hash) and [`blessed_summary`] (which enumerates them for display), so the
+/// two can never disagree about which directories are in scope.
+fn closure_gate_dirs(config_paths: &[PathBuf]) -> Vec<PathBuf> {
+    let mut gate_dirs: Vec<PathBuf> = config_paths
+        .iter()
+        .map(|p| {
+            p.parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join(".ironlint")
+                .join("gates")
+        })
+        .collect();
+    gate_dirs.sort();
+    gate_dirs.dedup();
+    gate_dirs
+}
+
 pub fn compute_hash(config_path: &Path) -> Result<String> {
     let mut hasher = Sha256::new();
 
@@ -285,17 +305,7 @@ pub fn compute_hash(config_path: &Path) -> Result<String> {
 
     // Fold gate scripts under each distinct participating config dir's
     // `.ironlint/gates/`. Dedup so a shared dir is never double-folded.
-    let mut gate_dirs: Vec<PathBuf> = config_paths
-        .iter()
-        .map(|p| {
-            p.parent()
-                .unwrap_or_else(|| Path::new("."))
-                .join(".ironlint")
-                .join("gates")
-        })
-        .collect();
-    gate_dirs.sort();
-    gate_dirs.dedup();
+    let gate_dirs = closure_gate_dirs(&config_paths);
 
     for gates_dir in &gate_dirs {
         match classify_entry(gates_dir)? {
@@ -327,6 +337,85 @@ pub fn compute_hash(config_path: &Path) -> Result<String> {
     fold_referenced_scripts(&mut hasher, config_path, &gate_dirs)?;
 
     Ok(format!("sha256:{:x}", hasher.finalize()))
+}
+
+/// A read-only, human-facing enumeration of exactly what trust covers.
+///
+/// Covers the digest itself, plus every gate file and every in-repo
+/// referenced script folded into it. `compute_hash` retains no file list of
+/// its own (it only ever returns the final digest), so this is a fresh,
+/// faithful re-walk via the same helpers — not a cache of anything
+/// `compute_hash` remembers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlessedSummary {
+    /// The config path as passed to [`blessed_summary`].
+    pub config_path: PathBuf,
+    /// The authoritative digest, `"sha256:<hex>"`, identical to what
+    /// [`compute_hash`] would return for the same `config_path`.
+    pub config_hash: String,
+    /// Every gate-file relative path (relative to its own `.ironlint/gates/`
+    /// dir) across the whole extends closure, sorted and deduped.
+    pub gates: Vec<String>,
+    /// Every in-repo script referenced by a check's `run`/`steps[].run` that
+    /// isn't already under a gates dir, repo-relative, sorted and deduped.
+    pub scripts: Vec<String>,
+}
+
+/// Enumerate what trust covers for `config_path`.
+///
+/// Reports the digest plus the gate files and referenced scripts folded into
+/// it. Read-only — never writes the store or the filesystem; safe to call
+/// any time after a config parses (typically right after a successful
+/// [`bless`]).
+///
+/// Faithful to the full trust surface [`compute_hash`] folds (config +
+/// gates + referenced scripts) — a summary that silently omitted the
+/// referenced-scripts surface would misrepresent what was actually blessed.
+pub fn blessed_summary(config_path: &Path) -> Result<BlessedSummary> {
+    let config_hash = compute_hash(config_path)?;
+
+    let config_paths = crate::config::extends::resolve_paths(config_path)
+        .with_context(|| format!("resolving extends closure for {}", config_path.display()))?;
+    let gate_dirs = closure_gate_dirs(&config_paths);
+
+    let mut gates: Vec<String> = Vec::new();
+    for dir in &gate_dirs {
+        match classify_entry(dir)? {
+            EntryKind::Dir => {
+                for (rel, _bytes) in collect_gate_files(dir)? {
+                    gates.push(rel);
+                }
+            }
+            EntryKind::Missing => {}
+            EntryKind::File => {
+                anyhow::bail!("expected {} to be a directory (gates dir)", dir.display());
+            }
+        }
+    }
+    gates.sort();
+    gates.dedup();
+
+    let canon_config = config_path
+        .canonicalize()
+        .with_context(|| format!("resolving {}", config_path.display()))?;
+    let root = canon_config
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf();
+    let merged_cfg = crate::config::extends::resolve(config_path)?;
+    let mut scripts: Vec<String> = referenced_repo_files(&merged_cfg, &root, &gate_dirs)?
+        .into_iter()
+        .map(|(rel, _bytes)| rel)
+        .collect();
+    scripts.sort();
+    scripts.dedup();
+
+    Ok(BlessedSummary {
+        config_path: config_path.to_path_buf(),
+        config_hash,
+        gates,
+        scripts,
+    })
 }
 
 pub const TRUST_STORE_VERSION: u32 = 1;
@@ -1129,6 +1218,72 @@ mod tests {
         );
         write(&dir.join(".ironlint/gates/g.sh"), "#!/bin/sh\nexit 0\n");
         cfg
+    }
+
+    // --- Task 5.31: `blessed_summary` enumerates the trust surface ---
+    // RED: `blessed_summary` doesn't exist yet, so this is a compile error
+    // until Deliverable 1 lands. It must faithfully enumerate ALL THREE
+    // surfaces `compute_hash` folds: the config itself (via the returned
+    // hash), every gate file, and every in-repo script referenced by a
+    // check's `run`/`steps[].run` that isn't already under a gates dir.
+
+    #[test]
+    fn blessed_summary_lists_hash_gates_and_scripts() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = dir.path().join(".ironlint.yml");
+        write(
+            &cfg,
+            "checks:\n  g:\n    files: \"*\"\n    run: \"bash scripts/lint.sh\"\n",
+        );
+        write(&dir.path().join(".ironlint/gates/a.sh"), "a\n");
+        write(&dir.path().join(".ironlint/gates/b.sh"), "b\n");
+        write(&dir.path().join("scripts/lint.sh"), "#!/bin/sh\nexit 0\n");
+
+        let summary = blessed_summary(&cfg).unwrap();
+
+        assert!(
+            summary.config_hash.starts_with("sha256:"),
+            "config_hash must be sha256-prefixed: {}",
+            summary.config_hash
+        );
+        assert_eq!(
+            summary.config_hash,
+            compute_hash(&cfg).unwrap(),
+            "blessed_summary must report the SAME digest compute_hash would produce, \
+             not a re-derived one"
+        );
+        assert_eq!(
+            summary.gates,
+            vec!["a.sh".to_string(), "b.sh".to_string()],
+            "gates must list every gate file, sorted"
+        );
+        assert_eq!(
+            summary.scripts,
+            vec!["scripts/lint.sh".to_string()],
+            "scripts must list the in-repo run: script — omitting it would silently \
+             under-report the trust surface"
+        );
+    }
+
+    #[test]
+    fn blessed_summary_is_empty_with_no_gates_or_scripts() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = dir.path().join(".ironlint.yml");
+        write(
+            &cfg,
+            "checks:\n  g:\n    files: \"*.rs\"\n    run: \"true\"\n",
+        );
+
+        let summary = blessed_summary(&cfg).unwrap();
+
+        assert!(
+            summary.gates.is_empty(),
+            "no gates dir → empty gates list, not an error"
+        );
+        assert!(
+            summary.scripts.is_empty(),
+            "no referenced in-repo script → empty scripts list"
+        );
     }
 
     #[test]
