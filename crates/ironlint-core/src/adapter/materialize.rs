@@ -45,9 +45,13 @@ pub fn backup_once(path: &Path) -> Result<()> {
 }
 
 /// Per-harness integrity record, written beside the materialized artifacts.
+///
+/// No `#[serde(deny_unknown_fields)]`: sidecars written by older binaries carry
+/// a `"version"` key that no longer maps to a field. Serde ignores it on read,
+/// so those files still deserialize (staleness is now derived from the recorded
+/// hashes, not a version counter).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AdapterSidecar {
-    pub version: u32,
     /// filename -> "sha256:<hex>"
     pub files: BTreeMap<String, String>,
 }
@@ -121,10 +125,24 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let mut files = BTreeMap::new();
         files.insert("hook.sh".to_string(), "sha256:abc".to_string());
-        let sc = AdapterSidecar { version: 1, files };
+        let sc = AdapterSidecar { files };
         write_sidecar(tmp.path(), &sc).unwrap();
         let back = read_sidecar(tmp.path()).unwrap().unwrap();
-        assert_eq!(back.version, 1);
+        assert_eq!(back.files.get("hook.sh").unwrap(), "sha256:abc");
+    }
+
+    #[test]
+    fn read_sidecar_ignores_legacy_version_key() {
+        // Back-compat: a sidecar written by a pre-5.21 binary carries a
+        // `"version"` key with no matching field. It must still deserialize
+        // (unknown key ignored) so an existing install keeps its integrity data.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            sidecar_path(tmp.path()),
+            br#"{"version":7,"files":{"hook.sh":"sha256:abc"}}"#,
+        )
+        .unwrap();
+        let back = read_sidecar(tmp.path()).unwrap().unwrap();
         assert_eq!(back.files.get("hook.sh").unwrap(), "sha256:abc");
     }
 

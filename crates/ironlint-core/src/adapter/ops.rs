@@ -6,7 +6,7 @@ use crate::adapter::registry::{JsonHookSpec, PluginSpec, SkillSpec};
 use crate::adapter::SKILL_NAME;
 use crate::adapter::{
     adapters_dir, remove_from_hook_array, sync_hook_array, AdapterEnv, Harness, HarnessKind,
-    PatchResult, Scope, CURRENT_ADAPTER_VERSION,
+    PatchResult, Scope,
 };
 use anyhow::{Context, Result};
 use serde_json::{Map, Value};
@@ -102,13 +102,7 @@ fn install_jsonhook(
         set_executable(&p)?;
         files.insert((*fname).to_string(), sha256_hex(bytes.as_bytes()));
     }
-    write_sidecar(
-        &dir,
-        &AdapterSidecar {
-            version: CURRENT_ADAPTER_VERSION,
-            files,
-        },
-    )?;
+    write_sidecar(&dir, &AdapterSidecar { files })?;
 
     let mut value = load_settings(&settings)?;
     let entry = (spec.build_entry)(&command);
@@ -137,13 +131,7 @@ fn install_plugin(spec: &PluginSpec, env: &AdapterEnv, scope: Scope) -> Result<I
     atomic_write(&file, new_bytes)?;
     let mut files = BTreeMap::new();
     files.insert(spec.filename.to_string(), sha256_hex(new_bytes));
-    write_sidecar(
-        &dir,
-        &AdapterSidecar {
-            version: CURRENT_ADAPTER_VERSION,
-            files,
-        },
-    )?;
+    write_sidecar(&dir, &AdapterSidecar { files })?;
     Ok(if existed {
         InstallResult::Updated
     } else {
@@ -181,13 +169,7 @@ fn install_skill_file(file: &Path, dir: &Path, bytes: &[u8]) -> Result<InstallRe
     atomic_write(file, bytes)?;
     let mut files = BTreeMap::new();
     files.insert("SKILL.md".to_string(), sha256_hex(bytes));
-    write_sidecar(
-        dir,
-        &AdapterSidecar {
-            version: CURRENT_ADAPTER_VERSION,
-            files,
-        },
-    )?;
+    write_sidecar(dir, &AdapterSidecar { files })?;
     Ok(if existed {
         InstallResult::Updated
     } else {
@@ -353,7 +335,12 @@ fn status_jsonhook(
     let settings = settings_path(spec, env, scope);
     let registered = settings_has_marker(&settings, spec.array_key, &format!("{}", dir.display()))?;
     let installed = dir.exists();
-    let (intact, current) = sidecar_integrity(&dir)?;
+    let expected: BTreeMap<String, String> = spec
+        .files
+        .iter()
+        .map(|(n, b)| ((*n).to_string(), sha256_hex(b.as_bytes())))
+        .collect();
+    let (intact, current) = sidecar_integrity(&dir, &expected)?;
     Ok((installed, registered, intact, current))
 }
 
@@ -366,15 +353,28 @@ fn status_plugin(
     let file = dir.join(spec.filename);
     let installed = file.exists();
     let registered = installed;
-    let (intact, current) = sidecar_integrity(&dir)?;
+    let mut expected = BTreeMap::new();
+    expected.insert(
+        spec.filename.to_string(),
+        sha256_hex(spec.source.as_bytes()),
+    );
+    let (intact, current) = sidecar_integrity(&dir, &expected)?;
     Ok((installed, registered, intact, current))
 }
 
-/// Compare every file recorded in the sidecar against the on-disk bytes in
-/// `dir`. `intact = Some(true)` only when every recorded file is present and
-/// its on-disk sha256 matches the sidecar's recorded hash. A missing file or
-/// a differing hash yields `Some(false)`. No sidecar → `(None, None)`.
-fn sidecar_integrity(dir: &Path) -> Result<(Option<bool>, Option<bool>)> {
+/// Two independent signals from the sidecar, against `dir` and this binary's
+/// embedded artifacts. No sidecar → `(None, None)`.
+///
+/// - `intact` (tamper): `Some(true)` only when every recorded file is present
+///   on disk and its on-disk sha256 matches the sidecar's recorded hash. A
+///   missing file or a differing hash yields `Some(false)`.
+/// - `current` (staleness): `Some(true)` when the sidecar's recorded hashes are
+///   byte-for-byte what THIS binary embeds for the harness (`expected`); any
+///   difference — a changed, added, or removed file — yields `Some(false)`.
+fn sidecar_integrity(
+    dir: &Path,
+    expected: &BTreeMap<String, String>,
+) -> Result<(Option<bool>, Option<bool>)> {
     match read_sidecar(dir)? {
         Some(sc) => {
             let intact =
@@ -384,10 +384,17 @@ fn sidecar_integrity(dir: &Path) -> Result<(Option<bool>, Option<bool>)> {
                         Err(_) => false,
                     },
                 );
-            Ok((Some(intact), Some(sc.version == CURRENT_ADAPTER_VERSION)))
+            Ok((Some(intact), Some(is_current(&sc.files, expected))))
         }
         None => Ok((None, None)),
     }
+}
+
+/// The installed artifact is current when the hashes recorded at install time
+/// exactly match what this binary embeds now. `BTreeMap` equality catches a
+/// changed hash and an added/removed file alike.
+fn is_current(recorded: &BTreeMap<String, String>, expected: &BTreeMap<String, String>) -> bool {
+    recorded == expected
 }
 
 fn settings_has_marker(path: &Path, key: &str, marker: &str) -> Result<bool> {
@@ -533,6 +540,49 @@ mod tests {
         assert!(st.detected && st.installed && st.registered);
         assert_eq!(st.intact, Some(true));
         assert_eq!(st.current, Some(true));
+    }
+
+    #[test]
+    fn status_current_false_when_recorded_hash_diverges_from_embedded() {
+        // Staleness is derived by comparing the sidecar's recorded hashes to the
+        // hashes THIS binary embeds. Simulate an artifact shipped by an older
+        // binary: install fresh, then rewrite the sidecar so hook.sh's *recorded*
+        // hash is bogus (≠ the embedded hash). `current` must flip to Some(false).
+        let tmp = tempfile::tempdir().unwrap();
+        let e = env(tmp.path());
+        let h = harness("codex");
+        install(&h, &e, Scope::Global).unwrap();
+        let dir = e.config_home.join("ironlint/adapters/codex");
+        let mut sc = crate::adapter::read_sidecar(&dir).unwrap().unwrap();
+        sc.files
+            .insert("hook.sh".to_string(), "sha256:deadbeef".to_string());
+        crate::adapter::write_sidecar(&dir, &sc).unwrap();
+        let st = status(&h, &e, Scope::Global).unwrap();
+        assert_eq!(
+            st.current,
+            Some(false),
+            "recorded hash ≠ embedded hash must report current=false"
+        );
+    }
+
+    #[test]
+    fn is_current_true_only_on_exact_match() {
+        let mut recorded = BTreeMap::new();
+        recorded.insert("hook.sh".to_string(), "sha256:aa".to_string());
+        // Equal maps → current.
+        let expected = recorded.clone();
+        assert!(is_current(&recorded, &expected));
+        // Differing hash → not current.
+        let mut changed = recorded.clone();
+        changed.insert("hook.sh".to_string(), "sha256:bb".to_string());
+        assert!(!is_current(&recorded, &changed));
+        // Added key → not current.
+        let mut added = recorded.clone();
+        added.insert("extra.sh".to_string(), "sha256:cc".to_string());
+        assert!(!is_current(&recorded, &added));
+        // Removed key → not current.
+        let empty = BTreeMap::new();
+        assert!(!is_current(&recorded, &empty));
     }
 
     #[test]

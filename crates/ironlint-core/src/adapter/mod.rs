@@ -20,10 +20,6 @@ pub use registry::{all_harnesses, JsonHookSpec, PluginSpec, SkillSpec, SKILL_NAM
 
 use std::path::PathBuf;
 
-/// Bump when any embedded adapter artifact changes shape; drives doctor's
-/// "outdated, re-run ironlint init" check.
-pub const CURRENT_ADAPTER_VERSION: u32 = 2;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
     Local,
