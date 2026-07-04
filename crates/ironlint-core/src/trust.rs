@@ -20,7 +20,7 @@ fn hash_entry(hasher: &mut Sha256, label: &str, bytes: &[u8]) {
 /// `symlink_metadata` (which does **not** follow symlinks) rather than
 /// `is_dir()`/`is_file()` (which do).
 #[derive(Debug)]
-pub(crate) enum EntryKind {
+enum EntryKind {
     Dir,
     File,
     Missing,
@@ -43,7 +43,7 @@ pub(crate) enum EntryKind {
 /// plain file sits where `.ironlint/` should be) is treated the same as
 /// missing: there is nothing there to hash, and this isn't the
 /// symlink/non-regular-file class of problem the walk is guarding against.
-pub(crate) fn classify_entry(path: &Path) -> Result<EntryKind> {
+fn classify_entry(path: &Path) -> Result<EntryKind> {
     match std::fs::symlink_metadata(path) {
         Ok(meta) => {
             let file_type = meta.file_type();
@@ -78,7 +78,7 @@ pub(crate) fn classify_entry(path: &Path) -> Result<EntryKind> {
 
 /// Recursively collect `(relative-path, bytes)` for every file under `dir`,
 /// with `/`-separated relative paths for cross-platform determinism.
-pub(crate) fn collect_gate_files(dir: &Path) -> Result<Vec<(String, Vec<u8>)>> {
+fn collect_gate_files(dir: &Path) -> Result<Vec<(String, Vec<u8>)>> {
     let mut out = Vec::new();
     collect_into(dir, dir, &mut out)?;
     out.sort_by(|a, b| a.0.cmp(&b.0));
@@ -199,7 +199,7 @@ fn candidate_repo_relative(token: &str, root: &Path, gate_dirs: &[PathBuf]) -> O
 /// resolves to a real in-repo regular file, since a missed script (false
 /// negative) is the actual danger — a coincidental match (false positive)
 /// only adds harmless extra bytes to the hash.
-pub(crate) fn referenced_repo_files(
+fn referenced_repo_files(
     cfg: &Config,
     root: &Path,
     gate_dirs: &[PathBuf],

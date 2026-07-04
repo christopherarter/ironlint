@@ -10,11 +10,23 @@ pub fn run(config: &Path) -> Result<i32> {
             return Ok(1);
         }
     };
-    ironlint_core::trust::bless(&config)?;
-    println!("trusted: {}", config.display());
-    let summary = ironlint_core::trust::blessed_summary(&config)?;
-    println!("{}", render_summary(&summary));
-    Ok(0)
+    // Bless, then summarize what was blessed. Chaining both fallible steps
+    // through one error arm keeps the one error voice (lowercase `error:`,
+    // flattened chain via `{:#}`) for either failure and emits no success
+    // output — no half-printed `trusted:` followed by a raw anyhow dump.
+    match ironlint_core::trust::bless(&config)
+        .and_then(|()| ironlint_core::trust::blessed_summary(&config))
+    {
+        Ok(summary) => {
+            println!("trusted: {}", config.display());
+            println!("{}", render_summary(&summary));
+            Ok(0)
+        }
+        Err(e) => {
+            eprintln!("error: {:#}", e);
+            Ok(1)
+        }
+    }
 }
 
 /// Render a [`BlessedSummary`] as the indented, human-facing block printed

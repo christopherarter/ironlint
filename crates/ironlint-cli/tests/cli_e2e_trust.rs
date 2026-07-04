@@ -91,7 +91,10 @@ fn trust_summary_omits_scripts_block_when_empty() {
         );
 }
 
-/// Blessing a config that does not parse fails (exit 1), writes nothing.
+/// Blessing a config that does not parse fails (exit 1), writes nothing, and
+/// speaks the one error voice (T1): a lowercase `error:` line on stderr, not a
+/// raw `Error: <debug>` anyhow chain leaked through `?` — matching
+/// explain/show-resolved-config/check.
 #[test]
 fn trust_rejects_unparseable_config() {
     let proj = tempfile::tempdir().unwrap();
@@ -106,7 +109,8 @@ fn trust_rejects_unparseable_config() {
         .arg(&cfg)
         .assert()
         .failure()
-        .code(1);
+        .code(1)
+        .stderr(predicates::str::starts_with("error: "));
 
     // The spec's other half: a rejected config must write nothing to the store.
     let store = xdg.path().join("ironlint/trust.json");
