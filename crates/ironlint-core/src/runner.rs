@@ -546,6 +546,40 @@ impl Default for IronLintEngineBuilder {
     }
 }
 
+/// Create the `$IRONLINT_TMPFILE` at `path` with `content`, using an
+/// exclusive (`O_EXCL` / `create_new`) open at mode `0600` on unix.
+///
+/// Exclusive create makes a symlink race fail-closed: if `path` already
+/// exists (attacker pre-creates it), the open errors instead of clobbering.
+/// Mode `0600` keeps the briefly-written proposed content unreadable by
+/// co-located processes (the old `std::fs::write` left it world-readable
+/// ~`0o644`). On non-unix the mode bit is unavailable; fall back to a plain
+/// exclusive create + write (the name is still collision-resistant).
+fn materialize_tmpfile(path: &Path, content: &str) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(path)?;
+        file.write_all(content.as_bytes())?;
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)?;
+        file.write_all(content.as_bytes())?;
+        Ok(())
+    }
+}
+
 impl IronLintEngine {
     pub fn load(config_path: &Path) -> Result<Self> {
         Self::load_with(config_path, CheckOptions::default())
@@ -766,7 +800,7 @@ impl IronLintEngine {
 
         let name = unique_tmp_name(abs.extension().and_then(|e| e.to_str()));
         let path = parent.join(name);
-        std::fs::write(&path, content)?;
+        materialize_tmpfile(&path, content)?;
         Ok(Some(TmpFileGuard { path }))
     }
 
@@ -1502,6 +1536,41 @@ mod gate_dispatch_tests {
         // restore perms so TempDir cleanup works
         std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert_eq!(verdict.status, Status::InternalError);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn tmpfile_is_created_exclusive_mode_0600() {
+        use std::os::unix::fs::MetadataExt; // for .mode() — reading bits, not constructing
+
+        // Direct call to materialize_tmpfile: the file's mode is unobservable
+        // through the end-to-end path because TmpFileGuard::drop removes it
+        // after the check runs (locked by the existing tmpfile-* tests). This
+        // test locks only the new perms/exclusivity contract.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("ironlint-tmp-probe.txt");
+        let _ = std::fs::remove_file(&path);
+
+        materialize_tmpfile(&path, "body").expect("materialize probe");
+
+        let mode = std::fs::metadata(&path).expect("metadata").mode();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "tmpfile must be mode 0600, got {:o}",
+            mode & 0o777
+        );
+
+        // Exclusivity (create_new/O_EXCL): a second create at the same path
+        // must fail rather than clobber — the symlink-race fail-closed.
+        std::fs::write(&path, "attacker").unwrap(); // pre-create the name
+        let second = materialize_tmpfile(&path, "body");
+        let _ = std::fs::remove_file(&path);
+        assert!(
+            second.is_err(),
+            "materialize_tmpfile must fail (not clobber) when the path already exists"
+        );
     }
 
     #[test]
