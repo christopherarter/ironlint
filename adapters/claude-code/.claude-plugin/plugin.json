@@ -1,7 +1,7 @@
 {
   "name": "ironlint",
   "description": "Local CI for AI coding agents: a checks pipeline (files + run/steps) where any nonzero exit blocks the write, guarded by a trust allow-list. Claude Code adapter.",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "author": {
     "name": "christopherarter"
   },

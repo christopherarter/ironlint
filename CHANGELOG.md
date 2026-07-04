@@ -4,23 +4,95 @@ Notable changes to IronLint, newest first. In-flight work lives in `plans/`.
 
 ## [Unreleased]
 
-### Changed
+## [0.8.0] — 2026-07-04 — Readiness hardening
 
-- Removed the Reasonix adapter; added Codex (`apply_patch` PreToolUse gate).
-  Codex is a `JsonHookSpec` harness like claude-code: `ironlint init --harness
-  codex` writes `<project>/.codex/hooks.json` (or `~/.codex/hooks.json` with
+The theme of this release is **fail loud, not silent** — closing the places
+where IronLint stopped enforcing without telling anyone, plus the Codex adapter
+and broad correctness/DX/security polish from the readiness review.
+
+### Added
+
+- **Codex adapter** (`apply_patch` PreToolUse gate), replacing Reasonix. Codex
+  is a `JsonHookSpec` harness like claude-code: `ironlint init --harness codex`
+  writes `<project>/.codex/hooks.json` (or `~/.codex/hooks.json` with
   `--global`) — never `config.toml` — registering a `PreToolUse` hook matching
-  `apply_patch|Edit|Write`. Unlike the exit-code adapters, the codex hook
-  blocks by printing a `permissionDecision:"deny"` JSON object on stdout and
-  exiting `0`; malformed stdout on a would-be block fails open, so
+  `apply_patch|Edit|Write`. Unlike the exit-code adapters, the codex hook blocks
+  by printing a `permissionDecision:"deny"` JSON object on stdout and exiting
+  `0`; malformed stdout on a would-be block fails open, so
   `adapters/codex/hooks/hook.sh` builds every deny payload defensively (`jq`
   with a static fallback). After `ironlint init`, Codex will not run the hook
   until it's reviewed and trusted inside Codex — a manual step unique to this
-  adapter. Codex itself documents `PreToolUse` as a guardrail rather than a
-  complete enforcement boundary (a model can route around it via
-  un-intercepted tool paths like `unified_exec`); see
-  [adapters/codex/README.md](adapters/codex/README.md). Supported harnesses
-  are now `claude-code`, `codex`, `pi`, `opencode`.
+  adapter. Codex documents `PreToolUse` as a guardrail rather than a complete
+  enforcement boundary (a model can route around it via un-intercepted tool
+  paths like `unified_exec`); see
+  [adapters/codex/README.md](adapters/codex/README.md). Supported harnesses are
+  now `claude-code`, `codex`, `pi`, `opencode`.
+- **claude-code now gates `MultiEdit` and `NotebookEdit`.** Both previously
+  bypassed the hook entirely (the matcher was `Edit|Write`). MultiEdit folds its
+  `edits[]` into the final content and checks that; NotebookEdit gates the edited
+  cell's proposed source.
+- `ironlint trust` prints a summary of exactly what it blesses — config hash,
+  every gate file, and every in-repo script referenced by a check's `run:`.
+- `ironlint doctor` probes for `jq` / `python3` when a JSON-hook adapter is
+  installed (both hooks need them, or they fail open).
+- `ironlint validate --format json`, and `ironlint check --require-match`
+  (fails CI when a file matches zero checks — a glob-typo guard); the human
+  `pass` line now notes when nothing matched.
+- `ironlint update` suggests refreshing adapter hooks after a self-update.
+
+### Changed
+
+- **Verdict JSON `SCHEMA_VERSION` 5 → 6.** `GateError` gained a `detail` field
+  naming the run command (truncated) and effective timeout, surfaced in the
+  human InternalError line as a remediation clause.
+- **claude-code Local install** now writes `.claude/settings.local.json` (the
+  personal, gitignored file) instead of the committable `.claude/settings.json`,
+  so the machine-specific absolute hook path is never committed.
+- **Adapter staleness** is now derived from the running binary's embedded
+  artifact hashes (the manual `CURRENT_ADAPTER_VERSION` counter is gone);
+  `doctor` reports an installed hook as outdated when it differs from the binary.
+- Config discovery walks up to the repo root to find `.ironlint.yml`; the
+  missing-config error now names the fix (`ironlint init`).
+- One consistent CLI error voice (lowercase `error:`); raw `anyhow` cause chains
+  no longer leak to users at the CLI boundary.
+- Codex hook registration timeout raised 30s → 120s so sequential checks under
+  the default per-check cap can't blow the harness budget; per-adapter
+  timeout-budget interplay is now documented.
+- Refreshed the stale claude-code `plugin.json`.
+
+### Fixed
+
+- `run_gate` no longer overruns the timeout on the pass path when a check's
+  descendant escapes the process group (`setsid`/`setpgid`) holding a pipe open
+  — the stdout/stderr drain is now bounded.
+- Diff parser handles `git mv` renames and C-quoted non-ASCII paths; an
+  unrecognized `+++` header now fails closed instead of silently dropping a file.
+- pre-commit `$IRONLINT_FILES` entries are absolute; non-UTF8 path bytes are
+  preserved faithfully instead of being lossily `display()`-ed.
+- Clean UTF-8 decode errors in the claude/codex hooks (a non-UTF8 file yields a
+  one-line reason, not a Python traceback).
+- Codex adapter fails closed on an op-less `apply_patch` envelope.
+- In `--format json` mode, load/trust failures emit a JSON error object instead
+  of empty stdout.
+
+### Security
+
+- `$IRONLINT_TMPFILE` is created `O_EXCL` at mode `0600` (was briefly
+  world-readable as a repo sibling — a local symlink-race / read window).
+- `IRONLINT_TIMEOUT` is floored at 10s, and an ambient override that *shortens*
+  the config value is logged — a prompt-injected `IRONLINT_TIMEOUT=1` can no
+  longer silently force every check to time out (→ exit 3 → fail-open).
+
+### Performance
+
+- Telemetry `.ironlint/log.jsonl` rotates at 10 MiB (keeps one `.1`).
+- `ironlint watch` reads only the appended tail each tick instead of re-reading
+  the whole log.
+
+### Removed
+
+- The Reasonix adapter (replaced by Codex) and the manual
+  `CURRENT_ADAPTER_VERSION` staleness counter.
 
 ## [0.7.0] — 2026-07-01 — Hector is now IronLint
 
