@@ -60,6 +60,12 @@ pub enum Command {
         /// outside their `files` glob. Scope-only; requires `--check`.
         #[arg(long, default_value_t = false)]
         force: bool,
+        /// Exit nonzero when no checks matched the file. Without this, a
+        /// glob typo that matches nothing prints a visible `pass (no checks
+        /// matched ...)` note but still exits 0 — fine for local use. In CI,
+        /// pass `--require-match` so a silent policy bypass fails the build.
+        #[arg(long, default_value_t = false)]
+        require_match: bool,
     },
     /// Bless this config + its `.ironlint/gates/` scripts in the out-of-repo trust store.
     Trust {

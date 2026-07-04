@@ -34,6 +34,7 @@ fn main() -> Result<()> {
             explain,
             allow_external_paths,
             force,
+            require_match,
         } => commands::check::run(
             file,
             diff,
@@ -45,6 +46,7 @@ fn main() -> Result<()> {
             explain,
             allow_external_paths,
             force,
+            require_match,
         )?,
         Command::Trust { config } => commands::trust::run(&config)?,
         Command::Validate { config } => commands::validate::run(&config)?,

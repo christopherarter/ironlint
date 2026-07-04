@@ -37,6 +37,7 @@ const NO_SHELL_MSG: &str =
      \nGit Bash or WSL. See docs/getting-started.md.";
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::fn_params_excessive_bools)]
 pub fn run(
     file: Option<PathBuf>,
     diff: Option<PathBuf>,
@@ -48,6 +49,7 @@ pub fn run(
     explain: bool,
     allow_external_paths: bool,
     force: bool,
+    require_match: bool,
 ) -> Result<i32> {
     if force && checks.is_empty() {
         eprintln!("ERROR: --force requires at least one --check <id>");
@@ -104,8 +106,8 @@ pub fn run(
     engine.set_check_filter(checks.into_iter().collect());
 
     match (file, diff) {
-        (Some(f), None) => run_file(&engine, f, content, format, explain),
-        (None, Some(d)) => run_diff(&engine, &d, format, explain),
+        (Some(f), None) => run_file(&engine, f, content, format, explain, require_match),
+        (None, Some(d)) => run_diff(&engine, &d, format, explain, require_match),
         _ => {
             eprintln!("ERROR: provide exactly one of --file or --diff");
             Ok(1)
@@ -119,6 +121,7 @@ fn run_file(
     content: Option<String>,
     format: OutputFormat,
     explain: bool,
+    require_match: bool,
 ) -> Result<i32> {
     let content = match content {
         Some(c) => resolve_content_value(c)?,
@@ -140,8 +143,8 @@ fn run_file(
     if explain {
         print_explain(&report.explain);
     }
-    emit(&report.verdict, format)?;
-    Ok(exit_code(&report.verdict))
+    emit(&report.verdict, format, require_match)?;
+    Ok(exit_code(&report.verdict, require_match))
 }
 
 /// Check every non-deleted changed file in a unified diff. Checks read each
@@ -155,6 +158,7 @@ fn run_diff(
     diff: &Path,
     format: OutputFormat,
     explain: bool,
+    require_match: bool,
 ) -> Result<i32> {
     let unified = std::fs::read_to_string(diff)?;
     let changed = ironlint_core::diff::parser::parse_unified(&unified)?;
@@ -171,8 +175,8 @@ fn run_diff(
     if engine.event() == "pre-commit" {
         let paths: Vec<PathBuf> = non_deleted.iter().map(|f| f.path.clone()).collect();
         let verdict = engine.check_set(&paths)?;
-        emit(&verdict, format)?;
-        return Ok(exit_code(&verdict));
+        emit(&verdict, format, require_match)?;
+        return Ok(exit_code(&verdict, require_match));
     }
 
     // Write (and any future per-file event): loop once per changed file.
@@ -226,8 +230,8 @@ fn run_diff(
     if explain {
         print_explain(&explains);
     }
-    emit(&verdict, format)?;
-    Ok(exit_code(&verdict))
+    emit(&verdict, format, require_match)?;
+    Ok(exit_code(&verdict, require_match))
 }
 
 /// Why a diff-referenced file couldn't be turned into check input. Kept
@@ -306,17 +310,33 @@ fn print_explain(rows: &[CheckExplain]) {
     }
 }
 
-fn exit_code(v: &Verdict) -> i32 {
+fn exit_code(v: &Verdict, require_match: bool) -> i32 {
+    let no_match = v.status == Status::Pass
+        && v.passed.is_empty()
+        && v.blocks.is_empty()
+        && v.errors.is_empty();
     match v.status {
         Status::Block => 2,
         Status::InternalError => 3,
+        Status::Pass if no_match && require_match => 2,
         _ => 0,
     }
 }
 
-fn emit(v: &Verdict, format: OutputFormat) -> Result<()> {
+#[allow(unused_variables)]
+fn emit(v: &Verdict, format: OutputFormat, require_match: bool) -> Result<()> {
+    let no_match = v.status == Status::Pass
+        && v.passed.is_empty()
+        && v.blocks.is_empty()
+        && v.errors.is_empty();
     match format {
-        OutputFormat::Json => println!("{}", serde_json::to_string_pretty(v)?),
+        OutputFormat::Json => {
+            // JSON mode: no extra stdout (the verdict already carries
+            // passed=[] for a no-match run; CI detects it from the shape).
+            // --require-match still affects the EXIT code, handled by the
+            // caller via exit_code_for(v, require_match).
+            println!("{}", serde_json::to_string_pretty(v)?);
+        }
         OutputFormat::Human => {
             for b in &v.blocks {
                 eprintln!("block: [{}] {}", b.check, b.file.as_deref().unwrap_or(""));
@@ -330,15 +350,14 @@ fn emit(v: &Verdict, format: OutputFormat) -> Result<()> {
                     e.reason
                 );
             }
-            println!(
-                "{}",
-                match v.status {
-                    Status::Pass => "pass",
-                    Status::Block => "block",
-                    Status::InternalError => "internal_error",
-                    _ => "unknown",
-                }
-            );
+            let line = match v.status {
+                Status::Pass if no_match => "pass (no checks matched)",
+                Status::Pass => "pass",
+                Status::Block => "block",
+                Status::InternalError => "internal_error",
+                _ => "unknown",
+            };
+            println!("{line}");
         }
     }
     Ok(())
