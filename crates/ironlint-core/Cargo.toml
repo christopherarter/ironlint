@@ -29,6 +29,7 @@ nix = { version = "0.31.3", default-features = false, features = ["signal", "pro
 tempfile.workspace = true
 insta.workspace = true
 serde_json.workspace = true
+proptest.workspace = true
 
 [lints]
 workspace = true

@@ -112,6 +112,7 @@ predicates = "3"
 insta = { version = "1", features = ["yaml", "json", "redactions"] }
 chrono = "0.4"
 fs4 = "0.13"
+proptest = "1"
 
 # The profile that 'dist' will build with
 [profile.dist]
