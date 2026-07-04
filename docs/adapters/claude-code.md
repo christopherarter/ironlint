@@ -12,7 +12,7 @@ With the `ironlint` binary and `jq` on your `PATH`, one command wires the hook a
 ironlint init --harness claude-code
 ```
 
-This patches `<project>/.claude/settings.json` (or `~/.claude/settings.json` with `--global`) to register a `PostToolUse` hook matching `Edit|Write`, and materializes the hook scripts to `~/.config/ironlint/adapters/claude-code/` with a `.ironlint-adapter.json` sidecar (per-file sha256 + version). A backup of the prior settings file is written as `<settings>.bak` on the first patch; re-runs are idempotent. Restart (or reload) Claude Code so it picks up the new hook, then verify:
+This patches `<project>/.claude/settings.local.json` (or `~/.claude/settings.json` with `--global`) to register a `PostToolUse` hook matching `Edit|Write`, and materializes the hook scripts to `~/.config/ironlint/adapters/claude-code/` with a `.ironlint-adapter.json` sidecar (per-file sha256 + version). A local (project-scope) install always targets `settings.local.json` — the personal, gitignored settings file Claude Code merges in — never the committable `settings.json`, so the machine-specific absolute hook path never lands in version control. A backup of the prior settings file is written as `<settings>.bak` on the first patch; re-runs are idempotent. Restart (or reload) Claude Code so it picks up the new hook, then verify:
 
 ```bash
 ironlint doctor
@@ -58,7 +58,7 @@ Every adapter follows the [same lifecycle](README.md#what-adapters-do); here is 
 
 ## Timeout budget
 
-This hook sets no ironlint-specific timeout of its own, so it isn't affected by [IronLint's default per-check cap](README.md#timeout-budget). If you hand-add a `timeout` to this hook's entry in `.claude/settings.json`, keep it at or above your worst-case sequential-check budget (`K × execution.timeout_secs` for `K` checks matching a file) — the same rule that applies to any JSON-hook harness, so Claude Code never kills the hook before ironlint can report a verdict.
+This hook sets no ironlint-specific timeout of its own, so it isn't affected by [IronLint's default per-check cap](README.md#timeout-budget). If you hand-add a `timeout` to this hook's entry in `.claude/settings.local.json` (or `~/.claude/settings.json` for a global install), keep it at or above your worst-case sequential-check budget (`K × execution.timeout_secs` for `K` checks matching a file) — the same rule that applies to any JSON-hook harness, so Claude Code never kills the hook before ironlint can report a verdict.
 
 ## Author and review checks from inside Claude
 
@@ -76,7 +76,7 @@ Once IronLint is published to the plugin marketplace you can skip the symlink an
 
 If Claude edits a file and nothing happens, walk through these in order:
 
-1. Confirm the hook is where Claude Code expects it. For an `init` install, that's the `PostToolUse` entry in `.claude/settings.json` (or `~/.claude/settings.json` with `--global`) pointing at `~/.config/ironlint/adapters/claude-code/hook.sh`, and that file must be executable. For a plugin install, the hook resolves to `${CLAUDE_PLUGIN_ROOT}/hooks/hook.sh`. A `hook.sh: No such file or directory` means the install didn't land — re-run `ironlint init --harness claude-code` or re-create the plugin symlink.
+1. Confirm the hook is where Claude Code expects it. For an `init` install, that's the `PostToolUse` entry in `.claude/settings.local.json` (or `~/.claude/settings.json` with `--global`) pointing at `~/.config/ironlint/adapters/claude-code/hook.sh`, and that file must be executable. For a plugin install, the hook resolves to `${CLAUDE_PLUGIN_ROOT}/hooks/hook.sh`. A `hook.sh: No such file or directory` means the install didn't land — re-run `ironlint init --harness claude-code` or re-create the plugin symlink.
 2. Confirm `ironlint --version` runs on your `PATH`.
 3. Confirm `.ironlint.yml` exists in the project root.
 4. Confirm the config is trusted (`ironlint init` does this; otherwise run `ironlint trust`).

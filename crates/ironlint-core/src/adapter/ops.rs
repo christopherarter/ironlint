@@ -450,6 +450,41 @@ mod tests {
     }
 
     #[test]
+    fn install_claude_code_local_writes_settings_local_json_not_settings_json() {
+        // Regression guard for the Finding: a Local-scope claude-code install
+        // must never write to the committable `.claude/settings.json` — that
+        // leaks the installing machine's absolute hook path (and $HOME) into
+        // version control, and breaks teammates whose `hook.sh` lives
+        // elsewhere. The hook entry belongs in the personal, gitignored
+        // `.claude/settings.local.json` sidecar instead.
+        let tmp = tempfile::tempdir().unwrap();
+        let e = env(tmp.path());
+        let out = install(&harness("claude-code"), &e, Scope::Local).unwrap();
+        assert!(matches!(out.result, InstallResult::Installed));
+
+        let settings_local = e.project_root.join(".claude/settings.local.json");
+        let settings_committed = e.project_root.join(".claude/settings.json");
+        assert!(
+            settings_local.exists(),
+            "expected hook entry in {}",
+            settings_local.display()
+        );
+        assert!(
+            !settings_committed.exists(),
+            "Local claude-code install must not create the committable {}",
+            settings_committed.display()
+        );
+
+        let settings: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings_local).unwrap()).unwrap();
+        let cmd = settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap();
+        assert!(cmd.contains("adapters/claude-code/hook.sh"));
+        assert!(cmd.ends_with("pre-tool-use"));
+    }
+
+    #[test]
     fn install_is_idempotent() {
         let tmp = tempfile::tempdir().unwrap();
         let e = env(tmp.path());

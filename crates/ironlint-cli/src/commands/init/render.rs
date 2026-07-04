@@ -148,7 +148,7 @@ mod tests {
                     path: PathBuf::from("/home/u/.config/ironlint/adapters/claude-code/hook.sh"),
                 },
                 PlanStep::Patch {
-                    path: PathBuf::from("/home/u/proj/.claude/settings.json"),
+                    path: PathBuf::from("/home/u/proj/.claude/settings.local.json"),
                     key: "PreToolUse",
                 },
                 PlanStep::Skill {
@@ -174,7 +174,7 @@ mod tests {
             "home-relative:\n{out}"
         );
         assert!(
-            out.contains("./.claude/settings.json"),
+            out.contains("./.claude/settings.local.json"),
             "project-relative:\n{out}"
         );
         // tree glyphs

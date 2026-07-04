@@ -61,7 +61,7 @@ pub(crate) fn codex_build_entry(command: &str) -> Value {
 
 // --- registry ----------------------------------------------------------------
 const CLAUDE: JsonHookSpec = JsonHookSpec {
-    settings_local: |e| Some(e.project_root.join(".claude").join("settings.json")),
+    settings_local: |e| Some(e.project_root.join(".claude").join("settings.local.json")),
     settings_global: |e| e.home.join(".claude").join("settings.json"),
     array_key: "PreToolUse",
     entry_arg: "pre-tool-use",
