@@ -4,6 +4,26 @@ Notable changes to IronLint, newest first. In-flight work lives in `plans/`.
 
 ## [Unreleased]
 
+## [0.8.1] — 2026-07-04
+
+### Changed
+
+- **MSRV raised to 1.88.** The locked dependency graph (darling 0.23, image
+  0.25, instability 0.3, homedir 0.3 — pulled via ratatui/axoupdater/serde
+  tooling) requires rustc 1.88, so 0.8.0's declared 1.87 floor was already
+  unbuildable.
+
+### Fixed
+
+- The workspace now builds on its own declared MSRV. 0.8.0's source used the
+  unstable `Duration::from_hours` (feature `duration_constructors`, not stable
+  at 1.88), so `cargo install`-from-source failed on exactly Rust 1.88 (the
+  prebuilt binaries and installers were unaffected); switched to the always-
+  stable `Duration::from_secs`. Also made clippy MSRV-aware
+  (`clippy.toml msrv`) so it stops suggesting stdlib APIs newer than the floor,
+  and added `allow-dirty = ["ci"]` so `dist plan` accepts the hand-hardened
+  `release.yml` instead of failing the release.
+
 ## [0.8.0] — 2026-07-04 — Readiness hardening
 
 The theme of this release is **fail loud, not silent** — closing the places
