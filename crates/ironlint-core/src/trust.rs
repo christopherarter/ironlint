@@ -257,20 +257,6 @@ fn fold_referenced_scripts(
     Ok(())
 }
 
-/// Compute the trust hash of a config over its **entire `extends:` closure**.
-///
-/// Sha256 over every config file reachable from `config_path` (the root plus
-/// every transitively-extended file) plus every file under each participating
-/// config dir's `.ironlint/gates/`. Returns `"sha256:<hex>"`.
-///
-/// Folding only the root config would let a blessed child that `extends:` a base
-/// have that base — or the base's gate scripts — swapped under it without
-/// invalidating the hash. Every blob is folded with [`hash_entry`]'s
-/// length-prefixed framing and a label bound to the blob's identity (its
-/// canonical config path, or its gates dir + relative path), so neither
-/// reordering nor relabeling can produce a collision. A no-`extends:` config
-/// resolves to a one-element closure and keeps its prior behaviour: its own
-/// edits, and edits to its own gate scripts, still revoke trust.
 /// Derive the sorted, deduped `.ironlint/gates` directories participating in
 /// an extends closure — one per distinct config-file directory in
 /// `config_paths`. Shared by [`compute_hash`] (which folds these into the
@@ -291,6 +277,20 @@ fn closure_gate_dirs(config_paths: &[PathBuf]) -> Vec<PathBuf> {
     gate_dirs
 }
 
+/// Compute the trust hash of a config over its **entire `extends:` closure**.
+///
+/// Sha256 over every config file reachable from `config_path` (the root plus
+/// every transitively-extended file) plus every file under each participating
+/// config dir's `.ironlint/gates/`. Returns `"sha256:<hex>"`.
+///
+/// Folding only the root config would let a blessed child that `extends:` a base
+/// have that base — or the base's gate scripts — swapped under it without
+/// invalidating the hash. Every blob is folded with [`hash_entry`]'s
+/// length-prefixed framing and a label bound to the blob's identity (its
+/// canonical config path, or its gates dir + relative path), so neither
+/// reordering nor relabeling can produce a collision. A no-`extends:` config
+/// resolves to a one-element closure and keeps its prior behaviour: its own
+/// edits, and edits to its own gate scripts, still revoke trust.
 pub fn compute_hash(config_path: &Path) -> Result<String> {
     let mut hasher = Sha256::new();
 
