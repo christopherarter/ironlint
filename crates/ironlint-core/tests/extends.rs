@@ -153,5 +153,8 @@ fn extends_errors_for_nonexistent_parent() {
     write(&child, "extends: [\"./does-not-exist.yml\"]\nchecks: {}\n");
     let err = parse_file_with_extends(&child).expect_err("missing parent");
     let msg = format!("{err:#}").to_lowercase();
-    assert!(msg.contains("canonicaliz") || msg.contains("no such file"));
+    assert!(
+        msg.contains("resolving"),
+        "expected the extends context verb; saw: {msg}"
+    );
 }
