@@ -3,3 +3,10 @@
 # from the default of 25 forces functions with significant branching to be
 # decomposed rather than allowed to accumulate.
 cognitive-complexity-threshold = 15
+
+# Make clippy MSRV-aware so it never suggests a stdlib API newer than our
+# floor (`[workspace.package] rust-version`). Without this, the
+# `duration_suboptimal_units` lint rewrites `Duration::from_secs(60 * 60)` to
+# `Duration::from_hours(1)` — but `from_hours` is unstable until well past 1.88,
+# so that suggestion breaks the MSRV build. Keep in sync with Cargo.toml.
+msrv = "1.88"
