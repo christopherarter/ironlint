@@ -3,23 +3,34 @@ set -euo pipefail
 
 # Claude Code adapter for ironlint.
 #
-# Gates Edit/Write edits via the PreToolUse hook. Claude Code hands us the
-# proposed content *before* the write lands, so this script builds it
-# in-process (tool_input.content for Write; old_string -> new_string applied
-# to the current on-disk file for Edit) and pipes it to
-# `ironlint check --file <path> --content -`. Exit codes map onto Claude
-# Code's PreToolUse block/allow semantics:
+# Gates Write/Edit/MultiEdit/NotebookEdit edits via the PreToolUse hook. Claude
+# Code hands us the proposed content *before* the write lands, so this script
+# builds it in-process and pipes it to `ironlint check --file <path>
+# --content -`:
+#   - Write:        tool_input.content is already the post-edit content.
+#   - Edit:         old_string -> new_string applied to the current on-disk file.
+#   - MultiEdit:    the edits[] array folded sequentially onto the on-disk file
+#                   (each edit against the post-previous-edits content), mirroring
+#                   Claude Code's own apply semantics so what we gate == what it
+#                   would write.
+#   - NotebookEdit: the edited cell's new_source (delete removes a cell — nothing
+#                   to gate, so it's allowed).
+# Exit codes map onto Claude Code's PreToolUse block/allow semantics:
 #   - 0 = allow (exit 0 lets the edit proceed),
 #   - 2 = deny (verdict JSON on stderr; Claude Code surfaces stderr to the
 #         model as the reason the tool call was blocked),
 #   - see run_ironlint below for the full exit-code mapping.
 #
 # Event JSON arrives on stdin:
-#   { "tool_name": "Write" | "Edit", "tool_input": {
-#       "file_path": "...",
-#       "content": "...",                                    # Write
+#   { "tool_name": "Write" | "Edit" | "MultiEdit" | "NotebookEdit",
+#     "tool_input": {
+#       "file_path": "...",                                   # Write/Edit/MultiEdit
+#       "content": "...",                                     # Write
 #       "old_string": "...", "new_string": "...",
-#       "replace_all": bool                                   # Edit
+#       "replace_all": bool,                                  # Edit
+#       "edits": [ {old_string, new_string, replace_all?} ],  # MultiEdit
+#       "notebook_path": "...", "new_source": "...",
+#       "edit_mode": "replace" | "insert" | "delete"          # NotebookEdit
 #   } }
 #
 # A first positional argument (the hook event name) is accepted but ignored.
@@ -62,7 +73,9 @@ if ! echo "${EVENT}" | jq empty >/dev/null 2>&1; then
 fi
 
 TOOL_NAME=$(echo "${EVENT}" | jq -r '.tool_name // empty')
-FILE=$(echo "${EVENT}" | jq -r '.tool_input.file_path // .tool_input.path // empty')
+# NotebookEdit names the target `notebook_path` rather than `file_path`; include
+# it so `$FILE` (and the `.ironlint.yml` skip + the gate's `--file`) work for it.
+FILE=$(echo "${EVENT}" | jq -r '.tool_input.file_path // .tool_input.path // .tool_input.notebook_path // empty')
 if [[ -z "${FILE}" ]]; then
   # No file in event payload — nothing to check.
   exit 0
@@ -143,31 +156,35 @@ case "${TOOL_NAME}" in
     # JSON string: jq -r would append an extra \n after the value.
     echo "${EVENT}" | jq -j '.tool_input.content // ""' | run_ironlint "${FILE}"
     ;;
-  Edit)
-    # Synthesize post-edit content by applying old_string -> new_string
-    # in-process. Mirrors Claude Code's own uniqueness rule: unless
-    # replace_all is set, old_string must appear exactly once in the file,
-    # else Claude Code itself refuses the edit — fail closed (exit 2) here
-    # so the content we gate matches what Claude Code would actually write.
+  Edit | MultiEdit)
+    # Synthesize post-edit content by folding the tool's edit(s) onto the
+    # current on-disk file, mirroring Claude Code's own apply + uniqueness
+    # rules so the bytes we gate == the bytes Claude Code would write. Edit is
+    # just MultiEdit with a single edit, so one shared python handles both:
+    #   - Edit:      one edit from old_string/new_string/replace_all.
+    #   - MultiEdit: tool_input.edits[] applied IN ORDER, each against the
+    #                post-previous-edits content (uniqueness re-checked each
+    #                step). Empty edits[] → nothing to gate (exit 3 → allow).
+    # Unless replace_all is set, an edit's old_string must appear exactly once
+    # in the current content, else Claude Code itself refuses the edit — fail
+    # closed (exit 2) here to match.
     #
-    # old_string/new_string/replace_all are extracted INSIDE python via
-    # json.loads on the whole event, never round-tripped through a shell
-    # `$(...)` command substitution — `$(...)` strips ALL trailing newlines
-    # from the captured value, which would desync the bytes ironlint gates
-    # from the bytes Claude Code actually writes to disk (e.g. a
-    # new_string ending in "\n" would silently lose it). The event JSON
-    # travels only as an env var (never shell-interpolated), so arbitrary
-    # substitution payloads stay safe from injection. Python's stdout is
-    # redirected straight to a temp file (not captured via `$(...)` either)
+    # The event JSON is read INSIDE python via json.loads, never round-tripped
+    # through a shell `$(...)` substitution — `$(...)` strips ALL trailing
+    # newlines, which would desync the bytes ironlint gates from the bytes
+    # written to disk (e.g. a new_string ending in "\n" would silently lose
+    # it). The JSON travels only as an env var (never shell-interpolated), so
+    # arbitrary substitution payloads stay safe from injection. Python's stdout
+    # is redirected straight to a temp file (not captured via `$(...)` either)
     # so the synthesized content's own trailing newline, if any, survives
     # byte-for-byte.
     #
     # python exit codes (local to this branch only):
     #   0 → synthesized content written to stdout
-    #   2 → block: old_string isn't unique, or the on-disk file couldn't be
-    #       read — mirrors Claude Code's own refusal, so we gate what
-    #       Claude Code would actually do
-    #   3 → no old_string in the payload — nothing to synthesize, allow
+    #   2 → block: an old_string isn't unique/found, or the on-disk file
+    #       couldn't be read — mirrors Claude Code's own refusal
+    #   3 → nothing to synthesize (Edit with no old_string, or MultiEdit with
+    #       an empty edits[] array) — allow
     TMP_PROPOSED=$(mktemp -t ironlint-edit.XXXXXX)
     PY_EC=0
     IRONLINT_EVENT_JSON="${EVENT}" IRONLINT_FILE="${FILE}" python3 -c '
@@ -175,12 +192,23 @@ import json, os, sys
 
 ev = json.loads(os.environ["IRONLINT_EVENT_JSON"])
 ti = ev.get("tool_input") or {}
-old = ti.get("old_string")
-if not old:
-    sys.exit(3)
-new = ti.get("new_string", "")
-replace_all = bool(ti.get("replace_all", False))
+tool = ev.get("tool_name")
 path = os.environ["IRONLINT_FILE"]
+
+# Build the ordered edit list. Edit == MultiEdit with a single edit.
+if tool == "MultiEdit":
+    edits = ti.get("edits") or []
+    if not edits:
+        sys.exit(3)  # empty edits[] — nothing to gate
+else:
+    old = ti.get("old_string")
+    if not old:
+        sys.exit(3)  # Edit with no old_string — nothing to synthesize
+    edits = [{
+        "old_string": old,
+        "new_string": ti.get("new_string", ""),
+        "replace_all": ti.get("replace_all", False),
+    }]
 
 try:
     with open(path, "r", encoding="utf-8") as f:
@@ -199,25 +227,33 @@ except OSError as e:
     print(f"ironlint: cannot read {path}: {e}", file=sys.stderr)
     sys.exit(2)
 
-count = content.count(old)
-if replace_all:
-    if count == 0:
-        print(
-            f"ironlint: refusing edit — old_string not found in {path}",
-            file=sys.stderr,
-        )
-        sys.exit(2)
-    sys.stdout.write(content.replace(old, new))
-else:
-    if count != 1:
-        print(
-            f"ironlint: refusing edit — old_string appears {count} times in "
-            f"{path}; Claude Code requires exactly one match unless "
-            "replace_all is set",
-            file=sys.stderr,
-        )
-        sys.exit(2)
-    sys.stdout.write(content.replace(old, new, 1))
+# Fold edits sequentially: each edit sees the result of the prior ones, so
+# uniqueness is judged against the CURRENT content, exactly like Claude Code.
+for edit in edits:
+    old = edit.get("old_string", "")
+    new = edit.get("new_string", "")
+    replace_all = bool(edit.get("replace_all", False))
+    count = content.count(old)
+    if replace_all:
+        if count == 0:
+            print(
+                f"ironlint: refusing edit — old_string not found in {path}",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        content = content.replace(old, new)
+    else:
+        if count != 1:
+            print(
+                f"ironlint: refusing edit — old_string appears {count} times in "
+                f"{path}; Claude Code requires exactly one match unless "
+                "replace_all is set",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        content = content.replace(old, new, 1)
+
+sys.stdout.write(content)
 ' > "${TMP_PROPOSED}" || PY_EC=$?
     case "${PY_EC}" in
       0) : ;;
@@ -230,16 +266,29 @@ else:
     # shell rather than a pipeline subshell.
     run_ironlint "${FILE}" < "${TMP_PROPOSED}"
     ;;
+  NotebookEdit)
+    # A notebook cell edit. The proposed cell source is tool_input.new_source;
+    # gate it as-is (byte-exact via `jq -j`, like the Write path) against any
+    # check whose files glob matches the notebook path. `$IRONLINT_FILE` is the
+    # .ipynb, stdin is the new cell source.
+    #   - edit_mode "delete" removes a cell: there is no proposed content to
+    #     gate, so allow (exit 0) without invoking ironlint.
+    #   - "replace"/"insert" (default replace): gate new_source.
+    # Note: a check scoped to `*.py` won't match a `.ipynb`; scope it to
+    # `*.ipynb` to gate notebook cell edits (see docs/adapters/claude-code.md).
+    EDIT_MODE=$(echo "${EVENT}" | jq -r '.tool_input.edit_mode // "replace"')
+    if [[ "${EDIT_MODE}" == "delete" ]]; then
+      exit 0
+    fi
+    echo "${EVENT}" | jq -j '.tool_input.new_source // ""' | run_ironlint "${FILE}"
+    ;;
   *)
-    # Any other tool_name (e.g. MultiEdit, NotebookEdit): the hook's
-    # registration matcher (Edit|Write) catches this call, but there is no
-    # gating logic for it here — silently allowing it through would be a
-    # policy bypass: the tool matched the hook's registration but never
-    # reached `ironlint check`. Fail LOUD and CLOSED instead — block and
-    # name the tool — so an ungated edit is never mistaken for an allowed
-    # one. Proper gating of MultiEdit (folding its edits array into a single
-    # post-edit content and checking that) is a legitimate separate
-    # follow-up, not built here.
+    # Any tool_name NOT in {Write, Edit, MultiEdit, NotebookEdit}: the hook's
+    # registration matcher catches this call, but there is no gating logic for
+    # it here — silently allowing it through would be a policy bypass: the tool
+    # matched the hook's registration but never reached `ironlint check`. Fail
+    # LOUD and CLOSED instead — block and name the tool — so an ungated edit is
+    # never mistaken for an allowed one.
     echo "ironlint: tool '${TOOL_NAME}' is not yet gated by ironlint — refusing (it would bypass policy checks). Use Write/Edit." >&2
     exit 2
     ;;

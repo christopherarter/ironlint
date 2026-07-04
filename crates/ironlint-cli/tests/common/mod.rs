@@ -57,6 +57,30 @@ fn write_stub_ironlint(dir: &Path, code: i32, stdout: &str) {
     fs::set_permissions(&path, perms).unwrap();
 }
 
+/// Like [`write_stub_ironlint`], but the stub **captures** whatever the hook
+/// pipes on stdin to `capture_path` (via `cat > <file>`) before exiting. The
+/// plain `write_stub_ironlint` drains stdin to `/dev/null`, so it can only
+/// prove the hook *reached* `ironlint` — never *what* it fed in. Content-fold
+/// tests (MultiEdit sequential apply, NotebookEdit `new_source`) read
+/// `capture_path` back to assert the exact proposed bytes. If the hook never
+/// invokes the stub (e.g. a NotebookEdit `delete` that allows without gating),
+/// `capture_path` is never written — its absence is the assertion.
+fn write_stub_capturing(dir: &Path, code: i32, stdout: &str, capture_path: &Path) {
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+
+    let escaped_out = stdout.replace('\'', "'\\''");
+    let escaped_cap = capture_path.to_str().unwrap().replace('\'', "'\\''");
+    let script = format!(
+        "#!/usr/bin/env bash\ncat > '{escaped_cap}'\nprintf '%s' '{escaped_out}'\nexit {code}\n"
+    );
+    let path = dir.join("ironlint");
+    fs::write(&path, script).unwrap();
+    let mut perms = fs::metadata(&path).unwrap().permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&path, perms).unwrap();
+}
+
 /// True only if both `jq` and `python3` are runnable on `PATH` — both hooks
 /// shell out to them (JSON parsing, Edit-content synthesis). Hook-contract
 /// tests should `eprintln!` a skip note and return early when this is
@@ -118,6 +142,14 @@ impl HookFixture {
     /// `run` call resolves it instead of a real install.
     pub fn stub(&self, code: i32, stdout: &str) {
         write_stub_ironlint(self.stub_dir.path(), code, stdout);
+    }
+
+    /// Like [`Self::stub`], but the stub records the stdin the hook feeds it
+    /// (the synthesized proposed content) to `capture_path` before exiting.
+    /// Read `capture_path` back to assert the exact bytes; assert its absence
+    /// to prove the hook never reached `ironlint`.
+    pub fn stub_capturing(&self, code: i32, stdout: &str, capture_path: &Path) {
+        write_stub_capturing(self.stub_dir.path(), code, stdout, capture_path);
     }
 
     /// Spawn `bash <hook_script> <hook_arg>` against this fixture's isolated

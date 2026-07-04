@@ -12,7 +12,7 @@ With the `ironlint` binary and `jq` on your `PATH`, one command wires the hook a
 ironlint init --harness claude-code
 ```
 
-This patches `<project>/.claude/settings.local.json` (or `~/.claude/settings.json` with `--global`) to register a `PostToolUse` hook matching `Edit|Write`, and materializes the hook scripts to `~/.config/ironlint/adapters/claude-code/` with a `.ironlint-adapter.json` sidecar (per-file sha256 + version). A local (project-scope) install always targets `settings.local.json` — the personal, gitignored settings file Claude Code merges in — never the committable `settings.json`, so the machine-specific absolute hook path never lands in version control. A backup of the prior settings file is written as `<settings>.bak` on the first patch; re-runs are idempotent. Restart (or reload) Claude Code so it picks up the new hook, then verify:
+This patches `<project>/.claude/settings.local.json` (or `~/.claude/settings.json` with `--global`) to register a `PreToolUse` hook matching `Edit|Write|MultiEdit|NotebookEdit`, and materializes the hook scripts to `~/.config/ironlint/adapters/claude-code/` with a `.ironlint-adapter.json` sidecar (per-file sha256 + version). A local (project-scope) install always targets `settings.local.json` — the personal, gitignored settings file Claude Code merges in — never the committable `settings.json`, so the machine-specific absolute hook path never lands in version control. A backup of the prior settings file is written as `<settings>.bak` on the first patch; re-runs are idempotent. Restart (or reload) Claude Code so it picks up the new hook, then verify:
 
 ```bash
 ironlint doctor
@@ -54,7 +54,12 @@ A clean edit, one that breaks no check, lands normally and you see nothing at al
 
 Every adapter follows the [same lifecycle](README.md#what-adapters-do); here is how Claude Code wires it:
 
-**After every edit.** When Claude finishes an `Edit` or `Write`, the adapter runs `ironlint check --file <path>`. A block rejects the edit and Claude retries. This is the check you saw above.
+**Before every edit.** When Claude is about to run `Write`, `Edit`, `MultiEdit`, or `NotebookEdit`, the adapter synthesizes the proposed post-edit content and runs `ironlint check --file <path>` against it. A block rejects the edit and Claude retries. This is the check you saw above.
+
+- **Write** — the tool already carries the full post-edit content; ironlint gates it directly.
+- **Edit** — the adapter applies `old_string → new_string` to the current on-disk file and gates the result.
+- **MultiEdit** — the adapter folds the `edits` array onto the on-disk file **in order**, each edit against the result of the previous ones, mirroring Claude Code's own apply and uniqueness rules, then gates the final content. If an edit can't apply cleanly (a non-`replace_all` `old_string` that isn't unique after the prior edits), the adapter blocks — exactly as Claude Code would refuse it.
+- **NotebookEdit** — the adapter gates the edited cell's proposed `new_source` (piped on stdin) with `$IRONLINT_FILE` set to the `.ipynb` path. This runs the cell source against any check whose `files` glob matches the **notebook path**, so a check scoped to `*.py` will **not** match a `.ipynb` — scope a check to `*.ipynb` to gate notebook cell edits. A `delete` edit removes a cell and has no proposed content, so it is not gated (allowed through).
 
 ## Timeout budget
 
@@ -86,7 +91,7 @@ For a one-shot health check, run [`ironlint doctor`](../operating/diagnostics.md
 
 ## How it works
 
-The adapter is one bash script that Claude Code calls on `PostToolUse` (matching `Edit` \| `Write`). It only ever shells out to the `ironlint` binary and holds no policy logic of its own, so changing a check never means touching the adapter. It translates `ironlint check`'s exit codes into allow/reject per [the exit-code contract](README.md#the-exit-code-contract). The adapter hooks edits and nothing else — it does not proxy Claude's `Read`, `Grep`, or `Glob` tools.
+The adapter is one bash script that Claude Code calls on `PreToolUse` (matching `Edit` \| `Write` \| `MultiEdit` \| `NotebookEdit`). It only ever shells out to the `ironlint` binary and holds no policy logic of its own, so changing a check never means touching the adapter. It translates `ironlint check`'s exit codes into allow/reject per [the exit-code contract](README.md#the-exit-code-contract). The adapter hooks edits and nothing else — it does not proxy Claude's `Read`, `Grep`, or `Glob` tools.
 
 ## See also
 
