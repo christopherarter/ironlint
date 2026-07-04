@@ -1,9 +1,9 @@
 {
   "name": "ironlint",
-  "description": "Policy-enforcement pipeline for AI coding agents. Hybrid script+ast rule engines, trust gate, capability sandbox. Claude Code adapter.",
-  "version": "0.2.0",
+  "description": "Local CI for AI coding agents: a checks pipeline (files + run/steps) where any nonzero exit blocks the write, guarded by a trust allow-list. Claude Code adapter.",
+  "version": "0.7.0",
   "author": {
-    "name": "dynamik-dev"
+    "name": "christopherarter"
   },
   "homepage": "https://github.com/christopherarter/ironlint",
   "repository": "https://github.com/christopherarter/ironlint",
