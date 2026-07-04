@@ -813,7 +813,17 @@ impl IronLintEngine {
     fn detail_for(reason: &InternalReason, run: &str, timeout: Duration) -> String {
         const MAX_RUN_LEN: usize = 80;
         let run_trunc = if run.len() > MAX_RUN_LEN {
-            format!("{}…", &run[..MAX_RUN_LEN])
+            // Step back to the nearest char boundary at or below MAX_RUN_LEN
+            // so a multibyte UTF-8 codepoint straddling the cut isn't split
+            // (a naive `&run[..MAX_RUN_LEN]` byte slice panics on that case).
+            // Keep the last whole codepoint whose end byte ≤ MAX_RUN_LEN.
+            let cut = run
+                .char_indices()
+                .map(|(i, c)| i + c.len_utf8())
+                .take_while(|end| *end <= MAX_RUN_LEN)
+                .last()
+                .unwrap_or(0);
+            format!("{}…", &run[..cut])
         } else {
             run.to_string()
         };
@@ -1878,6 +1888,48 @@ mod gate_dispatch_tests {
         assert!(
             unrelated.exists(),
             "non-tmpfile-pattern files in the nested dir must never be touched, regardless of age"
+        );
+    }
+
+    #[test]
+    fn detail_for_truncates_multibyte_run_at_char_boundary() {
+        // A run command > MAX_RUN_LEN (80 bytes) whose byte-80 position lands
+        // inside a multibyte UTF-8 codepoint. The naive `&run[..80]` byte
+        // slice panics here; the truncation must step back to the nearest
+        // char boundary so the detail string is valid UTF-8 (and the
+        // InternalError path doesn't panic instead of returning a verdict).
+        // 78 ASCII bytes, then a 4-byte emoji (🚀) straddling bytes 78..82,
+        // so byte 80 falls mid-codepoint.
+        let run = "#".repeat(78) + "🚀" + "tail-here";
+        assert!(
+            run.len() > 80,
+            "fixture must exceed the 80-byte truncation limit; got {}",
+            run.len()
+        );
+        let detail =
+            IronLintEngine::detail_for(&InternalReason::NotFound, &run, Duration::from_secs(30));
+        // Must not panic (the slice would have), must end in the ellipsis,
+        // and the prefix must be valid UTF-8 ending on a char boundary.
+        assert!(
+            detail.ends_with('…'),
+            "truncated detail must end in ellipsis; got: {detail:?}"
+        );
+        let body = detail.strip_suffix('…').unwrap();
+        let truncated = body.strip_prefix("not_found running: ").unwrap();
+        // Truncated portion must be ≤80 bytes AND valid UTF-8 (char-aligned).
+        assert!(
+            truncated.len() <= 80,
+            "truncated run must be ≤80 bytes; got {} ({truncated:?})",
+            truncated.len()
+        );
+        assert!(
+            truncated.chars().all(|_| true),
+            "truncated run must be valid UTF-8 (char-boundary-aligned)"
+        );
+        // The emoji must NOT appear at the cut — it straddled the boundary.
+        assert!(
+            !truncated.contains('🚀'),
+            "the multibyte char straddling byte 80 must be dropped, not split: {truncated:?}"
         );
     }
 }
