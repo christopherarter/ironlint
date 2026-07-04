@@ -8,7 +8,7 @@ use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use wait_timeout::ChildExt;
 
 /// The ABI handed to a gate, materialized as process environment + cwd.
@@ -124,18 +124,23 @@ pub fn run_gate(
     }
 
     // Drain stdout/stderr on threads to avoid pipe-buffer deadlock for chatty
-    // gates whose output exceeds the pipe capacity before they exit.
+    // gates whose output exceeds the pipe capacity before they exit. Results
+    // come back over channels (not join handles) so the normal path can wait
+    // for them with a bound — see the bounded collection after the match — and
+    // cannot be wedged forever by a group-escaped descendant holding a pipe.
     let mut out_pipe = child.stdout.take().expect("stdout piped");
     let mut err_pipe = child.stderr.take().expect("stderr piped");
-    let out_handle = std::thread::spawn(move || {
+    let (out_tx, out_rx) = std::sync::mpsc::channel();
+    let (err_tx, err_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
         let mut b = Vec::new();
         let _ = out_pipe.read_to_end(&mut b);
-        b
+        let _ = out_tx.send(b);
     });
-    let err_handle = std::thread::spawn(move || {
+    std::thread::spawn(move || {
         let mut b = Vec::new();
         let _ = err_pipe.read_to_end(&mut b);
-        b
+        let _ = err_tx.send(b);
     });
 
     let status = match child.wait_timeout(timeout) {
@@ -154,9 +159,10 @@ pub fn run_gate(
             // This intentionally means a check that backgrounds a daemon
             // and exits 0 no longer leaves the daemon running — a gate
             // must not leave residue. A descendant that escaped the group
-            // via `setsid`/`setpgid` still evades this kill (same caveat
-            // as the timeout branch below), but the common case of a
-            // plain `&` background is covered.
+            // via `setsid`/`setpgid` still evades this kill and keeps a
+            // pipe write-end open; the bounded collection after the match
+            // (not an unconditional `.join()`) is what stops that from
+            // hanging the pass path past the timeout.
             #[cfg(unix)]
             kill_process_group(&child);
             #[cfg(not(unix))]
@@ -180,21 +186,51 @@ pub fn run_gate(
             // group (e.g. via `setsid`/`setpgid`) while inheriting our
             // stdout/stderr fd would keep a write end open and block a
             // `.join()` forever — defeating the very timeout this function
-            // exists to enforce. Returning here drops `out_handle` /
-            // `err_handle` without joining, which detaches the threads:
-            // they keep draining in the background until their pipe
-            // finally sees EOF (harmless leak, bounded by process
-            // lifetime), and their output is never used anyway since
-            // `Internal(Timeout)` carries no stdout/stderr message.
+            // exists to enforce. Returning here drops `out_rx` / `err_rx`
+            // without receiving; the drain threads (which own the senders)
+            // keep draining in the background until their pipe finally sees
+            // EOF (harmless leak, bounded by process lifetime), and their
+            // output is never used anyway since `Internal(Timeout)` carries
+            // no stdout/stderr message.
             return GateOutcome::Internal(InternalReason::Timeout);
         }
         Err(e) => return GateOutcome::Internal(InternalReason::Spawn(e.to_string())),
     };
 
-    let stdout = String::from_utf8_lossy(&out_handle.join().unwrap_or_default()).into_owned();
-    let stderr = String::from_utf8_lossy(&err_handle.join().unwrap_or_default()).into_owned();
+    // Bounded collection of the drained output. The child has exited and its
+    // process group was just killed, so every in-group write-end is closed and
+    // both drains deliver within microseconds. A descendant that escaped the
+    // group (setsid/setpgid — see the kill caveat above) still holds a
+    // write-end, so an unbounded wait here would block until it exits — forever
+    // for a daemon — silently overrunning `timeout` on the pass/block path just
+    // as it would on the timeout branch. Cap the wait on a shared deadline: a
+    // drain that misses it is detached and we proceed with what we have. The
+    // exit-code classification comes from `status`, not the pipes, so
+    // correctness holds; only the Block *message* degrades to empty in that
+    // rare escaped-descendant case, which the runner backfills with
+    // "<check-id> blocked".
+    let deadline = Instant::now() + DRAIN_GRACE;
+    let stdout = String::from_utf8_lossy(&recv_until(&out_rx, deadline)).into_owned();
+    let stderr = String::from_utf8_lossy(&recv_until(&err_rx, deadline)).into_owned();
 
     classify(status, &stdout, &stderr)
+}
+
+/// How long the normal (pass/block) path waits for the stdout/stderr drains
+/// after the child's process group has been killed. The drains normally
+/// deliver in microseconds once every in-group pipe write-end is closed; this
+/// only bounds the pathological case of a descendant that escaped the group
+/// (`setsid`/`setpgid`) and still holds a write-end open, so `run_gate` cannot
+/// block past its timeout on the pass path.
+const DRAIN_GRACE: Duration = Duration::from_secs(1);
+
+/// Receive one drained pipe buffer, giving up at `deadline` (returns whatever
+/// has arrived — empty on timeout or a dropped sender). Bounds the normal-path
+/// drain wait so a group-escaped descendant holding a pipe write-end can't hang
+/// `run_gate` past its timeout.
+fn recv_until(rx: &std::sync::mpsc::Receiver<Vec<u8>>, deadline: Instant) -> Vec<u8> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    rx.recv_timeout(remaining).unwrap_or_default()
 }
 
 /// Vars a check may legitimately need to find and run tools, pulled through
@@ -628,6 +664,55 @@ mod tests {
         assert!(
             elapsed < Duration::from_secs(3),
             "timeout branch with setsid'd descendant took {elapsed:?} — should detach and return promptly"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn normal_exit_with_setsid_escaped_descendant_does_not_hang() {
+        // Finding 5 regression. On the NORMAL (pass/block) path `sh` exits 0,
+        // so `wait_timeout` returns `Ok(Some(0))` immediately; the drain
+        // `.join()` after the match must not then block on a descendant that
+        // setsid()'d out of the process group (so `kill_process_group` misses
+        // it) while still holding the inherited stdout write-end. An unbounded
+        // join blocks until that descendant exits — here ~4s, forever for a
+        // real daemon — silently overrunning the 500ms timeout on the *pass*
+        // path.
+        //
+        // The escape is made deterministic rather than a kill-vs-setsid race
+        // (which a plain `& exit 0` descendant LOSES — it is SIGKILLed
+        // in-group before it can escape): perl forks a child that setsid()s
+        // into a new session, records its pid via a marker, and execs a long
+        // sleep; the parent perl blocks until the marker exists and only then
+        // returns, so `sh` exits 0 *after* the descendant is already out of
+        // the group. `perl`/`sleep` are absolute paths — macOS lacks `setsid`,
+        // and the child env is PATH-scrubbed. Contrast
+        // `normal_exit_with_backgrounded_descendant_does_not_hang` (in-group,
+        // killed) and `timeout_detaches_when_descendant_setsids_away` (same
+        // escape on the timeout branch, which already detaches).
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("x.txt");
+        let marker = dir.path().join("marker.pid");
+        let script = "use POSIX; my $m=$ARGV[0]; my $pid=fork(); \
+             if($pid==0){ POSIX::setsid(); open(F,\">\",$m); print F $$; close F; \
+             exec(\"/bin/sleep\",\"4\"); } while(! -e $m){ select(undef,undef,undef,0.01); }";
+        let run = format!("/usr/bin/perl -e '{script}' -- '{}'", marker.display());
+        let start = std::time::Instant::now();
+        let out = run_gate(
+            &run,
+            &env_for(&f, dir.path()),
+            None,
+            Duration::from_millis(500),
+        );
+        let elapsed = start.elapsed();
+        assert!(
+            matches!(out, GateOutcome::Pass),
+            "expected Pass, got {out:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(3),
+            "normal exit blocked {elapsed:?} on an escaped descendant's stdout pipe, \
+             past the 500ms timeout (Finding 5)"
         );
     }
 
