@@ -171,6 +171,65 @@ fn run_file(
     Ok(exit_code(&report.verdict, require_match))
 }
 
+/// Aggregate of per-file check runs, ready to fold into one Verdict.
+pub(crate) struct FoldedOutcomes {
+    pub blocks: Vec<ironlint_core::verdict::Block>,
+    pub errors: Vec<ironlint_core::verdict::GateError>,
+    pub passed: Vec<String>,
+    pub explains: Vec<CheckExplain>,
+    pub elapsed_ms: u64,
+}
+
+/// Run `paths` one file at a time through the engine (write-lifecycle
+/// semantics: on-disk content on stdin), folding the per-file verdicts.
+/// A file we can't read (missing, permissions, non-UTF-8) is a SKIP, not a
+/// hard error: fabricating empty content would run every check against ""
+/// and let a real violation pass vacuously, but aborting the whole batch
+/// would hide a real Block in a sibling file. Record the skip, warn loudly,
+/// and move on. Extracted from `run_diff` so the bare-sweep path reuses the
+/// identical fold.
+pub(crate) fn check_files_individually(
+    engine: &IronLintEngine,
+    paths: &[PathBuf],
+) -> Result<FoldedOutcomes> {
+    let mut out = FoldedOutcomes {
+        blocks: Vec::new(),
+        errors: Vec::new(),
+        passed: Vec::new(),
+        explains: Vec::new(),
+        elapsed_ms: 0,
+    };
+    for path in paths {
+        let content = match read_changed_file(path) {
+            Ok(c) => c,
+            Err(reason) => {
+                let label = reason.label();
+                eprintln!(
+                    "WARNING: skipping file {} ({label}): {reason}",
+                    path.display()
+                );
+                out.explains.push(CheckExplain {
+                    check_id: path.display().to_string(),
+                    outcome: ExplainOutcome::Skipped {
+                        reason: label.to_string(),
+                    },
+                });
+                continue;
+            }
+        };
+        let r = engine.check_with_explain(CheckInput::File {
+            path: path.clone(),
+            content,
+        })?;
+        out.elapsed_ms = out.elapsed_ms.saturating_add(r.verdict.elapsed_ms);
+        out.blocks.extend(r.verdict.blocks);
+        out.errors.extend(r.verdict.errors);
+        out.passed.extend(r.verdict.passed);
+        out.explains.extend(r.explain);
+    }
+    Ok(out)
+}
+
 /// Check every non-deleted changed file in a unified diff. Checks read each
 /// file's current on-disk content (checks don't consume diffs).
 ///
@@ -189,68 +248,32 @@ fn run_diff(
     if changed.is_empty() {
         return Ok(emit_error(format, "no changed files in diff", 1));
     }
-    let non_deleted: Vec<_> = changed
+    let non_deleted: Vec<PathBuf> = changed
         .iter()
         .filter(|f| f.op != ironlint_core::diff::ChangeOp::Deleted)
+        .map(|f| f.path.clone())
         .collect();
 
     // Pre-commit: run each check once over the entire changed set.
     if engine.event() == "pre-commit" {
-        let paths: Vec<PathBuf> = non_deleted.iter().map(|f| f.path.clone()).collect();
-        let verdict = engine.check_set(&paths)?;
+        let verdict = engine.check_set(&non_deleted)?;
         emit(&verdict, format)?;
         return Ok(exit_code(&verdict, require_match));
     }
 
     // Write (and any future per-file event): loop once per changed file.
-    let mut blocks = Vec::new();
-    let mut errors = Vec::new();
-    let mut passed = Vec::new();
-    let mut explains: Vec<CheckExplain> = Vec::new();
-    let mut elapsed = 0u64;
-    for f in non_deleted {
-        // A changed file we can't read (deleted between diff-gen and check,
-        // permissions, non-UTF-8 bytes) is a SKIP, not a hard error:
-        // fabricating empty content would run every check against "" and let
-        // a real violation pass vacuously, but aborting the whole batch would
-        // hide a real Block in a sibling file. Record the skip, warn loudly,
-        // and move on — the aggregate verdict is still computed honestly from
-        // every file that *could* be read.
-        let content = match read_changed_file(&f.path) {
-            Ok(c) => c,
-            Err(reason) => {
-                let label = reason.label();
-                eprintln!(
-                    "WARNING: skipping changed file {} ({label}): {reason}",
-                    f.path.display()
-                );
-                explains.push(CheckExplain {
-                    check_id: f.path.display().to_string(),
-                    outcome: ExplainOutcome::Skipped {
-                        reason: label.to_string(),
-                    },
-                });
-                continue;
-            }
-        };
-        let r = match engine.check_with_explain(CheckInput::File {
-            path: f.path.clone(),
-            content,
-        }) {
-            Ok(r) => r,
-            Err(e) => {
-                return Ok(emit_error(format, &format!("{e:#}"), 1));
-            }
-        };
-        elapsed = elapsed.saturating_add(r.verdict.elapsed_ms);
-        blocks.extend(r.verdict.blocks);
-        errors.extend(r.verdict.errors);
-        passed.extend(r.verdict.passed);
-        explains.extend(r.explain);
-    }
-    let verdict = Verdict::from_outcomes(blocks, errors, passed, elapsed);
+    let folded = match check_files_individually(engine, &non_deleted) {
+        Ok(f) => f,
+        Err(e) => return Ok(emit_error(format, &format!("{e:#}"), 1)),
+    };
+    let verdict = Verdict::from_outcomes(
+        folded.blocks,
+        folded.errors,
+        folded.passed,
+        folded.elapsed_ms,
+    );
     if explain {
-        print_explain(&explains);
+        print_explain(&folded.explains);
     }
     emit(&verdict, format)?;
     Ok(exit_code(&verdict, require_match))
@@ -261,7 +284,7 @@ fn run_diff(
 /// failure happens before the engine ever sees the file, so it's classified
 /// here and folded into the engine's existing skip vocabulary at the call
 /// site rather than growing a new one.
-enum SkipReason {
+pub(crate) enum SkipReason {
     /// `read_to_string` failed with `ErrorKind::InvalidData` — the file's
     /// bytes are not valid UTF-8 (image, UTF-16, other binary fixture).
     NonUtf8,
@@ -293,7 +316,7 @@ impl std::fmt::Display for SkipReason {
 /// Read a diff-referenced file's on-disk content, classifying any failure
 /// into a [`SkipReason`] instead of a hard error. Extracted so the `run_diff`
 /// loop body stays under the cognitive-complexity cap.
-fn read_changed_file(path: &Path) -> Result<String, SkipReason> {
+pub(crate) fn read_changed_file(path: &Path) -> Result<String, SkipReason> {
     std::fs::read_to_string(path).map_err(|e| {
         if e.kind() == std::io::ErrorKind::InvalidData {
             SkipReason::NonUtf8
@@ -328,7 +351,7 @@ fn validate_check_filter(
     }
 }
 
-fn print_explain(rows: &[CheckExplain]) {
+pub(crate) fn print_explain(rows: &[CheckExplain]) {
     for row in rows {
         let outcome = match &row.outcome {
             ExplainOutcome::Fire => "fire".to_string(),
@@ -339,7 +362,7 @@ fn print_explain(rows: &[CheckExplain]) {
     }
 }
 
-fn exit_code(v: &Verdict, require_match: bool) -> i32 {
+pub(crate) fn exit_code(v: &Verdict, require_match: bool) -> i32 {
     let no_match = v.status == Status::Pass
         && v.passed.is_empty()
         && v.blocks.is_empty()
@@ -352,7 +375,7 @@ fn exit_code(v: &Verdict, require_match: bool) -> i32 {
     }
 }
 
-fn emit(v: &Verdict, format: OutputFormat) -> Result<()> {
+pub(crate) fn emit(v: &Verdict, format: OutputFormat) -> Result<()> {
     let no_match = v.status == Status::Pass
         && v.passed.is_empty()
         && v.blocks.is_empty()
