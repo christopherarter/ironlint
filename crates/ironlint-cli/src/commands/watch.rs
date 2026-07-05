@@ -8,8 +8,8 @@ use ironlint_core::runner::IronLintEngine;
 use ironlint_core::telemetry::LogEntry;
 use ironlint_core::verdict::Status;
 use ironlint_core::watch::{
-    fmt_elapsed, lifecycle_badge, short_time, status_glyph, summarize, ArmedCheck, CheckRollup,
-    LogSummary,
+    entrance_reveal, fmt_elapsed, lifecycle_badge, short_time, status_glyph, summarize, ArmedCheck,
+    CheckRollup, LogSummary,
 };
 use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
@@ -35,16 +35,13 @@ const AMBER: Color = Color::Rgb(245, 191, 79);
 const MUTED: Color = Color::Rgb(132, 132, 140);
 
 /// Blocked-row background — a slight, standing dim red (spec §4.2).
-#[allow(dead_code)]
 const RED_REST: Color = Color::Rgb(36, 16, 21);
 
 /// Horizontal wipe-in duration in ms (spec §2, decision 5).
-#[allow(dead_code)]
 const ENTER_MS: u64 = 210;
 
 /// Keep the first `cells` display columns of a line, across its spans. Stream
 /// content is single-column, so a column is one `char`.
-#[allow(dead_code)]
 fn truncate_line(line: Line<'static>, cells: u16) -> Line<'static> {
     let mut remaining = usize::from(cells);
     let mut out: Vec<Span<'static>> = Vec::new();
@@ -67,7 +64,6 @@ fn truncate_line(line: Line<'static>, cells: u16) -> Line<'static> {
 
 /// Extend `line` with a `style`-filled space run until it spans `width`
 /// columns (so a tinted background reaches the pane edge).
-#[allow(dead_code)]
 fn pad_line(mut line: Line<'static>, width: u16, style: Style) -> Line<'static> {
     let cur: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
     let target = usize::from(width);
@@ -114,58 +110,120 @@ fn detail_text(check: &str, status: Status, reason: Option<&str>, event: &str) -
     }
 }
 
+/// A stream entry plus its entrance state. `age_ms` is ms since the row was
+/// released for display (`None` once settled); the event loop supplies it.
+pub struct StreamRow<'a> {
+    pub entry: &'a LogEntry,
+    pub age_ms: Option<u64>,
+}
+
+/// Build the styled main row for one entry (time · glyph · target · elapsed · badge).
+fn main_row_line(entry: &LogEntry) -> Line<'static> {
+    let LogEntry::Check {
+        ts,
+        file,
+        set_size,
+        event,
+        status,
+        elapsed_ms,
+        ..
+    } = entry;
+    let glyph = status_glyph(*status);
+    let target = target_label(file.as_ref(), *set_size);
+    let badge = if event == "pre-commit" {
+        "commit"
+    } else {
+        "write"
+    };
+    Line::from(vec![
+        Span::styled(
+            format!("{:>8}  ", short_time(ts)),
+            Style::default().fg(MUTED),
+        ),
+        Span::styled(
+            format!("{glyph}  "),
+            Style::default().fg(status_color(*status)),
+        ),
+        Span::raw(format!("{target:<40}")),
+        Span::styled(
+            format!("  {:>6}  ", fmt_elapsed(*elapsed_ms)),
+            Style::default().fg(MUTED),
+        ),
+        Span::styled(badge.to_string(), Style::default().fg(MUTED)),
+    ])
+}
+
+/// Apply the standing red tint: background on every span, padded to `width`.
+fn tint(line: Line<'static>, width: u16) -> Line<'static> {
+    let spans: Vec<Span<'static>> = line
+        .spans
+        .into_iter()
+        .map(|s| {
+            let style = s.style.bg(RED_REST);
+            Span::styled(s.content, style)
+        })
+        .collect();
+    pad_line(Line::from(spans), width, Style::default().bg(RED_REST))
+}
+
 /// Newest-first stream lines. `filter` keeps only entries whose `checks`
-/// contains that check name.
-pub fn stream_lines(entries: &[LogEntry], filter: Option<&str>) -> Vec<Line<'static>> {
+/// contains that check name. `width` is the pane width (for the block tint).
+pub fn stream_lines(rows: &[StreamRow], filter: Option<&str>, width: u16) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
-    for entry in entries.iter().rev() {
+    for row in rows.iter().rev() {
         let LogEntry::Check {
-            ts,
-            file,
-            set_size,
             event,
             status,
-            elapsed_ms,
             checks,
-        } = entry;
+            ..
+        } = row.entry;
         if let Some(f) = filter {
             if !checks.iter().any(|c| c.check == f) {
                 continue;
             }
         }
-        let glyph = status_glyph(*status);
-        let target = target_label(file.as_ref(), *set_size);
-        let badge = if event == "pre-commit" {
-            "commit"
-        } else {
-            "write"
-        };
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!("{:>8}  ", short_time(ts)),
-                Style::default().fg(MUTED),
-            ),
-            Span::styled(
-                format!("{glyph}  "),
-                Style::default().fg(status_color(*status)),
-            ),
-            Span::raw(format!("{target:<40}")),
-            Span::styled(
-                format!("  {:>6}  ", fmt_elapsed(*elapsed_ms)),
-                Style::default().fg(MUTED),
-            ),
-            Span::styled(badge.to_string(), Style::default().fg(MUTED)),
-        ]));
+        let reveal = row.age_ms.and_then(|a| entrance_reveal(a, ENTER_MS, width));
+        push_row(
+            &mut lines,
+            main_row_line(row.entry),
+            matches!(status, Status::Block),
+            reveal,
+            width,
+        );
         for c in checks {
             if let Some(text) = detail_text(&c.check, c.status, c.reason.as_deref(), event) {
-                lines.push(Line::from(Span::styled(
+                let d = Line::from(Span::styled(
                     text,
                     Style::default().fg(status_color(c.status)),
-                )));
+                ));
+                push_row(
+                    &mut lines,
+                    d,
+                    matches!(c.status, Status::Block),
+                    reveal,
+                    width,
+                );
             }
         }
     }
     lines
+}
+
+/// Apply optional tint + optional wipe truncation, then push.
+fn push_row(
+    lines: &mut Vec<Line<'static>>,
+    mut line: Line<'static>,
+    blocked: bool,
+    reveal: Option<u16>,
+    width: u16,
+) {
+    if blocked {
+        line = tint(line, width);
+    }
+    if let Some(k) = reveal {
+        line = truncate_line(line, k);
+    }
+    lines.push(line);
 }
 
 fn pass_pct_text(summary: &LogSummary) -> String {
@@ -314,7 +372,16 @@ pub fn ui(
         ))]
     } else {
         match state.view {
-            View::Stream => stream_lines(entries, state.filter.as_deref()),
+            View::Stream => {
+                let rows: Vec<StreamRow> = entries
+                    .iter()
+                    .map(|entry| StreamRow {
+                        entry,
+                        age_ms: None,
+                    })
+                    .collect();
+                stream_lines(&rows, state.filter.as_deref(), chunks[1].width)
+            }
             View::Explorer => explorer_lines(summary, state.selected),
         }
     };
@@ -516,6 +583,7 @@ mod tests {
         set: Option<usize>,
         event: &str,
         status: Status,
+        elapsed_ms: u64,
         recs: Vec<PerCheckRecord>,
     ) -> LogEntry {
         LogEntry::Check {
@@ -524,10 +592,23 @@ mod tests {
             set_size: set,
             event: event.into(),
             status,
-            elapsed_ms: 12,
+            elapsed_ms,
             checks: recs,
         }
     }
+
+    /// Wrap entries as settled (fully revealed) rows for render tests.
+    fn settled(entries: &[LogEntry]) -> Vec<StreamRow<'_>> {
+        entries
+            .iter()
+            .map(|e| StreamRow {
+                entry: e,
+                age_ms: None,
+            })
+            .collect()
+    }
+
+    const W: u16 = 80; // test pane width
     fn prec(name: &str, status: Status, reason: Option<&str>) -> PerCheckRecord {
         PerCheckRecord {
             check: name.into(),
@@ -609,9 +690,10 @@ mod tests {
             None,
             "write",
             Status::Pass,
+            12,
             vec![prec("lint", Status::Pass, None)],
         )];
-        let text = all_text(&stream_lines(&e, None));
+        let text = all_text(&stream_lines(&settled(&e), None, W));
         assert!(text.contains("14:23:09"));
         assert!(text.contains("src/auth.ts"));
         assert!(text.contains("12ms"));
@@ -625,9 +707,10 @@ mod tests {
             None,
             "write",
             Status::Block,
+            12,
             vec![prec("no-focused-tests", Status::Block, None)],
         )];
-        let text = all_text(&stream_lines(&e, None));
+        let text = all_text(&stream_lines(&settled(&e), None, W));
         assert!(text.contains("no-focused-tests"));
         assert!(text.contains("write rejected"));
         assert!(!text.contains("exited"));
@@ -640,9 +723,10 @@ mod tests {
             Some(47),
             "pre-commit",
             Status::Pass,
+            12,
             vec![prec("lint", Status::Pass, None)],
         )];
-        let text = all_text(&stream_lines(&e, None));
+        let text = all_text(&stream_lines(&settled(&e), None, W));
         assert!(text.contains("pre-commit · 47 files"));
         assert!(text.contains("commit"));
     }
@@ -654,9 +738,10 @@ mod tests {
             None,
             "write",
             Status::InternalError,
+            12,
             vec![prec("types-pass", Status::InternalError, Some("timeout"))],
         )];
-        let text = all_text(&stream_lines(&e, None));
+        let text = all_text(&stream_lines(&settled(&e), None, W));
         assert!(text.contains("check error: timeout"));
     }
 
@@ -667,6 +752,7 @@ mod tests {
             None,
             "write",
             Status::Pass,
+            12,
             vec![prec("lint", Status::Pass, None)],
         );
         let LogEntry::Check { ts, .. } = &mut a;
@@ -676,9 +762,10 @@ mod tests {
             None,
             "write",
             Status::Pass,
+            12,
             vec![prec("lint", Status::Pass, None)],
         );
-        let lines = stream_lines(&[a, b], None);
+        let lines = stream_lines(&settled(&[a, b]), None, W);
         assert!(line_text(&lines[0]).contains("new.ts"));
     }
 
@@ -690,6 +777,7 @@ mod tests {
                 None,
                 "write",
                 Status::Pass,
+                12,
                 vec![prec("lint", Status::Pass, None)],
             ),
             entry(
@@ -697,12 +785,67 @@ mod tests {
                 None,
                 "write",
                 Status::Pass,
+                12,
                 vec![prec("types", Status::Pass, None)],
             ),
         ];
-        let text = all_text(&stream_lines(&e, Some("types")));
+        let text = all_text(&stream_lines(&settled(&e), Some("types"), W));
         assert!(text.contains("b.ts"));
         assert!(!text.contains("a.ts"));
+    }
+
+    #[test]
+    fn stream_block_row_is_tinted_full_width_on_row_and_detail() {
+        let e = entry(
+            Some("src/lib.rs"),
+            None,
+            "write",
+            Status::Block,
+            8,
+            vec![prec("ruff", Status::Block, None)],
+        );
+        let lines = stream_lines(&settled(&[e]), None, W);
+        // main row + detail line, both padded to full width and background-tinted.
+        let row = &lines[0];
+        let detail = &lines[1];
+        assert!(
+            line_text(row).chars().count() as u16 >= W,
+            "block row not padded to width"
+        );
+        assert!(
+            row.spans.iter().all(|s| s.style.bg == Some(RED_REST)),
+            "every span of a blocked row carries the red tint"
+        );
+        assert!(
+            detail.spans.iter().all(|s| s.style.bg == Some(RED_REST)),
+            "blocked detail line is tinted too"
+        );
+    }
+
+    #[test]
+    fn stream_pass_row_is_not_tinted() {
+        let e = entry(Some("src/main.rs"), None, "write", Status::Pass, 12, vec![]);
+        let lines = stream_lines(&settled(&[e]), None, W);
+        assert!(
+            lines[0].spans.iter().all(|s| s.style.bg.is_none()),
+            "passing rows have no background"
+        );
+    }
+
+    #[test]
+    fn stream_mid_wipe_row_is_truncated() {
+        let e = entry(Some("src/main.rs"), None, "write", Status::Pass, 12, vec![]);
+        // age halfway through the wipe -> reveal ~half the pane width.
+        let rows = vec![StreamRow {
+            entry: &e,
+            age_ms: Some(ENTER_MS / 2),
+        }];
+        let lines = stream_lines(&rows, None, W);
+        let shown = line_text(&lines[0]).chars().count();
+        assert!(
+            shown > 0 && shown < usize::from(W),
+            "expected a partial reveal, got {shown}"
+        );
     }
 
     // ── Task 3.2: explorer_lines ──────────────────────────────────────────────
@@ -808,6 +951,7 @@ mod tests {
             None,
             "write",
             Status::Pass,
+            12,
             vec![prec("lint", Status::Pass, None)],
         )];
         let summary = LogSummary {
