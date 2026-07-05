@@ -485,7 +485,13 @@ fn event_loop<B: Backend>(
     dir: &Path,
     armed: &[ArmedCheck],
     config_loaded: bool,
-) -> Result<()> {
+) -> Result<()>
+where
+    // ratatui 0.30 gave `Backend` an associated `Error` type; bound it so
+    // `terminal.draw(..)?` can convert into `anyhow::Error`. Both backends we
+    // use (`CrosstermBackend`, `TestBackend`) surface `std::io::Error`.
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
     let log = dir.join(".ironlint/log.jsonl");
     let mut state = ViewState::default();
     let mut entries: Vec<LogEntry> = Vec::new();

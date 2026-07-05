@@ -107,19 +107,22 @@ manual_string_new = "allow"           # `"".to_string()` is fine when it's clear
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
-serde_yaml = "0.9"
+# dtolnay archived serde_yaml at 0.9.34+deprecated (Mar 2024). serde_yaml_ng is
+# acatton's drop-in continuation of the same code — same `serde_yaml::` API, so
+# it's aliased back to the `serde_yaml` name here and every call site is unchanged.
+serde_yaml = { package = "serde_yaml_ng", version = "0.10" }
 serde_json = "1"
 anyhow = "1"
 thiserror = "2"
 clap = { version = "4", features = ["derive"] }
-sha2 = "0.10"
+sha2 = "0.11"
 globset = "0.4"
 tempfile = "3"
 assert_cmd = "2"
 predicates = "3"
 insta = { version = "1", features = ["yaml", "json", "redactions"] }
 chrono = "0.4"
-fs4 = "0.13"
+fs4 = "1"
 proptest = "1"
 
 # The profile that 'dist' will build with

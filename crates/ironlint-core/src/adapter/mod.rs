@@ -7,8 +7,8 @@ mod registry;
 
 pub use json_settings::{remove_from_hook_array, sync_hook_array, PatchResult};
 pub use materialize::{
-    atomic_write, backup_once, read_sidecar, sha256_hex, sidecar_path, write_sidecar,
-    AdapterSidecar,
+    atomic_write, backup_once, read_sidecar, sha256_digest_hex, sha256_hex, sidecar_path,
+    write_sidecar, AdapterSidecar,
 };
 pub use ops::{
     install, install_skill, status, uninstall, uninstall_skill, HarnessStatus, InstallOutcome,

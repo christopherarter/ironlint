@@ -26,16 +26,10 @@ feature-depth = 1
 # ---------------------------------------------------------------------------
 [advisories]
 version = 2
-ignore = [
-    # `paste` is unmaintained (RUSTSEC-2024-0436, upstream archived). It's a
-    # transitive, compile-time-only proc-macro dependency pulled in by
-    # `ratatui` (the `watch` TUI) — no safe upgrade exists (no drop-in
-    # replacement ratatui has adopted yet) and it has no runtime attack
-    # surface (macro expansion only, not linked into the running binary's
-    # logic). Revisit if ratatui migrates off it or a vulnerability (as
-    # opposed to unmaintained-status) advisory is filed against it.
-    { id = "RUSTSEC-2024-0436", reason = "unmaintained transitive proc-macro dep (via ratatui); no safe upgrade, no runtime attack surface" },
-]
+# No advisories ignored. ratatui 0.30 dropped the unmaintained `paste`
+# proc-macro (RUSTSEC-2024-0436) that 0.29 pulled in, so the former ignore for
+# it is gone — the tree is now clean without any suppressions.
+ignore = []
 
 # ---------------------------------------------------------------------------
 # licenses — every license actually present in the dependency graph (workspace

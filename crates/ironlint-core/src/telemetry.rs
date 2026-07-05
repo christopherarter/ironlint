@@ -84,8 +84,8 @@ pub fn append(path: &Path, entry: &LogEntry) -> Result<()> {
 
     #[cfg(unix)]
     {
-        use fs4::fs_std::FileExt;
-        FileExt::lock_exclusive(&file)?;
+        use fs4::FileExt;
+        FileExt::lock(&file)?;
         let result = file.write_all(line.as_bytes());
         FileExt::unlock(&file)?;
         result?;

@@ -1,3 +1,4 @@
+use crate::adapter::sha256_digest_hex;
 use crate::config::Config;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -336,7 +337,7 @@ pub fn compute_hash(config_path: &Path) -> Result<String> {
     // no re-bless. See `fold_referenced_scripts` for the leniency rationale.
     fold_referenced_scripts(&mut hasher, config_path, &gate_dirs)?;
 
-    Ok(format!("sha256:{:x}", hasher.finalize()))
+    Ok(sha256_digest_hex(&hasher.finalize()))
 }
 
 /// A read-only, human-facing enumeration of exactly what trust covers.
@@ -529,7 +530,7 @@ struct StoreLock {
 
 #[cfg(unix)]
 fn acquire_store_lock(store_path: &Path) -> Result<StoreLock> {
-    use fs4::fs_std::FileExt;
+    use fs4::FileExt;
     if let Some(parent) = store_path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating {}", parent.display()))?;
@@ -540,7 +541,7 @@ fn acquire_store_lock(store_path: &Path) -> Result<StoreLock> {
         .write(true)
         .open(lock_path(store_path))
         .with_context(|| format!("opening lock file for {}", store_path.display()))?;
-    FileExt::lock_exclusive(&file).with_context(|| format!("locking {}", store_path.display()))?;
+    FileExt::lock(&file).with_context(|| format!("locking {}", store_path.display()))?;
     Ok(StoreLock { _file: file })
 }
 
@@ -818,7 +819,7 @@ mod tests {
             &format!("gates\0{}\0b.sh", gates_dir.display()),
             b"b\n",
         );
-        let want = format!("sha256:{:x}", expected.finalize());
+        let want = sha256_digest_hex(&expected.finalize());
 
         assert_eq!(compute_hash(&cfg).unwrap(), want);
     }
