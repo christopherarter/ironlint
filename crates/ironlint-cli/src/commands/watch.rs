@@ -8,8 +8,8 @@ use ironlint_core::runner::IronLintEngine;
 use ironlint_core::telemetry::LogEntry;
 use ironlint_core::verdict::Status;
 use ironlint_core::watch::{
-    entrance_reveal, fmt_elapsed, lifecycle_badge, short_time, status_glyph, summarize, ArmedCheck,
-    CheckRollup, LogSummary,
+    cascade_released, entrance_reveal, fmt_elapsed, lifecycle_badge, short_time, status_glyph,
+    summarize, ArmedCheck, CheckRollup, LogSummary,
 };
 use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
@@ -26,6 +26,7 @@ use ratatui::Terminal;
 use std::io::IsTerminal;
 use std::path::Path;
 use std::time::Duration;
+use std::time::Instant;
 
 // ── Color vocabulary ──────────────────────────────────────────────────────────
 
@@ -39,6 +40,13 @@ const RED_REST: Color = Color::Rgb(36, 16, 21);
 
 /// Horizontal wipe-in duration in ms (spec §2, decision 5).
 const ENTER_MS: u64 = 210;
+
+/// Cascade release cadence — one queued row shown per this interval (spec §2).
+const STEP_MS: u64 = 95;
+/// Poll interval while an entrance is in flight (smooth-enough stepping).
+const ACTIVE_POLL_MS: u64 = 40;
+/// Poll interval when nothing is animating — a quiet watcher stays near-zero CPU.
+const IDLE_POLL_MS: u64 = 250;
 
 /// Keep the first `cells` display columns of a line, across its spans. Stream
 /// content is single-column, so a column is one `char`.
@@ -438,32 +446,72 @@ fn event_loop<B: Backend>(
 ) -> Result<()> {
     let log = dir.join(".ironlint/log.jsonl");
     let mut state = ViewState::default();
-    // Incremental tail: accumulate entries across ticks, reading only the bytes
-    // appended since the last tick instead of re-parsing the whole log each time.
     let mut entries: Vec<LogEntry> = Vec::new();
     let mut offset: u64 = 0;
+
+    // Entrance model: `shown` entries are on screen; `revealed_at[i]` is when
+    // entry i was released. A burst releases one row per STEP_MS from `anchor`.
+    let mut shown: usize = 0;
+    let mut revealed_at: Vec<Instant> = Vec::new();
+    let mut anchor = Instant::now();
+    let mut anchor_base: usize = 0;
+
     loop {
-        // On a transient read error, keep the prior view (entries/offset unchanged).
         if let Ok((new, reset)) = ironlint_core::telemetry::read_since(&log, &mut offset) {
             if reset {
                 entries.clear();
+                shown = 0;
+                revealed_at.clear();
+                anchor_base = 0;
             }
             entries.extend(new);
         }
-        let summary = summarize(&entries, armed);
-        // Task 5 rewires this loop for live entrance animation; for now every
-        // row is rendered settled (no age), matching the prior behavior.
-        let rows: Vec<StreamRow> = entries
-            .iter()
-            .map(|entry| StreamRow {
-                entry,
-                age_ms: None,
+
+        let now = Instant::now();
+        // While caught up, keep the anchor at `now` so the next burst's first
+        // row releases immediately; once behind, release on the STEP_MS cadence.
+        if shown == entries.len() {
+            anchor = now;
+            anchor_base = shown;
+        } else {
+            let queued = entries.len() - anchor_base;
+            let elapsed = u64::try_from(now.duration_since(anchor).as_millis()).unwrap_or(u64::MAX);
+            let target = anchor_base + cascade_released(elapsed, STEP_MS, queued);
+            while shown < target {
+                // Exact per-row stagger, independent of tick jitter.
+                let offset_ms = STEP_MS * u64::try_from(shown - anchor_base).unwrap_or(0);
+                revealed_at.push(anchor + Duration::from_millis(offset_ms));
+                shown += 1;
+            }
+        }
+
+        let mut animating = shown < entries.len();
+        let rows: Vec<StreamRow> = (0..shown)
+            .map(|i| {
+                let age = u64::try_from(now.saturating_duration_since(revealed_at[i]).as_millis())
+                    .unwrap_or(u64::MAX);
+                let age_ms = if age < ENTER_MS {
+                    animating = true;
+                    Some(age)
+                } else {
+                    None
+                };
+                StreamRow {
+                    entry: &entries[i],
+                    age_ms,
+                }
             })
             .collect();
-        terminal.draw(|f| {
-            ui(f, &rows, &summary, armed.len(), &state, config_loaded);
-        })?;
-        if event::poll(Duration::from_millis(250))? {
+
+        let summary = summarize(&entries[..shown], armed);
+        terminal.draw(|f| ui(f, &rows, &summary, armed.len(), &state, config_loaded))?;
+
+        let poll = if animating {
+            ACTIVE_POLL_MS
+        } else {
+            IDLE_POLL_MS
+        };
+        if event::poll(Duration::from_millis(poll))? {
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press
                     && handle_key(key.code, &mut state, &summary) == Loop::Quit
@@ -835,6 +883,36 @@ mod tests {
         assert!(
             shown > 0 && shown < usize::from(W),
             "expected a partial reveal, got {shown}"
+        );
+    }
+
+    #[test]
+    fn stream_block_row_mid_wipe_is_tinted_and_truncated() {
+        // Proves push_row's tint-then-truncate order: a blocked row that is
+        // still animating must show BOTH the red tint on its revealed spans
+        // AND a partial (not full-width) reveal.
+        let e = entry(
+            Some("src/lib.rs"),
+            None,
+            "write",
+            Status::Block,
+            8,
+            vec![prec("ruff", Status::Block, None)],
+        );
+        let rows = vec![StreamRow {
+            entry: &e,
+            age_ms: Some(ENTER_MS / 2),
+        }];
+        let lines = stream_lines(&rows, None, W);
+        let row = &lines[0];
+        assert!(
+            row.spans.iter().all(|s| s.style.bg == Some(RED_REST)),
+            "mid-wipe blocked row must keep the red tint on its revealed spans"
+        );
+        let shown = line_text(row).chars().count();
+        assert!(
+            shown > 0 && shown < usize::from(W),
+            "mid-wipe blocked row must be truncated to a partial reveal, got {shown}"
         );
     }
 
