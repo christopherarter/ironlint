@@ -211,9 +211,11 @@ pub fn status_glyph(status: Status) -> char {
     }
 }
 
-/// Cells of a row's width to reveal for the wipe-in entrance, stepped by the
-/// caller's frame cadence. Returns `None` once the row is fully revealed
-/// (`elapsed_ms >= enter_ms`) or when `enter_ms == 0` (no animation).
+/// Cells of a row's width to reveal for the wipe-in entrance, stepped by
+/// the caller's frame cadence.
+///
+/// Returns `None` once the row is fully revealed (`elapsed_ms >= enter_ms`)
+/// or when `enter_ms == 0` (no animation).
 pub fn entrance_reveal(elapsed_ms: u64, enter_ms: u64, full_cells: u16) -> Option<u16> {
     if enter_ms == 0 || elapsed_ms >= enter_ms {
         return None;
@@ -223,8 +225,9 @@ pub fn entrance_reveal(elapsed_ms: u64, enter_ms: u64, full_cells: u16) -> Optio
 }
 
 /// How many queued entries have been released for display by `elapsed_ms`,
-/// at a `step_ms` cadence: one immediately, then one per step, clamped to
-/// `queued`. `step_ms == 0` releases the whole queue at once.
+/// at a `step_ms` cadence: one immediately, then one per step, clamped to `queued`.
+///
+/// `step_ms == 0` releases the whole queue at once.
 pub fn cascade_released(elapsed_ms: u64, step_ms: u64, queued: usize) -> usize {
     if step_ms == 0 {
         return queued;
