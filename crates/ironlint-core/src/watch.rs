@@ -211,6 +211,28 @@ pub fn status_glyph(status: Status) -> char {
     }
 }
 
+/// Cells of a row's width to reveal for the wipe-in entrance, stepped by the
+/// caller's frame cadence. Returns `None` once the row is fully revealed
+/// (`elapsed_ms >= enter_ms`) or when `enter_ms == 0` (no animation).
+pub fn entrance_reveal(elapsed_ms: u64, enter_ms: u64, full_cells: u16) -> Option<u16> {
+    if enter_ms == 0 || elapsed_ms >= enter_ms {
+        return None;
+    }
+    let cells = (u64::from(full_cells) * elapsed_ms) / enter_ms;
+    Some(u16::try_from(cells).unwrap_or(full_cells))
+}
+
+/// How many queued entries have been released for display by `elapsed_ms`,
+/// at a `step_ms` cadence: one immediately, then one per step, clamped to
+/// `queued`. `step_ms == 0` releases the whole queue at once.
+pub fn cascade_released(elapsed_ms: u64, step_ms: u64, queued: usize) -> usize {
+    if step_ms == 0 {
+        return queued;
+    }
+    let steps = usize::try_from(elapsed_ms / step_ms).unwrap_or(usize::MAX);
+    steps.saturating_add(1).min(queued)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -438,5 +460,45 @@ mod tests {
         };
         // rate() returns exactly 0.0 for zero runs (literal branch); epsilon check avoids float_cmp lint.
         assert!(r.rate() < f64::EPSILON);
+    }
+
+    #[test]
+    fn entrance_reveal_starts_at_zero_grows_then_settles() {
+        // Full row is 40 cells, wipe lasts 200ms.
+        assert_eq!(entrance_reveal(0, 200, 40), Some(0));
+        assert_eq!(entrance_reveal(100, 200, 40), Some(20)); // halfway
+        assert_eq!(entrance_reveal(199, 200, 40), Some(39));
+        assert_eq!(entrance_reveal(200, 200, 40), None); // settled at the boundary
+        assert_eq!(entrance_reveal(999, 200, 40), None);
+    }
+
+    #[test]
+    fn entrance_reveal_is_monotonic_non_decreasing() {
+        let mut prev = 0;
+        for t in 0..200 {
+            let cells = entrance_reveal(t, 200, 64).unwrap();
+            assert!(cells >= prev, "reveal went backwards at t={t}");
+            assert!(cells <= 64);
+            prev = cells;
+        }
+    }
+
+    #[test]
+    fn entrance_reveal_zero_duration_is_instant() {
+        assert_eq!(entrance_reveal(0, 0, 40), None);
+    }
+
+    #[test]
+    fn cascade_releases_one_immediately_then_one_per_step() {
+        assert_eq!(cascade_released(0, 95, 5), 1); // first row shows at once
+        assert_eq!(cascade_released(94, 95, 5), 1);
+        assert_eq!(cascade_released(95, 95, 5), 2);
+        assert_eq!(cascade_released(950, 95, 5), 5); // clamps at queued
+    }
+
+    #[test]
+    fn cascade_released_clamps_and_handles_edges() {
+        assert_eq!(cascade_released(1000, 95, 0), 0); // nothing queued
+        assert_eq!(cascade_released(0, 0, 5), 5); // zero step = reveal all
     }
 }
