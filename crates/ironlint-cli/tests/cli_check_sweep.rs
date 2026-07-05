@@ -51,7 +51,11 @@ fn bare_check_on_clean_repo_exits_zero() {
 
     let assert = ironlint(&project, &xdg).arg("check").assert().code(0);
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
-    assert!(stdout.contains("pass"), "stdout: {stdout}");
+    assert_eq!(
+        stdout.trim(),
+        "pass",
+        "expected exactly the pass status line, got: {stdout}"
+    );
 }
 
 #[test]
@@ -246,4 +250,15 @@ fn sweep_fails_closed_on_untrusted_config() {
     let empty_xdg = tempfile::tempdir().unwrap();
 
     ironlint(&project, &empty_xdg).arg("check").assert().code(4);
+}
+
+#[test]
+fn batched_check_internal_error_exits_three() {
+    let project = project_with_config(
+        "checks:\n  broken:\n    files: \"*.md\"\n    on: [pre-commit]\n    run: 'definitely-not-a-real-binary-xyz'\n",
+    );
+    fs::write(project.path().join("a.md"), "x\n").unwrap();
+    let xdg = blessed_store(&project.path().join(".ironlint.yml"));
+
+    ironlint(&project, &xdg).arg("check").assert().code(3);
 }

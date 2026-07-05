@@ -312,7 +312,7 @@ fn run_diff(
 /// failure happens before the engine ever sees the file, so it's classified
 /// here and folded into the engine's existing skip vocabulary at the call
 /// site rather than growing a new one.
-pub(crate) enum SkipReason {
+enum SkipReason {
     /// `read_to_string` failed with `ErrorKind::InvalidData` — the file's
     /// bytes are not valid UTF-8 (image, UTF-16, other binary fixture).
     NonUtf8,
@@ -344,7 +344,7 @@ impl std::fmt::Display for SkipReason {
 /// Read a diff-referenced file's on-disk content, classifying any failure
 /// into a [`SkipReason`] instead of a hard error. Extracted so the `run_diff`
 /// loop body stays under the cognitive-complexity cap.
-pub(crate) fn read_changed_file(path: &Path) -> Result<String, SkipReason> {
+fn read_changed_file(path: &Path) -> Result<String, SkipReason> {
     std::fs::read_to_string(path).map_err(|e| {
         if e.kind() == std::io::ErrorKind::InvalidData {
             SkipReason::NonUtf8

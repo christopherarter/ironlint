@@ -140,6 +140,10 @@ pub(crate) fn run(
         };
         let batch_engine = match IronLintEngine::builder().with_options(options).load(config) {
             Ok(e) => e,
+            // Defensive: `config` already parsed and loaded successfully once
+            // in `check::run` for this exact path, so this reload isn't
+            // expected to fail in practice. Kept as a real error path (not
+            // unwrapped) in case that invariant ever breaks.
             Err(e) => return Ok(emit_error(format, &format!("{e:#}"), 1)),
         };
         match batch_engine.check_set(&files) {
@@ -149,6 +153,10 @@ pub(crate) fn run(
                 errors.extend(v.errors);
                 passed.extend(v.passed);
             }
+            // Defensive: `check_set` currently has no fallible path (spawn
+            // failures classify to InternalError inside the verdict, not
+            // Err); kept so a future fallible variant isn't silently
+            // swallowed.
             Err(e) => return Ok(emit_error(format, &format!("{e:#}"), 1)),
         }
     }

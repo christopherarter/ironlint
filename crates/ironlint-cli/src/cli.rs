@@ -49,6 +49,8 @@ pub enum Command {
         )]
         event: Option<String>,
         /// After the verdict, print a per-gate outcome report to stderr.
+        /// Rows cover per-file (write-lifecycle) checks; batched pre-commit
+        /// checks emit no rows.
         #[arg(long)]
         explain: bool,
         /// Allow checking files whose canonical path falls outside the
