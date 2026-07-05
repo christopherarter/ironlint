@@ -1069,7 +1069,6 @@ dependencies = [
  "assert_cmd",
  "axoupdater",
  "camino",
- "chrono",
  "clap",
  "insta",
  "ironlint-core",

@@ -1,7 +1,8 @@
 //! `ironlint watch` — a read-only live TUI over `.ironlint/log.jsonl`.
 //!
 //! All decision logic (aggregation in core, plus `handle_key`/`stream_lines`/
-//! `explorer_lines`/`ui` here) is pure and tested; the only uncovered code is
+//! `explorer_lines`/`ui`/`advance_cascade` here, and the `truncate_line`/
+//! `pad_line` line helpers) is pure and tested; the only uncovered code is
 //! the terminal setup (`run_tui`) and event loop (`event_loop`), kept minimal.
 use anyhow::Result;
 use ironlint_core::runner::IronLintEngine;
@@ -207,6 +208,10 @@ pub fn stream_lines(rows: &[StreamRow], filter: Option<&str>, width: u16) -> Vec
                 push_row(
                     &mut lines,
                     d,
+                    // Deliberate per-check keying (not the entry's status): a
+                    // blocking check's own detail line gets the red tint, but an
+                    // InternalError detail line keeps its amber text untinted —
+                    // amber-on-red would read wrong.
                     matches!(c.status, Status::Block),
                     reveal,
                     width,
@@ -869,7 +874,7 @@ mod tests {
         let row = &lines[0];
         let detail = &lines[1];
         assert!(
-            line_text(row).chars().count() as u16 >= W,
+            line_text(row).chars().count() >= usize::from(W),
             "block row not padded to width"
         );
         assert!(
@@ -936,6 +941,45 @@ mod tests {
             shown > 0 && shown < usize::from(W),
             "mid-wipe blocked row must be truncated to a partial reveal, got {shown}"
         );
+    }
+
+    #[test]
+    fn stream_block_entry_tints_block_detail_but_not_internal_detail() {
+        // Entry-level status is Block (one of its checks blocked); it carries
+        // both a Block sub-check and an InternalError sub-check. Proves the
+        // per-check tint keying: the main row and the blocking check's detail
+        // line get the red tint, but the InternalError detail line does not.
+        let e = entry(
+            Some("src/lib.rs"),
+            None,
+            "write",
+            Status::Block,
+            8,
+            vec![
+                prec("ruff", Status::Block, None),
+                prec("types-check", Status::InternalError, Some("timeout")),
+            ],
+        );
+        let lines = stream_lines(&settled(&[e]), None, W);
+        let main = &lines[0];
+        let block_detail = &lines[1];
+        let internal_detail = &lines[2];
+        assert!(
+            main.spans.iter().all(|s| s.style.bg == Some(RED_REST)),
+            "entry blocked -> main row tinted full width"
+        );
+        assert!(
+            block_detail
+                .spans
+                .iter()
+                .all(|s| s.style.bg == Some(RED_REST)),
+            "blocking check's own detail line is tinted red"
+        );
+        assert!(
+            internal_detail.spans.iter().all(|s| s.style.bg.is_none()),
+            "internal-error detail line keeps its amber text untinted"
+        );
+        assert!(line_text(internal_detail).contains("check error"));
     }
 
     // ── Task 3.2: explorer_lines ──────────────────────────────────────────────

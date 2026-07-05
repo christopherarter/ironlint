@@ -16,7 +16,6 @@ anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
-chrono.workspace = true
 # Self-update (`ironlint update`): reads the dist install receipt, checks the
 # latest GitHub release, and re-runs the same installer the user installed with.
 # `blocking` provides a synchronous entrypoint so the CLI stays non-async.
