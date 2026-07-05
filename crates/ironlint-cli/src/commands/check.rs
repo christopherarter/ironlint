@@ -67,7 +67,7 @@ pub fn run(
     format: OutputFormat,
     config: &Path,
     checks: Vec<String>,
-    event: String,
+    event: Option<String>,
     explain: bool,
     allow_external_paths: bool,
     force: bool,
@@ -114,6 +114,8 @@ pub fn run(
             return Ok(emit_error(format, &format!("{e:#}"), 1));
         }
     }
+    let event_explicit = event.is_some();
+    let event = event.unwrap_or_else(|| "write".to_string());
     let options = CheckOptions {
         checks: HashSet::new(),
         event,
@@ -127,16 +129,41 @@ pub fn run(
     if let Some(code) = validate_check_filter(&engine, &checks, format) {
         return Ok(code);
     }
-    engine.set_check_filter(checks.into_iter().collect());
+    let check_filter: HashSet<String> = checks.into_iter().collect();
+    engine.set_check_filter(check_filter.clone());
 
     match (file, diff) {
         (Some(f), None) => run_file(&engine, f, content, format, explain, require_match),
         (None, Some(d)) => run_diff(&engine, &d, format, explain, require_match),
-        _ => Ok(emit_error(
+        (Some(_), Some(_)) => Ok(emit_error(
             format,
             "provide exactly one of --file or --diff",
             1,
         )),
+        (None, None) => {
+            // Bare `check` = repo-wide sweep. The sweep derives each check's
+            // lifecycle from its `on:` list, so a caller-chosen event is a
+            // contradiction, and `--force` (scope bypass for one file) has
+            // no meaning against a walked set.
+            if event_explicit {
+                return Ok(emit_error(
+                    format,
+                    "--event requires --file or --diff (a bare sweep runs each check's own lifecycle)",
+                    1,
+                ));
+            }
+            if force {
+                return Ok(emit_error(format, "--force requires --file", 1));
+            }
+            crate::commands::sweep::run(
+                &mut engine,
+                config,
+                &check_filter,
+                format,
+                explain,
+                require_match,
+            )
+        }
     }
 }
 

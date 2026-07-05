@@ -14,7 +14,7 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Run the pipeline against a file or diff.
+    /// Run the pipeline against a file, a diff, or — with neither — sweep the repo.
     Check {
         #[arg(long)]
         file: Option<PathBuf>,
@@ -39,14 +39,15 @@ pub enum Command {
         #[arg(long = "check", action = clap::ArgAction::Append)]
         checks: Vec<String>,
         /// What triggered this check, surfaced to checks as $IRONLINT_EVENT.
-        /// Restricted to the two ABI values; an unknown value is rejected
-        /// at the arg layer so typos never reach `$IRONLINT_EVENT`.
+        /// Defaults to `write` for `--file`/`--diff`. Not valid with a bare
+        /// repo-wide sweep, which derives each check's lifecycle from its
+        /// `on:` list. Restricted to the two ABI values; an unknown value is
+        /// rejected at the arg layer so typos never reach `$IRONLINT_EVENT`.
         #[arg(
             long,
-            default_value = "write",
             value_parser = clap::builder::PossibleValuesParser::new(["write", "pre-commit"])
         )]
-        event: String,
+        event: Option<String>,
         /// After the verdict, print a per-gate outcome report to stderr.
         #[arg(long)]
         explain: bool,

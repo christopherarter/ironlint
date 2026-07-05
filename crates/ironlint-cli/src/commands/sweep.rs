@@ -1,6 +1,3 @@
-#![allow(dead_code)]
-// TODO(Task 3): consumed by the sweep arm; allow lifted when wired.
-
 //! Bare `ironlint check` — the repo-wide sweep.
 //!
 //! Dispatch model (each check runs exactly once per sweep, keyed by
@@ -14,14 +11,23 @@
 //! A dual-lifecycle check (`on: [write, pre-commit]`) is batched only, so it
 //! is never double-run.
 
+use crate::cli::OutputFormat;
+use crate::commands::check::{check_files_individually, emit, exit_code, print_explain};
+use crate::commands::error_report::emit_error;
 use anyhow::Result;
 use ironlint_core::config::{Check, Lifecycle};
+use ironlint_core::runner::IronLintEngine;
+use ironlint_core::verdict::Verdict;
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
 /// Which sweep phase each check id belongs to. The split is disjoint.
 pub(crate) struct SweepClasses {
     pub per_file: HashSet<String>,
+    /// Consumed by Task 4's batched (`check_set`) phase; only read by unit
+    /// tests today, so it's genuinely dead from clippy's (non-test) vantage
+    /// point until that phase lands.
+    #[allow(dead_code)]
     pub batched: HashSet<String>,
 }
 
@@ -66,6 +72,67 @@ pub(crate) fn walk_files(root: &Path) -> Result<Vec<PathBuf>> {
         .collect();
     files.sort();
     Ok(files)
+}
+
+/// Bare-`check` orchestration. `engine` arrives loaded with event `write`,
+/// trust-gated, and with the user's `--check` filter already validated.
+pub(crate) fn run(
+    engine: &mut IronLintEngine,
+    config: &Path,
+    user_checks: &HashSet<String>,
+    format: OutputFormat,
+    explain: bool,
+    require_match: bool,
+) -> Result<i32> {
+    let parent = config.parent().unwrap_or_else(|| Path::new("."));
+    let root = if parent.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        parent
+    };
+    let files = walk_files(root)?;
+    let classes = classify_checks(engine.checks(), user_checks);
+
+    let mut blocks = Vec::new();
+    let mut errors = Vec::new();
+    let mut passed = Vec::new();
+    let mut explains = Vec::new();
+    let mut elapsed: u64 = 0;
+
+    // Phase 1 — write-only checks, one invocation per matching file.
+    if !classes.per_file.is_empty() {
+        engine.set_check_filter(classes.per_file.clone());
+        // Prune to files at least one phase-1 check scopes to; without this,
+        // every walked file would produce a no-op engine call and a
+        // telemetry row.
+        let scoped: Vec<PathBuf> = files
+            .iter()
+            .filter(|f| {
+                classes
+                    .per_file
+                    .iter()
+                    .any(|id| engine.check_matches_path(id, f))
+            })
+            .cloned()
+            .collect();
+        match check_files_individually(engine, &scoped) {
+            Ok(folded) => {
+                blocks.extend(folded.blocks);
+                errors.extend(folded.errors);
+                passed.extend(folded.passed);
+                explains.extend(folded.explains);
+                elapsed = elapsed.saturating_add(folded.elapsed_ms);
+            }
+            Err(e) => return Ok(emit_error(format, &format!("{e:#}"), 1)),
+        }
+    }
+
+    let verdict = Verdict::from_outcomes(blocks, errors, passed, elapsed);
+    if explain {
+        print_explain(&explains);
+    }
+    emit(&verdict, format)?;
+    Ok(exit_code(&verdict, require_match))
 }
 
 #[cfg(test)]
