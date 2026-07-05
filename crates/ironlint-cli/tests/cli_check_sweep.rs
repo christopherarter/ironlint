@@ -156,3 +156,94 @@ fn batched_check_block_reaches_the_sweep_verdict() {
     assert!(stderr.contains("always-block"), "stderr: {stderr}");
     assert!(stderr.contains("set-level violation"), "stderr: {stderr}");
 }
+
+#[test]
+fn sweep_honors_gitignore_without_a_git_repo() {
+    let project = project_with_config(GREP_CHECK);
+    fs::write(project.path().join(".gitignore"), "vendor/\n").unwrap();
+    fs::create_dir_all(project.path().join("vendor")).unwrap();
+    fs::write(
+        project.path().join("vendor/dirty.md"),
+        "has FORBIDDEN word\n",
+    )
+    .unwrap();
+    let xdg = blessed_store(&project.path().join(".ironlint.yml"));
+
+    ironlint(&project, &xdg).arg("check").assert().code(0);
+}
+
+#[test]
+fn sweep_skips_hidden_directories() {
+    let project = project_with_config(GREP_CHECK);
+    fs::create_dir_all(project.path().join(".secrets")).unwrap();
+    fs::write(
+        project.path().join(".secrets/dirty.md"),
+        "has FORBIDDEN word\n",
+    )
+    .unwrap();
+    let xdg = blessed_store(&project.path().join(".ironlint.yml"));
+
+    ironlint(&project, &xdg).arg("check").assert().code(0);
+}
+
+#[test]
+fn sweep_warns_and_skips_non_utf8_but_still_blocks_siblings() {
+    let project = project_with_config(GREP_CHECK);
+    fs::write(project.path().join("binary.md"), [0xFF, 0xFE, 0x00, 0x01]).unwrap();
+    fs::write(project.path().join("dirty.md"), "has FORBIDDEN word\n").unwrap();
+    let xdg = blessed_store(&project.path().join(".ironlint.yml"));
+
+    let assert = ironlint(&project, &xdg).arg("check").assert().code(2);
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    assert!(
+        stderr.contains("WARNING") && stderr.contains("binary.md"),
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("dirty.md"), "stderr: {stderr}");
+}
+
+#[test]
+fn sweep_check_filter_limits_to_named_check() {
+    let project = project_with_config(concat!(
+        "checks:\n",
+        "  no-forbidden:\n",
+        "    files: \"*.md\"\n",
+        "    run: '! grep -n FORBIDDEN'\n",
+        "  always-block:\n",
+        "    files: \"*.txt\"\n",
+        "    run: 'exit 1'\n",
+    ));
+    fs::write(project.path().join("clean.md"), "all good\n").unwrap();
+    fs::write(project.path().join("note.txt"), "anything\n").unwrap();
+    let xdg = blessed_store(&project.path().join(".ironlint.yml"));
+
+    // Only no-forbidden runs; always-block's guaranteed violation is filtered out.
+    ironlint(&project, &xdg)
+        .args(["check", "--check", "no-forbidden"])
+        .assert()
+        .code(0);
+}
+
+#[test]
+fn sweep_require_match_flags_a_scope_that_matches_nothing() {
+    let project =
+        project_with_config("checks:\n  ghost:\n    files: \"*.nomatch\"\n    run: 'exit 1'\n");
+    fs::write(project.path().join("a.md"), "x\n").unwrap();
+    let xdg = blessed_store(&project.path().join(".ironlint.yml"));
+
+    ironlint(&project, &xdg).arg("check").assert().code(0);
+    ironlint(&project, &xdg)
+        .args(["check", "--require-match"])
+        .assert()
+        .code(2);
+}
+
+#[test]
+fn sweep_fails_closed_on_untrusted_config() {
+    let project = project_with_config(GREP_CHECK);
+    fs::write(project.path().join("a.md"), "x\n").unwrap();
+    // Fresh, empty trust store: the config was never blessed.
+    let empty_xdg = tempfile::tempdir().unwrap();
+
+    ironlint(&project, &empty_xdg).arg("check").assert().code(4);
+}
