@@ -34,6 +34,50 @@ const GREEN: Color = Color::Rgb(52, 211, 153);
 const AMBER: Color = Color::Rgb(245, 191, 79);
 const MUTED: Color = Color::Rgb(132, 132, 140);
 
+/// Blocked-row background — a slight, standing dim red (spec §4.2).
+#[allow(dead_code)]
+const RED_REST: Color = Color::Rgb(36, 16, 21);
+
+/// Horizontal wipe-in duration in ms (spec §2, decision 5).
+#[allow(dead_code)]
+const ENTER_MS: u64 = 210;
+
+/// Keep the first `cells` display columns of a line, across its spans. Stream
+/// content is single-column, so a column is one `char`.
+#[allow(dead_code)]
+fn truncate_line(line: Line<'static>, cells: u16) -> Line<'static> {
+    let mut remaining = usize::from(cells);
+    let mut out: Vec<Span<'static>> = Vec::new();
+    for span in line.spans {
+        if remaining == 0 {
+            break;
+        }
+        let n = span.content.chars().count();
+        if n <= remaining {
+            remaining -= n;
+            out.push(span);
+        } else {
+            let kept: String = span.content.chars().take(remaining).collect();
+            out.push(Span::styled(kept, span.style));
+            remaining = 0;
+        }
+    }
+    Line::from(out)
+}
+
+/// Extend `line` with a `style`-filled space run until it spans `width`
+/// columns (so a tinted background reaches the pane edge).
+#[allow(dead_code)]
+fn pad_line(mut line: Line<'static>, width: u16, style: Style) -> Line<'static> {
+    let cur: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
+    let target = usize::from(width);
+    if cur < target {
+        line.spans
+            .push(Span::styled(" ".repeat(target - cur), style));
+    }
+    line
+}
+
 fn status_color(status: Status) -> Color {
     match status {
         Status::Block => ORANGE,
@@ -981,5 +1025,37 @@ mod tests {
         assert!(matches!(s.view, View::Explorer));
         handle_key(KeyCode::Left, &mut s, &summary_with(&[]));
         assert!(matches!(s.view, View::Stream));
+    }
+
+    // ── Task 2: line helpers ─────────────────────────────────────────────────
+
+    #[test]
+    fn truncate_line_keeps_first_n_columns_across_spans() {
+        let line = Line::from(vec![
+            Span::styled("abc", Style::default().fg(GREEN)),
+            Span::styled("defg", Style::default().fg(MUTED)),
+        ]);
+        assert_eq!(line_text(&truncate_line(line.clone(), 0)), "");
+        assert_eq!(line_text(&truncate_line(line.clone(), 2)), "ab");
+        assert_eq!(line_text(&truncate_line(line.clone(), 3)), "abc");
+        assert_eq!(line_text(&truncate_line(line.clone(), 5)), "abcde");
+        assert_eq!(line_text(&truncate_line(line, 99)), "abcdefg"); // over-long = whole line
+    }
+
+    #[test]
+    fn pad_line_fills_to_width_with_style() {
+        let line = Line::from(Span::raw("abc"));
+        let padded = pad_line(line, 6, Style::default().bg(RED_REST));
+        assert_eq!(line_text(&padded), "abc   ");
+        // the padding span carries the fill style
+        let last = padded.spans.last().unwrap();
+        assert_eq!(last.style.bg, Some(RED_REST));
+    }
+
+    #[test]
+    fn pad_line_noop_when_already_at_width() {
+        let line = Line::from(Span::raw("abcdef"));
+        let padded = pad_line(line, 4, Style::default().bg(RED_REST));
+        assert_eq!(line_text(&padded), "abcdef");
     }
 }
