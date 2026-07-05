@@ -162,6 +162,7 @@ pub fn run(
                 format,
                 explain,
                 require_match,
+                allow_external_paths,
             )
         }
     }

@@ -85,3 +85,74 @@ fn bare_check_rejects_force() {
         "stderr: {stderr}"
     );
 }
+
+#[test]
+fn pre_commit_check_runs_once_over_the_matched_set() {
+    let project = project_with_config(concat!(
+        "checks:\n",
+        "  set-check:\n",
+        "    files: \"*.md\"\n",
+        "    on: [pre-commit]\n",
+        "    run: |\n",
+        "      echo INVOKED >> invocations.txt\n",
+        "      printf '%s\\n' \"$IRONLINT_FILES\" >> seen.txt\n",
+        "      exit 0\n",
+    ));
+    fs::write(project.path().join("a.md"), "x\n").unwrap();
+    fs::write(project.path().join("b.md"), "y\n").unwrap();
+    let xdg = blessed_store(&project.path().join(".ironlint.yml"));
+
+    ironlint(&project, &xdg).arg("check").assert().code(0);
+
+    let invocations = fs::read_to_string(project.path().join("invocations.txt")).unwrap();
+    assert_eq!(
+        invocations.lines().count(),
+        1,
+        "expected exactly one batched invocation, got: {invocations}"
+    );
+    let seen = fs::read_to_string(project.path().join("seen.txt")).unwrap();
+    assert!(seen.contains("a.md"), "seen: {seen}");
+    assert!(seen.contains("b.md"), "seen: {seen}");
+    assert_eq!(
+        seen.lines().count(),
+        2,
+        "expected both files in one $IRONLINT_FILES, got: {seen}"
+    );
+}
+
+#[test]
+fn dual_lifecycle_check_is_batched_not_double_run() {
+    let project = project_with_config(concat!(
+        "checks:\n",
+        "  dual:\n",
+        "    files: \"*.md\"\n",
+        "    on: [write, pre-commit]\n",
+        "    run: 'echo INVOKED >> invocations.txt; exit 0'\n",
+    ));
+    fs::write(project.path().join("a.md"), "x\n").unwrap();
+    fs::write(project.path().join("b.md"), "y\n").unwrap();
+    let xdg = blessed_store(&project.path().join(".ironlint.yml"));
+
+    ironlint(&project, &xdg).arg("check").assert().code(0);
+
+    let invocations = fs::read_to_string(project.path().join("invocations.txt")).unwrap();
+    assert_eq!(
+        invocations.lines().count(),
+        1,
+        "a dual-lifecycle check must run exactly once per sweep, got: {invocations}"
+    );
+}
+
+#[test]
+fn batched_check_block_reaches_the_sweep_verdict() {
+    let project = project_with_config(
+        "checks:\n  always-block:\n    files: \"*.md\"\n    on: [pre-commit]\n    run: 'echo set-level violation; exit 1'\n",
+    );
+    fs::write(project.path().join("a.md"), "x\n").unwrap();
+    let xdg = blessed_store(&project.path().join(".ironlint.yml"));
+
+    let assert = ironlint(&project, &xdg).arg("check").assert().code(2);
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    assert!(stderr.contains("always-block"), "stderr: {stderr}");
+    assert!(stderr.contains("set-level violation"), "stderr: {stderr}");
+}

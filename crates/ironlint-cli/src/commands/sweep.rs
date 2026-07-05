@@ -16,7 +16,7 @@ use crate::commands::check::{check_files_individually, emit, exit_code, print_ex
 use crate::commands::error_report::emit_error;
 use anyhow::Result;
 use ironlint_core::config::{Check, Lifecycle};
-use ironlint_core::runner::IronLintEngine;
+use ironlint_core::runner::{CheckOptions, IronLintEngine};
 use ironlint_core::verdict::Verdict;
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -24,10 +24,6 @@ use std::path::{Path, PathBuf};
 /// Which sweep phase each check id belongs to. The split is disjoint.
 pub(crate) struct SweepClasses {
     pub per_file: HashSet<String>,
-    /// Consumed by Task 4's batched (`check_set`) phase; only read by unit
-    /// tests today, so it's genuinely dead from clippy's (non-test) vantage
-    /// point until that phase lands.
-    #[allow(dead_code)]
     pub batched: HashSet<String>,
 }
 
@@ -83,6 +79,7 @@ pub(crate) fn run(
     format: OutputFormat,
     explain: bool,
     require_match: bool,
+    allow_external_paths: bool,
 ) -> Result<i32> {
     let parent = config.parent().unwrap_or_else(|| Path::new("."));
     let root = if parent.as_os_str().is_empty() {
@@ -122,6 +119,35 @@ pub(crate) fn run(
                 passed.extend(folded.passed);
                 explains.extend(folded.explains);
                 elapsed = elapsed.saturating_add(folded.elapsed_ms);
+            }
+            Err(e) => return Ok(emit_error(format, &format!("{e:#}"), 1)),
+        }
+    }
+
+    // Phase 2 — batch-class checks: ONE invocation per check over the full
+    // walked set (the engine scope-filters per check). This is the sweep's
+    // primary performance lever: O(checks) process spawns instead of
+    // O(files x checks) for every check that can run in set mode. A second
+    // engine is loaded because the event is fixed at load time; config
+    // parse + matcher build is microseconds against process spawns, and the
+    // trust gate already ran for this config path in `check::run`.
+    if !classes.batched.is_empty() {
+        let options = CheckOptions {
+            checks: classes.batched.clone(),
+            event: "pre-commit".to_string(),
+            allow_external_paths,
+            force: false,
+        };
+        let batch_engine = match IronLintEngine::builder().with_options(options).load(config) {
+            Ok(e) => e,
+            Err(e) => return Ok(emit_error(format, &format!("{e:#}"), 1)),
+        };
+        match batch_engine.check_set(&files) {
+            Ok(v) => {
+                elapsed = elapsed.saturating_add(v.elapsed_ms);
+                blocks.extend(v.blocks);
+                errors.extend(v.errors);
+                passed.extend(v.passed);
             }
             Err(e) => return Ok(emit_error(format, &format!("{e:#}"), 1)),
         }
