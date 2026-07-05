@@ -1036,9 +1036,33 @@ mod tests {
             Span::styled("defg", Style::default().fg(MUTED)),
         ]);
         assert_eq!(line_text(&truncate_line(line.clone(), 0)), "");
-        assert_eq!(line_text(&truncate_line(line.clone(), 2)), "ab");
-        assert_eq!(line_text(&truncate_line(line.clone(), 3)), "abc");
-        assert_eq!(line_text(&truncate_line(line.clone(), 5)), "abcde");
+
+        // Truncate to 2: "ab" keeps first span partial with GREEN style
+        let t2 = truncate_line(line.clone(), 2);
+        assert_eq!(line_text(&t2), "ab");
+        assert_eq!(
+            t2.spans[0].style.fg,
+            Some(GREEN),
+            "partial first span must retain GREEN"
+        );
+
+        // Truncate to 3: exact boundary of first span, keeps "abc" whole with GREEN
+        let t3 = truncate_line(line.clone(), 3);
+        assert_eq!(line_text(&t3), "abc");
+        assert_eq!(t3.spans.len(), 1, "exact boundary: only first span kept");
+        assert_eq!(t3.spans[0].style.fg, Some(GREEN), "first span keeps GREEN");
+
+        // Truncate to 5: "abcde" splits second span, keeps MUTED on split
+        let t5 = truncate_line(line.clone(), 5);
+        assert_eq!(line_text(&t5), "abcde");
+        assert_eq!(t5.spans.len(), 2, "split second span means two spans");
+        assert_eq!(t5.spans[0].style.fg, Some(GREEN), "first span keeps GREEN");
+        assert_eq!(
+            t5.spans[1].style.fg,
+            Some(MUTED),
+            "split second span keeps MUTED"
+        );
+
         assert_eq!(line_text(&truncate_line(line, 99)), "abcdefg"); // over-long = whole line
     }
 
@@ -1054,8 +1078,23 @@ mod tests {
 
     #[test]
     fn pad_line_noop_when_already_at_width() {
+        // Build a 6-char line, pad to 6: exact boundary must be a true no-op
         let line = Line::from(Span::raw("abcdef"));
-        let padded = pad_line(line, 4, Style::default().bg(RED_REST));
+        let spans_before = line.spans.len();
+        let padded = pad_line(line, 6, Style::default().bg(RED_REST));
         assert_eq!(line_text(&padded), "abcdef");
+        assert_eq!(
+            padded.spans.len(),
+            spans_before,
+            "width == current width: no extra span appended"
+        );
+
+        // Also verify that padding a line shorter than the requested width works
+        let line_short = Line::from(Span::raw("abc"));
+        let padded_short = pad_line(line_short, 6, Style::default().bg(RED_REST));
+        assert_eq!(line_text(&padded_short), "abc   ");
+        // the padding span carries the fill style
+        let last = padded_short.spans.last().unwrap();
+        assert_eq!(last.style.bg, Some(RED_REST));
     }
 }
