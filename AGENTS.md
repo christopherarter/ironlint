@@ -4,7 +4,7 @@ Guidance for AI coding agents working in this repo.
 
 ## What this is
 
-Rust rewrite of [dynamik-dev/bully](https://github.com/dynamik-dev/bully) — local CI for AI coding agents. Status: **0.4 "checks pipeline" redesign merged.** A check is `files` (globs) + `run` (or `steps`) + `on` (lifecycle); ironlint matches a touched file to checks, runs each command with the ABI on env + proposed content on stdin, and reads only the exit code — **any nonzero exit (1–125) blocks**. No per-rule engines, no severity, no LLM. CLI ships `check`, `validate`, `init` (scaffolds `.ironlint.yml` AND onboards ironlint's hook into detected coding agents — claude-code, codex, pi, opencode), `explain`, `show-resolved-config`, `doctor` (reports per-harness adapter status in the `checks[]` array), `trust` (blesses the out-of-repo store; `check` fails closed — exit 4 — on untrusted config/checks), `update` (self-updates the binary to the latest GitHub release via the dist install receipt). Authoritative design: `specs/2026-06-28-ironlint-checks-pipeline-design.md`; per-phase plans in `plans/`.
+Rust rewrite of [dynamik-dev/bully](https://github.com/dynamik-dev/bully) — local CI for AI coding agents. Status: **0.4 "checks pipeline" redesign merged.** A check is `files` (globs) + `run` (or `steps`) + `on` (lifecycle); ironlint matches a touched file to checks, runs each command with the ABI on env + proposed content on stdin, and reads only the exit code — **any nonzero exit (1–125) blocks**. No per-rule engines, no severity, no LLM. CLI ships `check` (with `--file`, `--diff`, or bare for a repo-wide sweep), `validate`, `init` (scaffolds `.ironlint.yml` AND onboards ironlint's hook into detected coding agents — claude-code, codex, pi, opencode), `explain`, `show-resolved-config`, `doctor` (reports per-harness adapter status in the `checks[]` array), `trust` (blesses the out-of-repo store; `check` fails closed — exit 4 — on untrusted config/checks), `update` (self-updates the binary to the latest GitHub release via the dist install receipt). Authoritative design: `specs/2026-06-28-ironlint-checks-pipeline-design.md`; per-phase plans in `plans/`.
 
 **Not yet built (later plans):** `ironlint verify` + the full `doctor` expansion.
 
@@ -23,6 +23,7 @@ Rust rewrite of [dynamik-dev/bully](https://github.com/dynamik-dev/bully) — lo
 
 ```bash
 cargo build --release                       # produces ./target/release/ironlint
+./target/release/ironlint check              # bare = repo-wide sweep (batched where checks allow)
 cargo test                                  # all workspace tests
 cargo test -p ironlint-core                 # core only
 cargo test -p ironlint-cli                  # CLI only
