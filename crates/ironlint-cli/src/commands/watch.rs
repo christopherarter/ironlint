@@ -438,6 +438,43 @@ fn run_tui(dir: &Path, armed: &[ArmedCheck], config_loaded: bool) -> Result<()> 
     result
 }
 
+/// Cascade release state, timed in ms since the watch loop started so the
+/// release decision is pure and unit-testable (no real clock).
+struct Cascade {
+    shown: usize,
+    anchor_ms: u64,
+    anchor_base: usize,
+}
+
+/// Milliseconds of a duration, saturating (`u128` -> `u64`).
+fn millis(d: Duration) -> u64 {
+    u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
+}
+
+/// Advance the cascade one tick: release every entry due by `now_ms`, pushing
+/// each released row's reveal time (ms) onto `revealed_ms`.
+///
+/// Re-anchors to `now_ms` at the start of a fresh burst (`shown == anchor_base`,
+/// nothing released yet) so a row's wipe is measured from its arrival, not from
+/// however long the idle poll slept before the entry was seen.
+fn advance_cascade(c: &mut Cascade, entries_len: usize, now_ms: u64, revealed_ms: &mut Vec<u64>) {
+    if c.shown >= entries_len {
+        c.anchor_base = c.shown;
+        return;
+    }
+    if c.shown == c.anchor_base {
+        c.anchor_ms = now_ms;
+    }
+    let queued = entries_len - c.anchor_base;
+    let elapsed = now_ms.saturating_sub(c.anchor_ms);
+    let target = c.anchor_base + cascade_released(elapsed, STEP_MS, queued);
+    while c.shown < target {
+        let offset = STEP_MS * u64::try_from(c.shown - c.anchor_base).unwrap_or(0);
+        revealed_ms.push(c.anchor_ms + offset);
+        c.shown += 1;
+    }
+}
+
 fn event_loop<B: Backend>(
     terminal: &mut Terminal<B>,
     dir: &Path,
@@ -449,47 +486,32 @@ fn event_loop<B: Backend>(
     let mut entries: Vec<LogEntry> = Vec::new();
     let mut offset: u64 = 0;
 
-    // Entrance model: `shown` entries are on screen; `revealed_at[i]` is when
-    // entry i was released. A burst releases one row per STEP_MS from `anchor`.
-    let mut shown: usize = 0;
-    let mut revealed_at: Vec<Instant> = Vec::new();
-    let mut anchor = Instant::now();
-    let mut anchor_base: usize = 0;
+    let loop_start = Instant::now();
+    let mut cascade = Cascade {
+        shown: 0,
+        anchor_ms: 0,
+        anchor_base: 0,
+    };
+    let mut revealed_ms: Vec<u64> = Vec::new();
 
     loop {
         if let Ok((new, reset)) = ironlint_core::telemetry::read_since(&log, &mut offset) {
             if reset {
                 entries.clear();
-                shown = 0;
-                revealed_at.clear();
-                anchor_base = 0;
+                revealed_ms.clear();
+                cascade.shown = 0;
+                cascade.anchor_base = 0;
             }
             entries.extend(new);
         }
 
-        let now = Instant::now();
-        // While caught up, keep the anchor at `now` so the next burst's first
-        // row releases immediately; once behind, release on the STEP_MS cadence.
-        if shown == entries.len() {
-            anchor = now;
-            anchor_base = shown;
-        } else {
-            let queued = entries.len() - anchor_base;
-            let elapsed = u64::try_from(now.duration_since(anchor).as_millis()).unwrap_or(u64::MAX);
-            let target = anchor_base + cascade_released(elapsed, STEP_MS, queued);
-            while shown < target {
-                // Exact per-row stagger, independent of tick jitter.
-                let offset_ms = STEP_MS * u64::try_from(shown - anchor_base).unwrap_or(0);
-                revealed_at.push(anchor + Duration::from_millis(offset_ms));
-                shown += 1;
-            }
-        }
+        let now_ms = millis(loop_start.elapsed());
+        advance_cascade(&mut cascade, entries.len(), now_ms, &mut revealed_ms);
 
-        let mut animating = shown < entries.len();
-        let rows: Vec<StreamRow> = (0..shown)
+        let mut animating = cascade.shown < entries.len();
+        let rows: Vec<StreamRow> = (0..cascade.shown)
             .map(|i| {
-                let age = u64::try_from(now.saturating_duration_since(revealed_at[i]).as_millis())
-                    .unwrap_or(u64::MAX);
+                let age = now_ms.saturating_sub(revealed_ms[i]);
                 let age_ms = if age < ENTER_MS {
                     animating = true;
                     Some(age)
@@ -503,7 +525,7 @@ fn event_loop<B: Backend>(
             })
             .collect();
 
-        let summary = summarize(&entries[..shown], armed);
+        let summary = summarize(&entries[..cascade.shown], armed);
         terminal.draw(|f| ui(f, &rows, &summary, armed.len(), &state, config_loaded))?;
 
         let poll = if animating {
@@ -1305,6 +1327,63 @@ mod tests {
         // the padding span carries the fill style
         let last = padded.spans.last().unwrap();
         assert_eq!(last.style.bg, Some(RED_REST));
+    }
+
+    // ── Idle-arrival wipe fix: testable cascade (Task 5 review fix) ──────────
+
+    #[test]
+    fn idle_arrival_anchors_at_now_so_wipe_plays() {
+        // Caught up with nothing at t=0.
+        let mut c = Cascade {
+            shown: 0,
+            anchor_ms: 0,
+            anchor_base: 0,
+        };
+        let mut rev: Vec<u64> = Vec::new();
+        advance_cascade(&mut c, 0, 0, &mut rev);
+        assert_eq!(c.shown, 0);
+        // One entry arrives; not seen until a full idle poll later (t=250).
+        advance_cascade(&mut c, 1, 250, &mut rev);
+        assert_eq!(c.shown, 1);
+        assert_eq!(rev[0], 250, "row anchored at arrival (t=250), not at t=0");
+        let age = 250u64.saturating_sub(rev[0]);
+        assert_eq!(age, 0);
+        assert!(
+            entrance_reveal(age, ENTER_MS, 80).is_some(),
+            "wipe must still render"
+        );
+    }
+
+    #[test]
+    fn burst_staggers_one_row_per_step() {
+        let mut c = Cascade {
+            shown: 0,
+            anchor_ms: 0,
+            anchor_base: 0,
+        };
+        let mut rev: Vec<u64> = Vec::new();
+        advance_cascade(&mut c, 3, 0, &mut rev); // 3 arrive at t=0
+        assert_eq!(c.shown, 1); // one released immediately
+        assert_eq!(rev, vec![0]);
+        advance_cascade(&mut c, 3, STEP_MS, &mut rev);
+        assert_eq!(c.shown, 2);
+        assert_eq!(rev[1], STEP_MS); // staggered by one step
+        advance_cascade(&mut c, 3, 2 * STEP_MS, &mut rev);
+        assert_eq!(c.shown, 3);
+        assert_eq!(rev[2], 2 * STEP_MS);
+    }
+
+    #[test]
+    fn caught_up_idle_releases_nothing() {
+        let mut c = Cascade {
+            shown: 2,
+            anchor_ms: 0,
+            anchor_base: 2,
+        };
+        let mut rev: Vec<u64> = vec![0, STEP_MS];
+        advance_cascade(&mut c, 2, 9_999, &mut rev);
+        assert_eq!(c.shown, 2, "no spurious release when caught up");
+        assert_eq!(rev.len(), 2);
     }
 
     #[test]
