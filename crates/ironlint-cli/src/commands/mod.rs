@@ -6,6 +6,7 @@ pub mod explain;
 pub mod init;
 pub mod schema;
 pub mod show_resolved_config;
+pub mod sweep;
 pub mod trust;
 pub mod update;
 pub mod validate;
