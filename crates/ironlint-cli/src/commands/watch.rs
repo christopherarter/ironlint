@@ -299,7 +299,7 @@ pub fn explorer_lines(summary: &LogSummary, selected: usize) -> Vec<Line<'static
     lines
 }
 
-fn header_line(state: &ViewState, summary: &LogSummary, clock: &str) -> Line<'static> {
+fn header_line(state: &ViewState, summary: &LogSummary) -> Line<'static> {
     let (stream_style, explorer_style) = match state.view {
         View::Stream => (
             Style::default().fg(ORANGE).add_modifier(Modifier::BOLD),
@@ -310,16 +310,18 @@ fn header_line(state: &ViewState, summary: &LogSummary, clock: &str) -> Line<'st
             Style::default().fg(ORANGE).add_modifier(Modifier::BOLD),
         ),
     };
-    let status_word = if summary.blocks > 0 { "BLOCK" } else { "PASS" };
+    let (word, dot) = if summary.blocks > 0 {
+        ("BLOCK", ORANGE)
+    } else {
+        ("PASS", GREEN)
+    };
     Line::from(vec![
         Span::styled("≈ stream", stream_style),
         Span::raw("   "),
         Span::styled("▤ explorer", explorer_style),
         Span::raw("        "),
-        Span::styled(
-            format!("{status_word} · {clock}"),
-            Style::default().fg(MUTED),
-        ),
+        Span::styled("● ", Style::default().fg(dot)),
+        Span::styled(word, Style::default().fg(MUTED)),
     ])
 }
 
@@ -342,11 +344,10 @@ fn footer_line(state: &ViewState, summary: &LogSummary, armed: usize) -> Line<'s
 /// Draw the full TUI for the current state.
 pub fn ui(
     frame: &mut Frame,
-    entries: &[LogEntry],
+    rows: &[StreamRow],
     summary: &LogSummary,
     armed: usize,
     state: &ViewState,
-    clock: &str,
     config_loaded: bool,
 ) {
     let chunks = Layout::vertical([
@@ -356,15 +357,13 @@ pub fn ui(
     ])
     .split(frame.area());
 
-    frame.render_widget(
-        Paragraph::new(header_line(state, summary, clock)),
-        chunks[0],
-    );
+    frame.render_widget(Paragraph::new(header_line(state, summary)), chunks[0]);
 
-    let mut body = if !config_loaded && matches!(state.view, View::Stream) && entries.is_empty() {
+    let width = chunks[1].width;
+    let mut body = if !config_loaded && matches!(state.view, View::Stream) && rows.is_empty() {
         // Degraded + cold: show only the banner (no empty box beneath it).
         vec![]
-    } else if config_loaded && matches!(state.view, View::Stream) && entries.is_empty() {
+    } else if config_loaded && matches!(state.view, View::Stream) && rows.is_empty() {
         // Cold-start hint: no entries yet but config is fine.
         vec![Line::from(Span::styled(
             "waiting for edits\u{2026}",
@@ -372,16 +371,7 @@ pub fn ui(
         ))]
     } else {
         match state.view {
-            View::Stream => {
-                let rows: Vec<StreamRow> = entries
-                    .iter()
-                    .map(|entry| StreamRow {
-                        entry,
-                        age_ms: None,
-                    })
-                    .collect();
-                stream_lines(&rows, state.filter.as_deref(), chunks[1].width)
-            }
+            View::Stream => stream_lines(rows, state.filter.as_deref(), width),
             View::Explorer => explorer_lines(summary, state.selected),
         }
     };
@@ -461,17 +451,17 @@ fn event_loop<B: Backend>(
             entries.extend(new);
         }
         let summary = summarize(&entries, armed);
-        let clock = short_time(&chrono::Utc::now().to_rfc3339());
+        // Task 5 rewires this loop for live entrance animation; for now every
+        // row is rendered settled (no age), matching the prior behavior.
+        let rows: Vec<StreamRow> = entries
+            .iter()
+            .map(|entry| StreamRow {
+                entry,
+                age_ms: None,
+            })
+            .collect();
         terminal.draw(|f| {
-            ui(
-                f,
-                &entries,
-                &summary,
-                armed.len(),
-                &state,
-                &clock,
-                config_loaded,
-            );
+            ui(f, &rows, &summary, armed.len(), &state, config_loaded);
         })?;
         if event::poll(Duration::from_millis(250))? {
             if let Event::Key(key) = event::read()? {
@@ -963,7 +953,7 @@ mod tests {
         };
         let state = ViewState::default();
         let mut term = Terminal::new(TestBackend::new(100, 20)).unwrap();
-        term.draw(|f| ui(f, &entries, &summary, 7, &state, "14:24:00", true))
+        term.draw(|f| ui(f, &settled(&entries), &summary, 7, &state, true))
             .unwrap();
         let text: String = term
             .backend()
@@ -996,7 +986,7 @@ mod tests {
             filter: None,
         };
         let mut term = Terminal::new(TestBackend::new(100, 20)).unwrap();
-        term.draw(|f| ui(f, &[], &summary, 7, &state, "14:24:09", true))
+        term.draw(|f| ui(f, &[], &summary, 7, &state, true))
             .unwrap();
         let text: String = term
             .backend()
@@ -1024,7 +1014,7 @@ mod tests {
         };
         let state = ViewState::default();
         let mut term = Terminal::new(TestBackend::new(100, 20)).unwrap();
-        term.draw(|f| ui(f, &[], &summary, 0, &state, "14:00:00", false))
+        term.draw(|f| ui(f, &[], &summary, 0, &state, false))
             .unwrap();
         let text: String = term
             .backend()
@@ -1049,7 +1039,7 @@ mod tests {
         };
         let state = ViewState::default(); // Stream view, no filter
         let mut term = Terminal::new(TestBackend::new(100, 20)).unwrap();
-        term.draw(|f| ui(f, &[], &summary, 0, &state, "14:00:00", true))
+        term.draw(|f| ui(f, &[], &summary, 0, &state, true))
             .unwrap();
         let text: String = term
             .backend()
@@ -1059,6 +1049,25 @@ mod tests {
             .map(|c| c.symbol())
             .collect();
         assert!(text.contains("waiting for edits"));
+    }
+
+    // ── Task 4: header verdict dot ────────────────────────────────────────────
+
+    #[test]
+    fn header_shows_verdict_dot_not_a_clock() {
+        let pass = summary_with(&["ruff"]); // no blocks
+        let line = header_line(&ViewState::default(), &pass);
+        let text = line_text(&line);
+        assert!(text.contains("● PASS"), "got: {text}");
+        assert!(!text.contains(':'), "clock should be gone, got: {text}");
+    }
+
+    #[test]
+    fn header_flips_to_block_when_blocks_present() {
+        let mut s = summary_with(&["ruff"]);
+        s.blocks = 3;
+        let text = line_text(&header_line(&ViewState::default(), &s));
+        assert!(text.contains("● BLOCK"), "got: {text}");
     }
 
     // ── Existing Phase 2 tests (handle_key) ──────────────────────────────────
