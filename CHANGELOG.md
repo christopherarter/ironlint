@@ -4,6 +4,27 @@ Notable changes to IronLint, newest first. In-flight work lives in `plans/`.
 
 ## [Unreleased]
 
+## [0.8.2] — 2026-07-05 — Watch live-tail motion
+
+### Added
+
+- **`ironlint watch` live-tail motion.** The Stream view now animates: a single
+  edit wipes in left-to-right, a burst of writes cascades one row at a time, and
+  the newest result draws the eye instead of jump-cutting in. Motion is
+  row-quantized to what a terminal can actually render, and the watcher stays
+  near-zero CPU when idle — it only ticks fast while something is animating.
+
+### Changed
+
+- **Blocked rows carry a standing dim-red tint** across the full row width,
+  including their `└ <check>` detail line, so a block is scannable at a glance
+  (internal-error detail lines stay amber). The header dropped its wall clock
+  for a static `● PASS` / `● BLOCK` verdict dot.
+
+### Removed
+
+- Dropped the now-unused `chrono` dependency from `ironlint-cli`.
+
 ## [0.8.1] — 2026-07-04
 
 ### Changed
