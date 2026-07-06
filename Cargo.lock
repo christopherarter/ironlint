@@ -1341,6 +1341,7 @@ dependencies = [
  "clap",
  "ignore",
  "insta",
+ "ironlint-bash-gate",
  "ironlint-core",
  "predicates",
  "ratatui",

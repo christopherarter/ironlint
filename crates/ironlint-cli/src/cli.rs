@@ -162,6 +162,10 @@ pub enum Command {
         #[arg(long, default_value = ".")]
         dir: PathBuf,
     },
+    /// Decide whether a Bash command may run. Reads the command on stdin.
+    /// Exit 0 = allow (empty stdout); exit 2 = block (reason on stdout).
+    /// Not a check, not trust-gated; works with no .ironlint.yml present.
+    GateBash,
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]

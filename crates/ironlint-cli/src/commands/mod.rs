@@ -3,6 +3,7 @@ pub mod config;
 pub mod doctor;
 pub mod error_report;
 pub mod explain;
+pub mod gate_bash;
 pub mod init;
 pub mod schema;
 pub mod show_resolved_config;
