@@ -101,6 +101,21 @@ The plugin honours the `ironlint` CLI exit-code contract from `commands/check.rs
 | `3` (internal error) | Fail-open by default; set `IRONLINT_FAIL_CLOSED_ON_INTERNAL=1` to fail closed while the hook can still block. |
 | `1` / other (config error) | Log to stderr, allow. Config errors should not block the agent on unrelated work. |
 
+## Bash gate
+
+In addition to file edits, this adapter gates `bash` (the agent's shell tool —
+`tool:"bash"`, command in `args.command`). Commands that would let the agent
+free itself — `ironlint trust`, or a Bash write to `.ironlint.yml` /
+`.ironlint/gates/` — are denied (throw, mirroring the exit-2 edit path).
+Ordinary commands are not slowed: a substring pre-filter skips the decision
+entirely for commands that never mention `ironlint` or `.ironlint`. The deny
+decision is shared across every adapter via `ironlint gate-bash`. The branch
+runs before the config-existence check, so it fires even in a project with no
+`.ironlint.yml`. See
+`docs/superpowers/specs/2026-07-06-bash-gate-self-trust-prevention-design.md`
+for the threat model and the documented known gap (variable-substitution
+indirection).
+
 ## Known gaps at 0.1d
 
 - **No `apply_patch` interception.** OpenCode's multi-file patch tool would need per-file extraction; large refactors via `apply_patch` are not gated. Use `edit` / `write` or run `ironlint check` manually in CI to cover them.

@@ -32,6 +32,20 @@ To bless a config other than `.ironlint.yml`:
 ironlint trust --config shared/base.yml
 ```
 
+## The agent can't bless its own config
+
+The Bash tool is gated too: an agent running `ironlint trust` (or writing to
+`.ironlint.yml` / a gate script through Bash redirections, `tee`, `sed -i`,
+`cp`/`mv` onto the policy surface) is denied. The Write/Edit path to those
+files stays open — it is already gated — so the change closes the *ungated*
+Bash escape without removing the legitimate edit path. The deny decision is
+shared across every adapter via `ironlint gate-bash`, and it fires even in a
+project with no `.ironlint.yml` (exactly when the agent is most motivated to
+self-trust). See
+`docs/superpowers/specs/2026-07-06-bash-gate-self-trust-prevention-design.md`
+for the threat model and the documented known gap (variable-substitution
+indirection — adversarial tier, out of scope).
+
 ## How verification works
 
 Before loading the engine or running any check, `ironlint check` recomputes the hash and compares it to the blessed entry for that config's path. On a missing or mismatched entry it stops with a config error (exit `1`) and a hint to re-bless — no check runs:
