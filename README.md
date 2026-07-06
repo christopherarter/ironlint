@@ -1,5 +1,9 @@
 <p align="center">
-  <img src="iron-lint.png" alt="IronLint" width="500" />
+  <img src="iron-lint.png" alt="IronLint" width="250" />
+</p>
+
+<p align="center">
+  <img src="ironlint-demo.gif" alt="IronLint demo" />
 </p>
 
 <h1 align="center">IronLint: Checks Your Coding Agent Can't Skip</h1>
