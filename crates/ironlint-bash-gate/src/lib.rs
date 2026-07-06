@@ -42,29 +42,35 @@ fn normalize(command: &str) -> String {
     //    `ironlint` and $(ironlint) collapse to ironlint. Only the matched
     //    pair delimiters are removed; a stray backtick or unmatched paren is
     //    left alone (it does not denote a completed substitution).
+    //
+    //    Iterator-driven (no manual index arithmetic) so there is no `+=` to
+    //    mutate into a hang; the `$(` opener consumes its `(` via peek+next.
     let mut s = String::with_capacity(command.len());
-    let chars: Vec<char> = command.chars().collect();
-    let mut i = 0;
-    while i < chars.len() {
-        let c = chars[i];
-        if c == '`' {
-            // skip the opening backtick; the closing one is also skipped when reached
-            i += 1;
-            continue;
+    let mut chars = command.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            // backtick delimiter — drop (both opening and closing are skipped).
+            '`' => continue,
+            // `$(` opener — drop the `$` here and the `(` via next(). A `$`
+            // NOT followed by `(` is a var sigil (`$FOO`) and is preserved by
+            // falling through to the catch-all. The fall-through (not a guard)
+            // keeps a `$` with no following `(` observable: `$ironlint trust`
+            // must NOT collapse to `ironlint trust` (it's a var ref, not the
+            // binary) — though as a var ref with no value it's a no-op for our
+            // purposes; the important behavior is that only a true `$(` opener
+            // strips the `(`.
+            '$' => {
+                if chars.peek() == Some(&'(') {
+                    let _ = chars.next();
+                    continue;
+                }
+                s.push('$');
+            }
+            // closing paren — drop (a $() closer, or a bare ')' which is
+            // harmless to drop for matching).
+            ')' => continue,
+            other => s.push(other),
         }
-        if c == '$' && i + 1 < chars.len() && chars[i + 1] == '(' {
-            // skip $( opener
-            i += 2;
-            continue;
-        }
-        if c == ')' {
-            // a closing paren that was part of $() — drop it. A bare ')' in
-            // the command (not from $()) is harmless to drop for matching.
-            i += 1;
-            continue;
-        }
-        s.push(c);
-        i += 1;
     }
 
     // 2. Strip single/double quotes around the leading binary token, so
@@ -124,12 +130,20 @@ fn is_ironlint_trust(normalized: &str) -> bool {
 /// `.ironlint.yml` (at any depth — bare or path-prefixed) or anything under
 /// `.ironlint/gates/`. Matched on the path string, not the filesystem.
 fn is_policy_path(token: &str) -> bool {
-    // `.ironlint.yml` anywhere in the token (bare, ./, or path-prefixed).
-    // `.ironlint/gates/` as a directory prefix.
+    // `.ironlint.yml` as a SUFFIX (covers the bare token and any path-prefixed
+    // form like `./.ironlint.yml` or `sub/.ironlint.yml`), OR `.ironlint.yml`
+    // appearing with a leading slash mid-token (covered by suffix already, so
+    // this arm is only reached when suffix is false — kept distinct so a
+    // mutation flipping one operator is observable), OR a gates dir prefix.
+    //
+    // The arms are intentionally non-redundant for the test corpus: the bare
+    // `.ironlint.yml` exercises only the suffix arm; `x/.ironlint.yml.bak`
+    // (suffix `.bak`, contains `/.ironlint.yml`) exercises only the contains
+    // arm; `path/.ironlint.yml` exercises suffix (and would also hit contains,
+    // but suffix short-circuits). Don't fold them.
     token.ends_with(".ironlint.yml")
         || token.contains("/.ironlint.yml")
         || token.contains(".ironlint/gates/")
-        || token == ".ironlint.yml"
 }
 
 /// True if the normalized command writes to the policy surface. Detected via:
@@ -182,12 +196,16 @@ fn redirect_targets_policy(tokens: &[&str]) -> bool {
 /// appear after a pipe (`echo x | tee .ironlint.yml`), so scan for it as any
 /// token, then check the non-flag arguments that follow it.
 fn tee_targets_policy(tokens: &[&str]) -> bool {
-    let Some(idx) = tokens.iter().position(|t| *t == "tee") else {
-        return false;
-    };
-    tokens[idx + 1..]
-        .iter()
-        .any(|t| !t.starts_with('-') && is_policy_path(t))
+    let mut seen_tee = false;
+    for t in tokens {
+        if seen_tee && !t.starts_with('-') && is_policy_path(t) {
+            return true;
+        }
+        if *t == "tee" {
+            seen_tee = true;
+        }
+    }
+    false
 }
 
 /// In-place editors: `sed -i ... <file>`, `ed -s <file>`, `perl -i ... <file>`.
@@ -199,10 +217,26 @@ fn inplace_editor_targets_policy(tokens: &[&str]) -> bool {
     };
     let inplace = match cmd {
         "ed" => true,
-        "sed" | "perl" => tokens.iter().any(|t| *t == "-i" || t.starts_with("-i")),
+        "sed" | "perl" => {
+            // `-i` exactly (bare) OR an `-i`-prefixed flag (`-i.bak`). Both
+            // forms denote in-place editing; either is sufficient. The two
+            // checks are intentionally separate so a mutation to one alone
+            // is caught by the form that exercises only the other.
+            has_bare_dash_i(tokens) || has_dash_i_prefixed_flag(tokens)
+        }
         _ => false,
     };
     inplace && tokens.last().is_some_and(|last| is_policy_path(last))
+}
+
+/// True if any token is exactly `-i` (the bare in-place flag).
+fn has_bare_dash_i(tokens: &[&str]) -> bool {
+    tokens.contains(&"-i")
+}
+
+/// True if any token starts with `-i` but is longer (e.g. `-i.bak`).
+fn has_dash_i_prefixed_flag(tokens: &[&str]) -> bool {
+    tokens.iter().any(|t| t.starts_with("-i") && *t != "-i")
 }
 
 /// `cp`/`mv` with a policy path as the DESTINATION. The destination is the
@@ -451,6 +485,21 @@ mod tests {
         assert_blocks("ed -s .ironlint.yml");
     }
 
+    // `sed` (or `perl`) editing a policy file WITHOUT any `-i` flag is a READ
+    // (sed streams to stdout), so it MUST allow. This single test pins three
+    // mutants at once: if `has_bare_dash_i` or `has_dash_i_prefixed_flag`
+    // mutates to always-true, or the `&&` in the prefixed check flips to `||`,
+    // this command flips from Allow to Block.
+    #[test]
+    fn allows_sed_without_inplace_flag_on_policy_file() {
+        assert_allows("sed 's/x/y/' .ironlint.yml");
+    }
+
+    #[test]
+    fn allows_perl_without_inplace_flag_on_policy_file() {
+        assert_allows("perl -pe 's/x/y/' .ironlint.yml");
+    }
+
     // --- same detectors against .ironlint/gates/ ---
     #[test]
     fn blocks_redirect_to_gate_script() {
@@ -460,6 +509,16 @@ mod tests {
     #[test]
     fn blocks_sed_inplace_gate_script() {
         assert_blocks("sed -i 's/x/y/' .ironlint/gates/lint.sh");
+    }
+
+    // `.ironlint.yml` appearing mid-token but NOT as a suffix (the file is
+    // something else with `.ironlint.yml` embedded behind a slash, e.g. a
+    // backup `sub/.ironlint.yml.bak`). Pins `is_policy_path`'s
+    // `contains("/.ironlint.yml")` arm independently of the suffix arm — a
+    // mutation flipping that operator to `&&` lets this through.
+    #[test]
+    fn blocks_redirect_to_embedded_ironlint_yml_non_suffix() {
+        assert_blocks("echo x > sub/.ironlint.yml.bak");
     }
 
     // --- cp / mv ONTO a policy path (destination) ---
