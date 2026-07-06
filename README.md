@@ -9,7 +9,7 @@
 <h1 align="center">IronLint: Checks Your Coding Agent Can't Skip</h1>
 
 <p align="center">
-  <strong>Every edit your agent makes runs your checks first. Any nonzero exit blocks the write. The check owns the verdict — no engines, no severities, no DSL.</strong>
+  <strong>Every edit your agent makes runs your checks first. Any nonzero exit blocks the write. Fully local, built with Rust.</strong>
 </p>
 
 <p align="center">
@@ -32,7 +32,7 @@
 
 ---
 
-IronLint is local CI for AI coding agents. GitHub Actions runs your checks in the cloud after you push; IronLint runs the same kind of checks locally, on every edit your agent makes, **before the code lands — and it can refuse.** A check is a file glob plus a shell command. IronLint hands that command your proposed content on stdin and reads one thing back: the exit code. Any nonzero exit (1–125) blocks the write. No engines, no severities, no output parsing — the check owns the decision.
+IronLint is local linting tool for agentic coding harnesses. GitHub Actions runs your checks in the cloud after you push; IronLint runs the same kind of checks locally, on every edit your agent makes, **before the code lands on disk, and it can refuse.** A check is a file glob plus a shell command. IronLint hands that command your proposed content on stdin and reads one thing back: the exit code. Any nonzero exit (1–125) blocks the write. No engines, no severities, no output parsing.
 
 New here? Start with [Getting started](docs/getting-started.md).
 
