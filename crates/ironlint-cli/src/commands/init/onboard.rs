@@ -9,7 +9,10 @@ use ironlint_core::adapter::{
 use std::io::{IsTerminal, Write};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Proceed { Yes, No }
+enum Proceed {
+    Yes,
+    No,
+}
 
 pub fn run_hook_phase(env: &AdapterEnv, opts: &Options) -> Result<i32> {
     let scope = if opts.global {
@@ -36,7 +39,10 @@ pub fn run_hook_phase(env: &AdapterEnv, opts: &Options) -> Result<i32> {
         Proceed::No => return Ok(0),
         Proceed::Yes => {}
     }
-    let _plans = build_plans(&selected, env, scope, opts.uninstall);
+    // Rebuild plans from the possibly mutated selection before applying; this
+    // validates the new set and mirrors the spec contract even though `apply`
+    // recomputes its own plan internally.
+    let _ = build_plans(&selected, env, scope, opts.uninstall);
     Ok(apply(&selected, env, scope, opts))
 }
 
@@ -57,22 +63,22 @@ fn resolve_harnesses(env: &AdapterEnv, opts: &Options) -> Result<Vec<(String, So
 /// Build `SelectItem`s from the resolved harness set. Detected harnesses are
 /// pre-checked; undetected harnesses are shown but unchecked.
 fn build_items(selected: &[(String, Source)]) -> Vec<select::SelectItem> {
-    all_harnesses().iter().map(|h| {
-        let is_selected = selected.iter().any(|(n, _)| n == h.name);
-        select::SelectItem {
-            name: h.name.to_string(),
-            detected: is_selected,
-            selected: is_selected,
-        }
-    }).collect()
+    all_harnesses()
+        .iter()
+        .map(|h| {
+            let is_selected = selected.iter().any(|(n, _)| n == h.name);
+            select::SelectItem {
+                name: h.name.to_string(),
+                detected: is_selected,
+                selected: is_selected,
+            }
+        })
+        .collect()
 }
 
 /// Reconcile the names returned by the multi-select back into `(name, Source)`
 /// pairs, preserving `Detected` for items that were originally detected.
-fn reconcile(
-    chosen: Vec<String>,
-    selected: &[(String, Source)],
-) -> Vec<(String, Source)> {
+fn reconcile(chosen: Vec<String>, selected: &[(String, Source)]) -> Vec<(String, Source)> {
     let originally_detected: std::collections::HashSet<String> = selected
         .iter()
         .filter(|(_, s)| matches!(s, Source::Detected))
@@ -146,7 +152,10 @@ fn confirm_gate_to<W: Write>(
             .map(|(n, _)| n.as_str())
             .collect::<Vec<_>>()
             .join(", ");
-        writeln!(writer, "detected: {names} — re-run with `--yes` or `--harness <name>` to proceed")?;
+        writeln!(
+            writer,
+            "detected: {names} — re-run with `--yes` or `--harness <name>` to proceed"
+        )?;
         return Ok(Proceed::No);
     }
     if opts.harnesses.is_empty() {
@@ -162,7 +171,11 @@ fn confirm_gate_to<W: Write>(
     writer.flush()?;
     let mut line = String::new();
     std::io::stdin().read_line(&mut line)?;
-    Ok(if parse_confirm(&line) { Proceed::Yes } else { Proceed::No })
+    Ok(if parse_confirm(&line) {
+        Proceed::Yes
+    } else {
+        Proceed::No
+    })
 }
 
 /// Install or uninstall the resolved set, printing per-harness result lines.
@@ -432,11 +445,17 @@ mod tests {
         let mut selected = vec![("claude-code".to_string(), Source::Detected)];
         let mut buf: Vec<u8> = Vec::new();
         let before = selected.clone();
-        assert_eq!(confirm_gate_to(&opts, &mut selected, &mut buf).unwrap(), Proceed::Yes);
+        assert_eq!(
+            confirm_gate_to(&opts, &mut selected, &mut buf).unwrap(),
+            Proceed::Yes
+        );
         assert_eq!(selected.len(), before.len());
         for ((a_name, a_src), (b_name, b_src)) in selected.iter().zip(before.iter()) {
             assert_eq!(a_name, b_name);
-            assert!(matches!((a_src, b_src), (Source::Detected, Source::Detected) | (Source::Requested, Source::Requested)));
+            assert!(matches!(
+                (a_src, b_src),
+                (Source::Detected, Source::Detected) | (Source::Requested, Source::Requested)
+            ));
         }
     }
 
@@ -453,7 +472,10 @@ mod tests {
         };
         let mut selected = vec![("claude-code".to_string(), Source::Detected)];
         let mut buf: Vec<u8> = Vec::new();
-        assert_eq!(confirm_gate_to(&opts, &mut selected, &mut buf).unwrap(), Proceed::No);
+        assert_eq!(
+            confirm_gate_to(&opts, &mut selected, &mut buf).unwrap(),
+            Proceed::No
+        );
         let out = String::from_utf8(buf).unwrap();
         assert!(out.contains("re-run with"), "hint missing: {out}");
     }
@@ -471,6 +493,9 @@ mod tests {
         };
         let mut selected = vec![("codex".to_string(), Source::Requested)];
         let mut buf: Vec<u8> = Vec::new();
-        assert_eq!(confirm_gate_to(&opts, &mut selected, &mut buf).unwrap(), Proceed::Yes);
+        assert_eq!(
+            confirm_gate_to(&opts, &mut selected, &mut buf).unwrap(),
+            Proceed::Yes
+        );
     }
 }
