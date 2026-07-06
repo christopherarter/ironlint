@@ -44,10 +44,11 @@ pub struct SkillSpec {
 // --- per-harness entry builders (also unit-tested directly) ------------------
 pub(crate) fn claude_build_entry(command: &str) -> Value {
     // MultiEdit and NotebookEdit are gated by hook.sh alongside Edit/Write
-    // (Task 5.24); the matcher must name every tool the hook handles or those
-    // edits never invoke the hook and bypass every check. Codex's matcher is
-    // unrelated (apply_patch|Edit|Write) — do not fold these into it.
-    json!({"matcher": "Edit|Write|MultiEdit|NotebookEdit",
+    // (Task 5.24); Bash is gated by the bash-gate branch (Task 5 of the
+    // bash-gate plan). The matcher must name every tool the hook handles or
+    // those calls never invoke the hook and bypass every check. Codex's
+    // matcher is unrelated (apply_patch|Edit|Write) — do not fold these into it.
+    json!({"matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash",
            "hooks": [{"type": "command", "command": command}]})
 }
 
@@ -207,7 +208,7 @@ mod tests {
     #[test]
     fn claude_entry_points_at_command_and_matcher() {
         let e = claude_build_entry("\"/x/hook.sh\" pre-tool-use");
-        assert_eq!(e["matcher"], "Edit|Write|MultiEdit|NotebookEdit");
+        assert_eq!(e["matcher"], "Edit|Write|MultiEdit|NotebookEdit|Bash");
         assert_eq!(e["hooks"][0]["command"], "\"/x/hook.sh\" pre-tool-use");
     }
 

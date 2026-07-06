@@ -179,3 +179,72 @@ impl HookFixture {
         cmd.write_stdin(stdin).assert()
     }
 }
+
+/// A fixture that puts the REAL `ironlint` binary (built by `cargo test`) on
+/// PATH instead of a stub — for end-to-end tests that must exercise the actual
+/// subcommand the hook shells out to (e.g. `ironlint gate-bash`). Same isolated
+/// project/HOME/XDG_CONFIG_HOME guarantees as [`HookFixture`]; the only
+/// difference is `ironlint` resolves to `bin_dir` (the cargo-built binary's
+/// parent) rather than a stub.
+#[cfg(unix)]
+pub struct RealBinFixture {
+    pub project: TempDir,
+    bin_dir: PathBuf,
+    home: TempDir,
+    xdg: TempDir,
+    hook_script: PathBuf,
+}
+
+#[cfg(unix)]
+impl RealBinFixture {
+    /// `hook_script` is the repo-root-relative path to the adapter's hook;
+    /// `ironlint_bin` is the path returned by `assert_cmd::cargo::cargo_bin`.
+    #[must_use]
+    pub fn new(hook_script: &str, ironlint_bin: &Path) -> Self {
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(
+            project.path().join(".ironlint.yml"),
+            "checks:\n  g:\n    files: \"*.py\"\n    run: \"exit 0\"\n",
+        )
+        .unwrap();
+        Self {
+            project,
+            bin_dir: ironlint_bin.parent().unwrap().to_path_buf(),
+            home: tempfile::tempdir().unwrap(),
+            xdg: tempfile::tempdir().unwrap(),
+            hook_script: repo_path(hook_script),
+        }
+    }
+
+    /// Absolute path to `name` inside the project dir.
+    #[must_use]
+    pub fn file(&self, name: &str) -> PathBuf {
+        self.project.path().join(name)
+    }
+
+    /// Spawn `bash <hook_script> <hook_arg>` with the real `ironlint` on PATH.
+    pub fn run(
+        &self,
+        hook_arg: &str,
+        stdin: &str,
+        extra_env: &[(&str, &str)],
+    ) -> assert_cmd::assert::Assert {
+        let path = format!(
+            "{}:{}",
+            self.bin_dir.display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let mut cmd = Command::new("bash");
+        cmd.arg(&self.hook_script)
+            .arg(hook_arg)
+            .current_dir(self.project.path())
+            .env("PATH", path)
+            .env("HOME", self.home.path())
+            .env("XDG_CONFIG_HOME", self.xdg.path())
+            .env_remove("IRONLINT_FAIL_CLOSED_ON_INTERNAL");
+        for (k, v) in extra_env {
+            cmd.env(k, v);
+        }
+        cmd.write_stdin(stdin).assert()
+    }
+}
