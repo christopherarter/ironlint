@@ -120,12 +120,102 @@ fn is_ironlint_trust(normalized: &str) -> bool {
     false
 }
 
-/// True if the command writes to the policy surface (`.ironlint.yml` or
-/// anything under `.ironlint/gates/`). Detected via redirect operators,
-/// `tee`, in-place editors, and `cp`/`mv` with a policy path as destination.
-/// Implemented in Task 3; returns false here so Task 2's tests focus on trust.
-fn is_policy_write(_normalized: &str) -> bool {
+/// True if a path token refers to the policy surface: the literal
+/// `.ironlint.yml` (at any depth — bare or path-prefixed) or anything under
+/// `.ironlint/gates/`. Matched on the path string, not the filesystem.
+fn is_policy_path(token: &str) -> bool {
+    // `.ironlint.yml` anywhere in the token (bare, ./, or path-prefixed).
+    // `.ironlint/gates/` as a directory prefix.
+    token.ends_with(".ironlint.yml")
+        || token.contains("/.ironlint.yml")
+        || token.contains(".ironlint/gates/")
+        || token == ".ironlint.yml"
+}
+
+/// True if the normalized command writes to the policy surface. Detected via:
+///   - redirect operators targeting a policy path: >, >>, >|, &>, &>>
+///   - `tee` writing a policy path
+///   - in-place editors: `sed -i`, `ed`, `perl -i`
+///   - `cp`/`mv` with a policy path as the DESTINATION (last arg)
+///
+/// `cp .ironlint.yml /tmp/backup` (policy path as source) is a read and MUST
+/// allow — only the destination is checked for cp/mv.
+fn is_policy_write(normalized: &str) -> bool {
+    // Split into whitespace-separated tokens. This is deliberately crude —
+    // the matcher's job is the direct form, not surviving quoting games.
+    let tokens: Vec<&str> = normalized.split_whitespace().collect();
+
+    redirect_targets_policy(&tokens)
+        || tee_targets_policy(&tokens)
+        || inplace_editor_targets_policy(&tokens)
+        || cp_mv_destination_is_policy(&tokens)
+}
+
+/// Redirect operators: the token AFTER `>`, `>>`, `>|`, `&>`, `&>>` is the
+/// target. Also catch a redirect glued to a path (`>.ironlint.yml`).
+fn redirect_targets_policy(tokens: &[&str]) -> bool {
+    for (i, t) in tokens.iter().enumerate() {
+        // Glued form: `>.ironlint.yml`, `>>.ironlint.yml`
+        let stripped = t
+            .strip_prefix(">>")
+            .or_else(|| t.strip_prefix(">"))
+            .or_else(|| t.strip_prefix("&>>"))
+            .or_else(|| t.strip_prefix("&>"));
+        if let Some(rest) = stripped {
+            if is_policy_path(rest) {
+                return true;
+            }
+        }
+        // Bare operator form: `> .ironlint.yml` (next token is the target)
+        if matches!(*t, ">" | ">>" | ">|" | "&>" | "&>>") {
+            if let Some(next) = tokens.get(i + 1) {
+                if is_policy_path(next) {
+                    return true;
+                }
+            }
+        }
+    }
     false
+}
+
+/// `tee` / `tee -a`: a later argument is the destination file. `tee` may
+/// appear after a pipe (`echo x | tee .ironlint.yml`), so scan for it as any
+/// token, then check the non-flag arguments that follow it.
+fn tee_targets_policy(tokens: &[&str]) -> bool {
+    let Some(idx) = tokens.iter().position(|t| *t == "tee") else {
+        return false;
+    };
+    tokens[idx + 1..]
+        .iter()
+        .any(|t| !t.starts_with('-') && is_policy_path(t))
+}
+
+/// In-place editors: `sed -i ... <file>`, `ed -s <file>`, `perl -i ... <file>`.
+/// The last non-flag argument is the target file. Only block if `-i` is
+/// present (sed/perl) or it's `ed` (which edits in place by nature).
+fn inplace_editor_targets_policy(tokens: &[&str]) -> bool {
+    let Some(&cmd) = tokens.first() else {
+        return false;
+    };
+    let inplace = match cmd {
+        "ed" => true,
+        "sed" | "perl" => tokens.iter().any(|t| *t == "-i" || t.starts_with("-i")),
+        _ => false,
+    };
+    inplace && tokens.last().is_some_and(|last| is_policy_path(last))
+}
+
+/// `cp`/`mv` with a policy path as the DESTINATION. The destination is the
+/// last argument (for both two-arg and multi-source forms). A policy path as
+/// a SOURCE (e.g. `cp .ironlint.yml /tmp/backup`) MUST allow — that's why
+/// only the last token is checked.
+fn cp_mv_destination_is_policy(tokens: &[&str]) -> bool {
+    let Some(&cmd) = tokens.first() else {
+        return false;
+    };
+    matches!(cmd, "cp" | "mv")
+        && tokens.len() >= 3
+        && tokens.last().is_some_and(|dest| is_policy_path(dest))
 }
 
 /// Decide whether `command` may run.
@@ -151,7 +241,7 @@ pub fn decide(command: &str) -> Decision {
 
 #[cfg(test)]
 mod tests {
-    use super::{Decision, decide};
+    use super::{decide, Decision};
 
     /// Assert `decide(cmd)` blocks; the reason is checked loosely (caller
     /// cares that it blocked, not the exact wording).
@@ -230,6 +320,20 @@ mod tests {
         assert_blocks("cd .ironlint/gates && trust");
     }
 
+    // --- false-positive guard: 'cd .ironlintfoo' is NOT the policy dir ---
+    // The boundary check after `cd .ironlint` exists to reject lookalike
+    // dirs (`.ironlintfoo`, `.ironlint-backup`). Without a test pinning the
+    // rejection, a mutation flipping the boundary predicate survives.
+    #[test]
+    fn allows_cd_ironlintfoo_lookalike() {
+        assert_allows("cd .ironlintfoo && trust");
+    }
+
+    #[test]
+    fn allows_cd_ironlint_backup_lookalike() {
+        assert_allows("cd .ironlint-backup && trust");
+    }
+
     // --- false-positive guard: read-only ironlint subcommands MUST allow ---
     #[test]
     fn allows_ironlint_check() {
@@ -265,5 +369,184 @@ mod tests {
     #[test]
     fn allows_echo_quoting_ironlint_trust() {
         assert_allows("echo \"run ironlint trust to bless\"");
+    }
+
+    // --- (2) Bash writes to the policy surface: redirects ---
+    #[test]
+    fn blocks_redirect_to_ironlint_yml() {
+        assert_blocks("echo x > .ironlint.yml");
+    }
+
+    #[test]
+    fn blocks_append_to_ironlint_yml() {
+        assert_blocks("echo x >> .ironlint.yml");
+    }
+
+    #[test]
+    fn blocks_clobber_redirect_to_ironlint_yml() {
+        assert_blocks("echo x >| .ironlint.yml");
+    }
+
+    #[test]
+    fn blocks_amp_redirect_to_ironlint_yml() {
+        assert_blocks("echo x &> .ironlint.yml");
+    }
+
+    #[test]
+    fn blocks_amp_append_to_ironlint_yml() {
+        assert_blocks("echo x &>> .ironlint.yml");
+    }
+
+    #[test]
+    fn blocks_cat_redirect_to_ironlint_yml() {
+        assert_blocks("cat > .ironlint.yml");
+    }
+
+    // --- tee ---
+    #[test]
+    fn blocks_tee_ironlint_yml() {
+        assert_blocks("echo x | tee .ironlint.yml");
+    }
+
+    #[test]
+    fn blocks_tee_append_ironlint_yml() {
+        assert_blocks("echo x | tee -a .ironlint.yml");
+    }
+
+    // `tee` as the FIRST token (no pipe) — still a write to the policy path.
+    // Pins the `idx + 1` slice boundary: a `tee` at index 0 must scan its own
+    // following args, not the token before it.
+    #[test]
+    fn blocks_tee_as_first_token_ironlint_yml() {
+        assert_blocks("tee .ironlint.yml");
+    }
+
+    // --- in-place editors ---
+    #[test]
+    fn blocks_sed_inplace_ironlint_yml() {
+        assert_blocks("sed -i 's/x/y/' .ironlint.yml");
+    }
+
+    // `sed -iEXT` (in-place with a backup extension) is the same write as
+    // `sed -i`. Pinning it closes a mutation gap: the `-i` detector must
+    // match the `-i.bak` form, not just the bare `-i` token.
+    #[test]
+    fn blocks_sed_inplace_with_backup_ext_ironlint_yml() {
+        assert_blocks("sed -i.bak 's/x/y/' .ironlint.yml");
+    }
+
+    #[test]
+    fn blocks_perl_inplace_ironlint_yml() {
+        assert_blocks("perl -i -pe 's/x/y/' .ironlint.yml");
+    }
+
+    // `perl -iEXT` (in-place with backup extension) — same pin as sed.
+    #[test]
+    fn blocks_perl_inplace_with_backup_ext_ironlint_yml() {
+        assert_blocks("perl -i.bak -pe 's/x/y/' .ironlint.yml");
+    }
+
+    #[test]
+    fn blocks_ed_ironlint_yml() {
+        assert_blocks("ed -s .ironlint.yml");
+    }
+
+    // --- same detectors against .ironlint/gates/ ---
+    #[test]
+    fn blocks_redirect_to_gate_script() {
+        assert_blocks("echo x > .ironlint/gates/lint.sh");
+    }
+
+    #[test]
+    fn blocks_sed_inplace_gate_script() {
+        assert_blocks("sed -i 's/x/y/' .ironlint/gates/lint.sh");
+    }
+
+    // --- cp / mv ONTO a policy path (destination) ---
+    #[test]
+    fn blocks_cp_onto_gate_script() {
+        assert_blocks("cp malicious.sh .ironlint/gates/lint.sh");
+    }
+
+    #[test]
+    fn blocks_mv_onto_ironlint_yml() {
+        assert_blocks("mv bad.yml .ironlint.yml");
+    }
+
+    // --- false-positive guard: policy path as SOURCE (a read), not destination ---
+    #[test]
+    fn allows_cp_from_ironlint_yml_as_source() {
+        assert_allows("cp .ironlint.yml /tmp/backup");
+    }
+
+    #[test]
+    fn allows_cat_ironlint_yml_piped_to_grep() {
+        assert_allows("cat .ironlint.yml | grep checks");
+    }
+
+    #[test]
+    fn allows_grep_recursive_ironlint() {
+        assert_allows("grep -r ironlint docs/");
+    }
+
+    #[test]
+    fn allows_ls_ironlint_gates() {
+        assert_allows("ls .ironlint/gates/");
+    }
+
+    #[test]
+    fn allows_cat_gate_script() {
+        assert_allows("cat .ironlint/gates/lint.sh");
+    }
+
+    // `tee` to a NON-policy file must allow — pins the `&&` (not `||`) in
+    // tee_targets_policy's non-flag check, so a benign `tee /tmp/log` is
+    // never false-blocked.
+    #[test]
+    fn allows_tee_to_non_policy_file() {
+        assert_allows("echo x | tee /tmp/log");
+    }
+
+    // --- ordinary commands never mention ironlint, so the pre-filter skips
+    //     them entirely; pin that decide() also allows them if reached ---
+    #[test]
+    fn allows_cargo_test() {
+        assert_allows("cargo test");
+    }
+
+    #[test]
+    fn allows_git_status() {
+        assert_allows("git status");
+    }
+
+    // --- documented known gap: variable-substitution indirection MUST allow ---
+    #[test]
+    fn allows_iron_echo_lint_indirection() {
+        assert_allows("iron$(echo lint) trust");
+    }
+
+    #[test]
+    fn allows_ironvar_trust_indirection() {
+        assert_allows("IRON=ironlint; $IRON trust");
+    }
+
+    #[test]
+    fn allows_base64_eval_indirection() {
+        assert_allows("base64 -d <<< 'aXJvbmxpbnQgdHJ1c3Q=' | sh");
+    }
+
+    #[test]
+    fn allows_bash_script_indirection() {
+        assert_allows("bash scripts/x.sh");
+    }
+
+    // --- normalize edge: a lone '$' not followed by '(' must not be treated
+    //     as a $() opener (which would skip 2 chars and could mask a token).
+    //     `echo $` is a benign command that must allow; pinning it closes a
+    //     mutation gap on the `c == '$' && i+1 < len && chars[i+1] == '('`
+    //     guard in normalize(). ---
+    #[test]
+    fn allows_echo_trailing_dollar() {
+        assert_allows("echo $");
     }
 }
