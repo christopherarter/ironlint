@@ -6,7 +6,9 @@
 #![allow(dead_code)]
 
 use anyhow::Result;
-use ratatui::backend::{Backend, CrosstermBackend};
+use std::io::Stdout;
+
+use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::cursor::{Hide, Show};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::crossterm::execute;
@@ -44,12 +46,7 @@ pub fn prompt_multi_select(items: Vec<SelectItem>) -> Result<Vec<String>> {
         return Ok(vec![]);
     }
 
-    enable_raw_mode()?;
-    let mut stdout = std::io::stdout();
-    execute!(stdout, EnterAlternateScreen, Hide)?;
-    let backend = CrosstermBackend::new(stdout);
-    let terminal = Terminal::new(backend)?;
-    let mut guard = TerminalGuard(terminal);
+    let mut guard = TerminalGuard::new()?;
 
     let mut state = ListState::default();
     state.select(Some(0));
@@ -79,12 +76,32 @@ pub fn prompt_multi_select(items: Vec<SelectItem>) -> Result<Vec<String>> {
     }
 }
 
-struct TerminalGuard<B: Backend>(Terminal<B>);
+struct TerminalGuard(Terminal<CrosstermBackend<Stdout>>);
 
-impl<B: Backend> Drop for TerminalGuard<B> {
+impl TerminalGuard {
+    fn new() -> Result<Self> {
+        enable_raw_mode()?;
+        let mut stdout = std::io::stdout();
+        if let Err(e) = execute!(stdout, EnterAlternateScreen, Hide) {
+            let _ = disable_raw_mode();
+            return Err(e.into());
+        }
+        let backend = CrosstermBackend::new(stdout);
+        match Terminal::new(backend) {
+            Ok(terminal) => Ok(Self(terminal)),
+            Err(e) => {
+                let _ = execute!(std::io::stdout(), LeaveAlternateScreen, Show);
+                let _ = disable_raw_mode();
+                Err(e.into())
+            }
+        }
+    }
+}
+
+impl Drop for TerminalGuard {
     fn drop(&mut self) {
+        let _ = execute!(self.0.backend_mut(), LeaveAlternateScreen, Show);
         let _ = disable_raw_mode();
-        let _ = execute!(std::io::stdout(), LeaveAlternateScreen, Show);
     }
 }
 
@@ -95,16 +112,17 @@ fn update_select(
 ) -> (Vec<SelectItem>, ListState, Option<SelectOutcome>) {
     let mut new_items = items.to_vec();
     let mut new_state = *state;
+    let no_mods = key.modifiers.is_empty();
     let outcome = match key.code {
-        KeyCode::Up | KeyCode::Char('k') => {
+        KeyCode::Up | KeyCode::Char('k') if no_mods => {
             move_cursor(-1, items.len(), &mut new_state);
             None
         }
-        KeyCode::Down | KeyCode::Char('j') => {
+        KeyCode::Down | KeyCode::Char('j') if no_mods => {
             move_cursor(1, items.len(), &mut new_state);
             None
         }
-        KeyCode::Char(' ') => {
+        KeyCode::Char(' ') if no_mods => {
             if let Some(idx) = state.selected() {
                 if let Some(item) = new_items.get_mut(idx) {
                     item.selected = !item.selected;
@@ -113,7 +131,7 @@ fn update_select(
             None
         }
         KeyCode::Enter => Some(SelectOutcome::Confirmed),
-        KeyCode::Esc | KeyCode::Char('q') => Some(SelectOutcome::Aborted),
+        KeyCode::Esc | KeyCode::Char('q') if no_mods => Some(SelectOutcome::Aborted),
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             Some(SelectOutcome::Aborted)
         }
