@@ -234,12 +234,6 @@ test("before-hook ignores non-gated tools", async () => {
       { args: { filePath: "anything" } },
     ),
   ).resolves.toBeUndefined()
-  await expect(
-    hooks["tool.execute.before"]!(
-      { tool: "bash", sessionID: "s", callID: "c" },
-      { args: { command: "ls" } },
-    ),
-  ).resolves.toBeUndefined()
 })
 
 test("before-hook no-ops when filePath is missing", async () => {
@@ -507,4 +501,81 @@ test("before-hook skips self-check of bare relative .ironlint.yml (R3)", async (
       { args: { filePath: ".ironlint.yml", content: "anything\n" } },
     ),
   ).resolves.toBeUndefined()
+})
+
+// --- bash branch (bash-gate self-trust prevention) -------------------------
+// opencode's shell tool is `bash` (lowercase; confirmed via the opencode SDK
+// SessionMessageShell type and the existing `bash` test fixture). The command
+// lives in `output.args.command`. The bash branch runs BEFORE the
+// config-existence check — the bash-gate must fire even with no .ironlint.yml,
+// since that's exactly when an agent is most motivated to run `ironlint trust`.
+// Block contract: throw (mirrors the existing exit-2 write/edit path).
+
+test("bash 'ironlint trust' throws (blocks)", async () => {
+  const hooks = await IronLintPlugin(fakeCtx(project))
+  await expect(
+    hooks["tool.execute.before"]!(
+      { tool: "bash", sessionID: "s", callID: "c" },
+      { args: { command: "ironlint trust" } },
+    ),
+  ).rejects.toThrow(/ironlint trust must be run by a human/)
+})
+
+test("bash redirect to .ironlint.yml throws (blocks)", async () => {
+  const hooks = await IronLintPlugin(fakeCtx(project))
+  await expect(
+    hooks["tool.execute.before"]!(
+      { tool: "bash", sessionID: "s", callID: "c" },
+      { args: { command: "echo x > .ironlint.yml" } },
+    ),
+  ).rejects.toThrow(/policy files must be edited/)
+})
+
+test("bash 'ls' allows (pre-filter skip)", async () => {
+  // 'ls' never mentions ironlint → pre-filter skips the spawn entirely.
+  const hooks = await IronLintPlugin(fakeCtx(project))
+  await expect(
+    hooks["tool.execute.before"]!(
+      { tool: "bash", sessionID: "s", callID: "c" },
+      { args: { command: "ls" } },
+    ),
+  ).resolves.toBeUndefined()
+})
+
+test("bash 'ironlint trust' throws even with no .ironlint.yml", async () => {
+  // The bash-gate must fire regardless of config presence — a config-less
+  // project is exactly when the agent is most motivated to self-trust.
+  const empty = mkdtempSync(join(tmpdir(), "ironlint-opencode-nobash-"))
+  try {
+    const hooks = await IronLintPlugin(fakeCtx(empty))
+    await expect(
+      hooks["tool.execute.before"]!(
+        { tool: "bash", sessionID: "s", callID: "c" },
+        { args: { command: "ironlint trust" } },
+      ),
+    ).rejects.toThrow(/ironlint trust must be run by a human/)
+  } finally {
+    rmSync(empty, { recursive: true, force: true })
+  }
+})
+
+test("bash fails closed when ironlint is missing", async () => {
+  // No ironlint on PATH → spawn fails. The bash-gate must fail CLOSED (throw),
+  // not allow — a broken deny check is never a silent allow.
+  const emptyBin = mkdtempSync(join(tmpdir(), "ironlint-opencode-emptybin-"))
+  const savedPath = process.env["PATH"]
+  // PATH with only the empty bin dir — no ironlint resolvable.
+  process.env["PATH"] = emptyBin
+  try {
+    const hooks = await IronLintPlugin(fakeCtx(project))
+    await expect(
+      hooks["tool.execute.before"]!(
+        { tool: "bash", sessionID: "s", callID: "c" },
+        { args: { command: "ironlint trust" } },
+      ),
+    ).rejects.toThrow(/fail-closed/)
+  } finally {
+    process.env["PATH"] = savedPath
+    rmSync(emptyBin, { recursive: true, force: true })
+  }
 })
