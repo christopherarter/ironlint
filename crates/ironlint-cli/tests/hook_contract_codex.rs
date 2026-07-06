@@ -38,6 +38,19 @@ fn update_payload(cwd: &std::path::Path) -> String {
     .to_string()
 }
 
+/// A Bash PreToolUse event. codex emits `tool_name:"Bash"` (capital B —
+/// confirmed empirically 2026-07-06) for shell commands, with the command in
+/// `tool_input.command` (same jq path as claude-code). `cwd` is required so the
+/// hook resolves the project root + config.
+fn bash_payload(cwd: &std::path::Path, command: &str) -> String {
+    serde_json::json!({
+        "tool_name": "Bash",
+        "cwd": cwd.display().to_string(),
+        "tool_input": { "command": command },
+    })
+    .to_string()
+}
+
 /// A two-file Add-File apply_patch payload touching both `foo.py` and
 /// `bar.py` (both in `.ironlint.yml` scope) in a single envelope.
 fn multi_add_payload(cwd: &std::path::Path) -> String {
@@ -245,7 +258,7 @@ fn non_apply_patch_tool_is_allowed() {
     let fx = HookFixture::new(HOOK);
     fx.stub(2, "");
     let payload = serde_json::json!({
-        "tool_name": "Bash",
+        "tool_name": "SomeOtherTool",
         "cwd": fx.project.path().display().to_string(),
         "tool_input": { "command": "echo hi" },
     })
@@ -254,6 +267,134 @@ fn non_apply_patch_tool_is_allowed() {
         .success()
         .code(0)
         .stdout(predicates::str::is_empty());
+}
+
+// --- Bash branch (bash-gate self-trust prevention) ---------------------------
+//
+// codex emits tool_name:"Bash" for shell commands. The Bash branch runs BEFORE
+// the apply_patch-only gate (which would otherwise allow every non-apply_patch
+// tool). Substring pre-filter (ironlint | .ironlint) skips the spawn for
+// ordinary commands; on a hit, pipes `tool_input.command` to `ironlint gate-bash`
+// and translates exit 0 → allow, exit 2 → deny (deny-JSON/exit-0 per codex's
+// contract), anything else → fail-closed deny. Reuses the existing deny().
+
+/// `ls` never mentions ironlint → the pre-filter skips the spawn entirely. The
+/// stub is a TRAP (exit 2): if the hook wrongly spawned, this would deny. Allow
+/// (exit 0, empty stdout) proves the pre-filter short-circuit.
+#[test]
+fn bash_allows_benign_command() {
+    if !common::hook_tools_available() {
+        eprintln!("skipping: jq/python3 not available");
+        return;
+    }
+    let fx = HookFixture::new(HOOK);
+    fx.stub(2, "trap");
+    fx.run("pre-tool-use", &bash_payload(fx.project.path(), "ls"), &[])
+        .success()
+        .code(0)
+        .stdout(predicates::str::is_empty());
+}
+
+/// `ironlint trust` hits the pre-filter and the stubbed gate-bash exits 2 with
+/// the reason → the hook must emit a deny verdict (exit 0, deny JSON) whose
+/// reason carries the gate-bash message.
+#[test]
+fn bash_blocks_ironlint_trust() {
+    if !common::hook_tools_available() {
+        eprintln!("skipping: jq/python3 not available");
+        return;
+    }
+    let fx = HookFixture::new(HOOK);
+    fx.stub(2, "ironlint trust must be run by a human");
+    let out = fx
+        .run(
+            "pre-tool-use",
+            &bash_payload(fx.project.path(), "ironlint trust"),
+            &[],
+        )
+        .success()
+        .code(0)
+        .get_output()
+        .stdout
+        .clone();
+    assert_deny(&out, "ironlint trust must be run by a human");
+}
+
+/// A Bash redirect onto `.ironlint.yml` hits the pre-filter (`.ironlint`) and
+/// the stubbed gate-bash exits 2 → deny.
+#[test]
+fn bash_blocks_redirect_to_ironlint_yml() {
+    if !common::hook_tools_available() {
+        eprintln!("skipping: jq/python3 not available");
+        return;
+    }
+    let fx = HookFixture::new(HOOK);
+    fx.stub(2, "policy files must be edited through the Write/Edit tool");
+    let out = fx
+        .run(
+            "pre-tool-use",
+            &bash_payload(fx.project.path(), "echo x > .ironlint.yml"),
+            &[],
+        )
+        .success()
+        .code(0)
+        .get_output()
+        .stdout
+        .clone();
+    assert_deny(
+        &out,
+        "policy files must be edited through the Write/Edit tool",
+    );
+}
+
+/// If `ironlint` is not on PATH (no stub), the spawn fails. codex must emit a
+/// deny (fail-closed), not allow — a broken deny check is never a silent allow.
+#[test]
+fn bash_fails_closed_when_ironlint_missing() {
+    if !common::hook_tools_available() {
+        eprintln!("skipping: jq/python3 not available");
+        return;
+    }
+    let fx = HookFixture::new(HOOK);
+    // No stub → ironlint not on PATH → spawn fails.
+    let out = fx
+        .run(
+            "pre-tool-use",
+            &bash_payload(fx.project.path(), "ironlint trust"),
+            &[],
+        )
+        .success()
+        .code(0)
+        .get_output()
+        .stdout
+        .clone();
+    assert_deny(&out, "fail-closed");
+}
+
+/// End-to-end against the REAL `ironlint gate-bash` (not the stub): proves the
+/// hook pipes `tool_input.command` to the real subcommand and the real matcher
+/// blocks `ironlint trust`. The stub tests prove the hook's deny-JSON
+/// translation; this one proves the integration wiring.
+#[test]
+fn bash_blocks_ironlint_trust_with_real_binary() {
+    if !common::hook_tools_available() {
+        eprintln!("skipping: jq/python3 not available");
+        return;
+    }
+    let ironlint = assert_cmd::cargo::cargo_bin("ironlint");
+    let fx = common::RealBinFixture::new(HOOK, &ironlint);
+    let out = fx
+        .run(
+            "pre-tool-use",
+            &bash_payload(fx.project.path(), "ironlint trust"),
+            &[],
+        )
+        .success()
+        .code(0)
+        .get_output()
+        .stdout
+        .clone();
+    assert_deny(&out, "ironlint trust must be run by a human");
 }
 
 /// A patch touching two files in one envelope must run the per-file gate

@@ -65,6 +65,39 @@ fi
 
 TOOL_NAME=$(printf '%s' "${EVENT}" | jq -r '.tool_name // empty')
 
+# Bash branch: the bash-gate. Must run BEFORE the apply_patch-only gate below,
+# which would otherwise allow every non-apply_patch tool (and every self-trust
+# command with it). Decides whether the command the agent wants to run would
+# let it free itself from ironlint's gate (`ironlint trust`, or a Bash write
+# to `.ironlint.yml` / `.ironlint/gates/`). The deny logic lives in
+# `ironlint gate-bash` — the single source shared across every adapter. See
+# docs/superpowers/specs/2026-07-06-bash-gate-self-trust-prevention-design.md.
+# Block contract = deny-JSON/exit-0 (codex never blocks via exit code), so the
+# block paths reuse the existing `deny()` helper.
+if [[ "${TOOL_NAME}" == "Bash" ]]; then
+  COMMAND=$(printf '%s' "${EVENT}" | jq -r '.tool_input.command // empty')
+  # Substring pre-filter: ordinary commands (ls, git, cargo) never mention
+  # ironlint or .ironlint, so skip the spawn entirely — they pay nothing.
+  if [[ "${COMMAND}" != *ironlint* && "${COMMAND}" != *.ironlint* ]]; then
+    exit 0
+  fi
+  # `ironlint gate-bash` exits 0 = allow, 2 = block (reason on stdout), else
+  # broken. Under `set -e` the command substitution would die on a nonzero
+  # exit before we read $?, so capture via the `|| ec=$?` idiom (the same one
+  # the apply_patch path uses). Fail CLOSED on any unexpected exit — the deny
+  # check is the thing being protected, so a broken deny check is never a
+  # silent allow.
+  GATE_EC=0
+  GATE_REASON=$(printf '%s' "${COMMAND}" | ironlint gate-bash 2>/dev/null) || GATE_EC=$?
+  case "${GATE_EC}" in
+    0) exit 0 ;;
+    2) deny "${GATE_REASON}" ;;
+    *)
+      deny "ironlint: bash-gate failed (exit ${GATE_EC}) — fail-closed"
+      ;;
+  esac
+fi
+
 # Only file edits (apply_patch) are gated. Codex reports tool_name:"apply_patch"
 # for file edits even when the matcher aliased Edit/Write. Anything else that
 # reaches here (matcher over-broad) is allowed — ironlint gates file edits only.

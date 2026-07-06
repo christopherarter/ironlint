@@ -59,7 +59,11 @@ pub(crate) fn codex_build_entry(command: &str) -> Value {
     // hook timeout must exceed the worst-case sequential-check budget or
     // Codex kills the hook process first and the edit lands ungated with no
     // signal to anyone. See docs/adapters/README.md "Timeout budget".
-    json!({"matcher": "apply_patch|Edit|Write",
+    //
+    // `Bash` (capital B — confirmed empirically 2026-07-06) is codex's shell
+    // tool, gated by the bash-gate branch (Task 6 of the bash-gate plan). The
+    // matcher must name it or the bash-gate never fires.
+    json!({"matcher": "apply_patch|Edit|Write|Bash",
            "hooks": [{"type": "command", "command": command,
                       "timeout": 120, "statusMessage": "ironlint check"}]})
 }
@@ -224,7 +228,7 @@ mod tests {
     #[test]
     fn codex_entry_matches_apply_patch() {
         let e = codex_build_entry("\"/x/hook.sh\" pre-tool-use");
-        assert_eq!(e["matcher"], "apply_patch|Edit|Write");
+        assert_eq!(e["matcher"], "apply_patch|Edit|Write|Bash");
         assert_eq!(e["hooks"][0]["command"], "\"/x/hook.sh\" pre-tool-use");
 
         // Assert the *relationship*, not just the current literal, so a
