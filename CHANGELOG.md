@@ -27,7 +27,10 @@ policy surface (`.ironlint.yml`, `.ironlint/gates/`) through Bash redirections.
     (`nohup`, `env`, `exec`, `eval`, `timeout`), full/relative paths
     (`/usr/local/bin/ironlint trust`, `./ironlint trust`), global flags before
     the subcommand (`ironlint -v trust`), chained commands (`ironlint check ||
-    ironlint trust`, `&&`/`;`/`|`), and subshell/brace grouping
+    ironlint trust`, `&&`/`;`/`|`), `or`-confusion (`ironlint check or
+    ironlint trust` — `or` is not a shell operator so sh runs `ironlint trust`
+    anyway; the matcher checks every `ironlint` binary in the segment, catching
+    the second invocation), and subshell/brace grouping
     (`(ironlint trust)`, `{ ironlint trust; }`).
   - **Bash writes to the policy surface** — redirects (`echo x>.ironlint.yml`,
     `>>`, the `>|` clobber), `tee`, `sed -i`, `ed`, `cp`/`mv`/`install`/`rsync`
