@@ -118,13 +118,14 @@ fn segments(normalized: &str) -> Vec<String> {
 }
 
 /// The command prefixes that wrap an ironlint invocation without changing
-/// its meaning: `nohup`, `env [VAR=val]...`, `exec`, `eval`, `timeout <N>`.
-/// A lazy model prepends these to "make sure it runs"; stripping them recovers
-/// the direct form. Bounded explicit list — not shell evaluation.
+/// its meaning: `nohup`, `env [VAR=val]...`, `exec`, `eval`, `timeout <N>`,
+/// and `sh`/`bash -c '<cmd>'`. A lazy model prepends these to "make sure it
+/// runs"; stripping them recovers the direct form. Bounded explicit list —
+/// not shell evaluation.
 fn strip_wrappers(segment: &str) -> String {
-    // Drop leading wrapper prefixes (nohup/env/exec/eval/timeout) one at a
-    // time. Uses `split_first` over a slice cursor — no `+=`/`+` index
-    // arithmetic to mutate-hang or mutate-survive.
+    // Drop leading wrapper prefixes (nohup/env/exec/eval/timeout, plus
+    // sh/bash -c descent) one at a time. Uses `split_first` over a slice
+    // cursor — no `+=`/`+` index arithmetic to mutate-hang or mutate-survive.
     let all: Vec<&str> = segment.split_whitespace().collect();
     let mut rest = all.as_slice();
     while let Some((first, tail)) = rest.split_first() {
@@ -134,6 +135,24 @@ fn strip_wrappers(segment: &str) -> String {
             "env" => rest = skip_assignments(tail),
             // timeout + its single duration arg.
             "timeout" => rest = tail.split_first().map(|(_, t)| t).unwrap_or(&[]),
+            // `sh -c '<cmd>'` / `bash -c "<cmd>"`: the command string is the
+            // argument after `-c`. normalize() already stripped the quotes,
+            // so the command string's tokens are the slice beyond `-c` —
+            // descend into it and let the loop re-check (mirrors eval/exec
+            // unwrapping to their argument). Without `-c` (`sh script.sh`),
+            // sh runs a script file — that's the documented indirection gap
+            // (adversarial tier); don't descend.
+            "sh" | "bash" if tail.first() == Some(&"-c") => rest = &tail[1..],
+            // Bare `VAR=val ironlint trust`: a leading assignment with no
+            // `env` wrapper is semantically identical to `env VAR=val ...`
+            // (sh exports the assignment to the command's env). Skip it one
+            // token at a time so the loop re-checks the next token — multiple
+            // leading assignments (`FOO=bar BAZ=qux ironlint trust`) all get
+            // stripped, then `ironlint` is the first non-assignment token and
+            // the loop breaks, returning `ironlint trust` for is_ironlint_trust.
+            // Strict identifier check (valid shell name before `=`) avoids
+            // over-skipping a malformed leading flag like `--config=x.yml`.
+            t if is_assignment(t) => rest = tail,
             _ => break,
         }
     }
@@ -144,8 +163,31 @@ fn strip_wrappers(segment: &str) -> String {
 /// and return the slice that follows them (the actual command). Iterator-
 /// driven so a mutation to the skip logic can't hang.
 fn skip_assignments<'a>(tail: &'a [&'a str]) -> &'a [&'a str] {
-    let end = tail.iter().take_while(|t| t.contains('=')).count();
+    let end = tail.iter().take_while(|t| is_assignment(t)).count();
     &tail[end..]
+}
+
+/// True if `token` is a shell `VAR=val` assignment: a `=` not at position 0,
+/// with the pre-`=` part a valid shell identifier (letters/digits/underscore,
+/// not starting with a digit). Shared by `skip_assignments` (post-`env`) and
+/// `strip_wrappers`'s bare-prefix arm. The strict identifier check avoids
+/// over-skipping a leading `--config=x.yml` (which contains `=` but is a
+/// flag, not an assignment).
+fn is_assignment(token: &str) -> bool {
+    let Some(eq) = token.find('=') else {
+        return false;
+    };
+    if eq == 0 {
+        return false;
+    }
+    let name = &token[..eq];
+    let mut chars = name.chars();
+    let first = chars.next();
+    // Shell identifier: first char a letter or underscore (not a digit); the
+    // rest letters/digits/underscore. `IRONLINT_ROOT`, `FOO`, `_x9` match;
+    // `9x`, `--config`, `a-b` don't.
+    let ok_first = first.is_some_and(|c| c.is_ascii_alphabetic() || c == '_');
+    ok_first && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// True if a token is the ironlint binary: the literal name, or a path ending
@@ -1048,5 +1090,117 @@ mod tests {
     #[test]
     fn allows_dd_from_ironlint_yml_as_source() {
         assert_allows("dd if=.ironlint.yml of=/tmp/backup");
+    }
+
+    // =====================================================================
+    // v0.9.2 — `sh -c` descent + bare `VAR=val` prefix bypasses.
+    // Both let a lazy non-reasoning model run `ironlint trust` through its
+    // Bash tool despite the gate. See
+    // plans/2026-07-07-bash-gate-sh-c-and-bare-env-bypasses.md.
+    // =====================================================================
+
+    // --- Task 1: `sh -c 'ironlint trust'` / `bash -c "ironlint trust"` ---
+    // The shell runs the QUOTED argument as one command string (`ironlint
+    // trust`), but normalize() strips quotes globally, so the gate was
+    // analyzing `sh -c ironlint trust` (where sh runs only `ironlint`, and
+    // `trust` becomes `$0`). strip_wrappers now descends into the `-c`
+    // command-string argument and re-checks it.
+    #[test]
+    fn blocks_sh_c_ironlint_trust_single_quoted() {
+        assert_blocks("sh -c 'ironlint trust'");
+    }
+
+    #[test]
+    fn blocks_bash_c_ironlint_trust_double_quoted() {
+        assert_blocks("bash -c \"ironlint trust\"");
+    }
+
+    // False-positive guard: a read-only subcommand under `sh -c` MUST still
+    // allow. If the descent over-blocks (e.g. treats any `sh -c` content as a
+    // trust invocation), this flips to Block.
+    #[test]
+    fn allows_sh_c_readonly_ironlint_check() {
+        assert_allows("sh -c 'ironlint check'");
+    }
+
+    // --- Task 2: bare `VAR=val ironlint trust` ---
+    // The `env VAR=val ironlint trust` form IS caught (env is a recognized
+    // wrapper; skip_assignments drops VAR=val), but the semantically
+    // equivalent bare prefix is not — strip_wrappers' fall-through `break`ed
+    // on VAR=val before reaching the binary, and the first-token-is-binary
+    // guard in is_ironlint_trust then bailed. The fix recognizes a leading
+    // VAR=val assignment in the fall-through and skips it.
+    #[test]
+    fn blocks_bare_env_prefix_ironlint_trust() {
+        assert_blocks("IRONLINT_ROOT=/x ironlint trust");
+    }
+
+    // Multiple leading assignments + trust — pins that the skip loop advances
+    // past every VAR=val, not just the first.
+    #[test]
+    fn blocks_bare_env_prefix_multiple_assignments_trust() {
+        assert_blocks("FOO=bar BAZ=qux ironlint trust");
+    }
+
+    // False-positive guard: a read-only subcommand with a bare env prefix MUST
+    // still allow. `RUST_LOG=debug ironlint check` is a legit read.
+    #[test]
+    fn allows_bare_env_prefix_readonly_command() {
+        assert_allows("RUST_LOG=debug ironlint check");
+    }
+
+    // Multiple leading assignments + a read-only subcommand MUST allow.
+    #[test]
+    fn allows_bare_env_prefix_multiple_assignments_readonly() {
+        assert_allows("FOO=bar BAZ=qux ironlint check");
+    }
+
+    // --- is_assignment predicate pins (mutation-kill, not threat-model) ---
+    // These pin the strictness of the shell-identifier check in is_assignment,
+    // which exists to avoid over-skipping a non-assignment leading token.
+
+    // A leading-underscore assignment is a VALID shell identifier — `_PRIVATE`
+    // is a real env var name, so `_PRIVATE=1 ironlint trust` IS the bare-prefix
+    // bypass and must Block. Pins the `c == '_'` in ok_first: under `!= '_'`,
+    // `_PRIVATE=1` is misclassified as non-assignment, not skipped, and the
+    // first-token-is-binary guard bails → false Allow.
+    #[test]
+    fn blocks_underscore_leading_assignment_trust() {
+        assert_blocks("_PRIVATE=1 ironlint trust");
+    }
+
+    // A DIGIT-leading `=val` is NOT a valid shell assignment (identifiers
+    // can't start with a digit), so sh runs `9x=1` as a command name (not
+    // found) and `ironlint trust` never fires — the correct verdict is Allow.
+    // Pins the `&&` in `ok_first && chars.all`: under `||`, `9x=1` is
+    // misclassified as an assignment, skipped, and `ironlint trust` is
+    // false-blocked. (Predicate-logic pin, not a realistic lazy-model form.)
+    #[test]
+    fn allows_digit_leading_non_assignment_prefix() {
+        assert_allows("9x=1 ironlint trust");
+    }
+
+    // =====================================================================
+    // Task 3: sibling-token regression pins. The `or`-confusion fix
+    // (3e9cd0d) made is_ironlint_trust scan EVERY ironlint binary in a
+    // segment, not just the first. These forms are caught today but
+    // unpinned — a future "simplify back to first-only" would silently
+    // reopen them. `and`/newline/comma are not shell separators, so
+    // segments() leaves them as one segment; the second binary's `trust`
+    // is what blocks.
+    // =====================================================================
+    #[test]
+    fn blocks_ironlint_check_and_ironlint_trust() {
+        assert_blocks("ironlint check and ironlint trust");
+    }
+
+    #[test]
+    fn blocks_ironlint_check_newline_ironlint_trust() {
+        assert_blocks("ironlint check\nironlint trust");
+    }
+
+    #[test]
+    fn blocks_ironlint_check_comma_ironlint_trust() {
+        assert_blocks("ironlint check, ironlint trust");
     }
 }
