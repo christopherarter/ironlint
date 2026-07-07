@@ -3,7 +3,32 @@
 **Status:** design, exploratory (2026-07-01). Not a commitment to build; captures a brainstorm.
 **Revised 2026-07-01 (same day):** MVP narrowed after a market pass (Microsoft's Agent Governance Toolkit, the MCP-gateway category, the ACS standard). Kernel extraction proceeds exactly as specified — it pays for itself in the linter regardless and is fully de-risked by the characterization suite. The govern MVP ships **one** PEP (Claude Code `PreToolUse`), dogfooded on the author's own agents, plus an example policy pack mapped to the OWASP Agentic Top 10. Framework/cloud PEPs and the two-runtime demo move to deferred (§12).
 **Builds on:** the 0.4 checks-pipeline substrate (`specs/2026-06-28-ironlint-checks-pipeline-design.md`) — same veto-by-exit-code primitive, generalized off of files.
-**Breaking (if pursued):** introduces a shared `ironlint-kernel` crate and refactors the shipped linter onto it. The linter's locked ABI, exit-code contract, and verdict JSON are preserved byte-for-byte (§8); the change is internal.
+**Breaking:** introduces a shared `ironlint-kernel` crate and refactors the shipped linter onto it. The linter's locked ABI, exit-code contract, and verdict JSON are preserved byte-for-byte (§8); the change is internal.
+**Evolved 2026-07-07:** reviewed against six days of drift (§1.1). Path committed as **Approach A** — kernel extraction first, govern as the second `Product`, with `ironlint-bash-gate` absorbed as govern's built-in baseline policy (§3.1). The controlling design constraint is the **composable-spine principle** (§3.1): baked-in checks traverse the same `evaluate` pipeline as user policies — no bypass path. A baseline policy is just a policy whose `run` happens to invoke a built-in binary, not bespoke code beside the pipeline.
+
+## 1.1 Reality delta — the drift since 2026-07-01 (logged 2026-07-07)
+
+Six days of post-spec work. The thesis is **strengthened**, not invalidated — bash-gate is a second hand-built governor proving the pattern-repeat the kernel predicts. But the migration surgery is bigger than the original spec assumed. Concretely:
+
+- **`ironlint-bash-gate` shipped (2026-07-06, v0.9.1)** — a whole new crate + `ironlint gate-bash` subcommand. NOT a `check`, NOT trust-gated, runs with no `.ironlint.yml`, fires before the config-existence check in every adapter's Bash branch. This is a **hand-built `pre-tool` lifecycle for Bash only**, built outside the policy mechanism — exactly the abstraction gap the kernel extraction predicted. **Resolved (§3.1):** absorbed as govern's built-in baseline policy, preserving its three properties (config-less, untrust-gated, runs-first).
+- **Exit code 4 landed** (Task 3.2 — untrusted config → block loudly). The spec's "preserve the linter's exit-code contract byte-for-byte (§8)" now covers a **5-code** contract (0/1/2/3/4), not four. **Resolved (§8):** the kernel models trust-gating as a *pre-eval gate* (resolves to allow/deny before the verdict fold), so exit-4's "untrusted → block loudly" survives in govern as "untrusted → deny" — they agree because govern is already fail-closed by default.
+- **File growth under the kernel lift surface** — every file the kernel would move has grown, several dramatically:
+
+  | File | At spec | 2026-07-07 | Δ |
+  | --- | --- | --- | --- |
+  | `runner.rs` | 1354 | 1935 | +43% |
+  | `engine/gate.rs` | 387 | 848 | +119% |
+  | `trust.rs` | 499 | 1517 | **+204%** |
+  | `telemetry.rs` | 277 | 645 | +133% |
+  | `config/scope.rs` | 34 | 174 (proptests) | 5× |
+  | `verdict.rs` | 179 | 219 | +22% |
+
+  The "lift these unchanged" claim (§8) now lifts a much bigger surface. `trust.rs` in particular hardened dramatically — process locking, unique temp, corruption recovery, symlink refusal, **in-repo script hashing** (closes a post-bless script-swap RCE, Task 3.3). "Unchanged" becomes "behavior-identical, hardening preserved" — a riskier claim, but the characterization suite is bigger and catches more, so the *proof* is stronger even as the *surface* is larger.
+- **`gate.rs` now scrubs the environment** (allowlisted env, no secret inheritance, 3.4), kills the process group on timeout (2.1), bounds drain wait. The render layer's `{stdin, env}` is the seam these flow through; the kernel keeps them.
+- **A repo-sweep dispatch path landed in `runner.rs`** (2026-07-05, v0.9.0) — walker + lifecycle classifier + batched pre-commit. The spec's "only write/pre-commit dispatch stays in the linter" now also has to account for the sweep path — it stays in `ironlint-core` (it's linter-product dispatch), not the kernel.
+- **`verdict` SCHEMA_VERSION bumped 5→6** once (InternalError detail), and `serde_yaml` → `serde_yaml_ng`. The kernel's generalized `Verdict` and the linter's preserved byte-shape diverge at the render layer, not the schema.
+
+**Net:** Approach A committed. The drift makes step 1 (kernel extraction) *longer*, not *riskier* — the characterization suite's job is to catch exactly the byte-churn the grown surfaces would introduce.
 
 ## 1. Thesis — a file-write is just one kind of action
 
@@ -65,6 +90,35 @@ Three layers, three portability verdicts:
 - **Adapters (PEPs)** — per-runtime plugs, never portable, by design. Each is a small shim: install the interception point, translate the runtime's tool call into a canonical `Action`, invoke the CLI. Coding-harness plugs largely exist; frameworks/cloud are new but each is small.
 
 **Data flow, one action:** agent attempts a tool call → the runtime's PEP intercepts → PEP serializes it to a canonical `Action` → `ironlint-govern eval` reads it on stdin, the kernel loads + composes policy (trust-checked), runs matching policies via `sh -c`, folds exit codes into a `Verdict` → the CLI exit code carries the verdict back → PEP allows or blocks the call → the kernel appends a telemetry record.
+
+### 3.1 The composable-spine principle + the bash-gate absorb
+
+**The controlling constraint.** A baked-in check must traverse the **same** `evaluate` pipeline as a user policy — never a bypass path. If a built-in needs bespoke code beside the pipeline to run, the abstraction is hollow and govern has failed to eat its own dogfood. This is non-negotiable: the baseline policy is "just a policy," distinguished only by being built-in code rather than config.
+
+**Why bash-gate absorbs cleanly.** bash-gate already ships as `ironlint gate-bash` — a pure-Rust binary that reads a Bash command on stdin and exits `0` (allow) or `2` (block, reason on stdout). It is *already* a `run`-able gate. So the baseline policy for `tool: Bash` is:
+
+```yaml
+# ironlint-govern built-in baseline (code, not user config — never trust-gated, fires on a config-less project)
+baseline-bash-self-trust:
+  tools: ["Bash"]
+  run: "ironlint gate-bash"      # reads the Action's args.command on stdin, exit 0/2
+  on: [pre-tool]
+  trust_gated: false             # baseline only — see below
+```
+
+That `run` goes through the **identical** `gate::run_gate(run, env, stdin, timeout)` every user policy uses. The baseline is not special-cased in `evaluate`; it is selected first and runs first, but through the same code path. The composable-spine principle holds because the baseline is structurally indistinguishable from a user policy at the pipeline level.
+
+**The three bash-gate properties, preserved:**
+
+| Property today | After absorb |
+| --- | --- |
+| Runs with **no `.ironlint.yml`**, no trust store | Baseline policy is **built-in code**, not config — fires on a config-less project before the user-policy load. |
+| **Not trust-gated** | Baseline policies are never trust-gated (`trust_gated: false` is a baseline-only field; user policies cannot set it). User policies are trust-gated as in §7. |
+| Runs **before** the config-existence check | Govern `eval` order: **baseline policy → (if config exists) trust-gate → user policies**. Baseline is the non-bypassable floor; user `policies:` can only *add* blocks, never relax it. |
+
+**`ironlint-bash-gate` crate fate.** Its surface is unchanged — still a pure-Rust Bash classifier exposed as `ironlint gate-bash`. What changes is its dependency home: today `ironlint-cli` depends on it directly (the `gate-bash` subcommand); after absorb, `ironlint-govern` depends on it (the baseline policy invokes it), and `ironlint-cli` exposes `gate-bash` as a passthrough for backward compat. The crate's code does not move.
+
+**One interception point per adapter.** Today each adapter has a Bash branch (→ `gate-bash`) and a Write branch (→ `ironlint check`). After absorb, the Claude Code `PreToolUse` PEP shells out to **`ironlint-govern eval`** with the canonical `Action` on stdin for *every* tool call. Govern's baseline handles Bash self-trust; govern's user policies handle everything else (egress, MCP writes, destructive shell beyond the baseline); the linter (still wired, still a separate product) handles `kind: write`. The adapter's Bash-specific branch collapses into the general PEP.
 
 ## 4. The canonical `Action` (input contract / new stability surface)
 
@@ -154,7 +208,7 @@ Action JSON (stdin)
 - `0` = **allow** the action to proceed.
 - non-zero = **do NOT allow** (block).
 
-That is the whole contract a PEP must know. This is a deliberate divergence from the linter's four-code scheme (`0/1/2/3`), justified by the portability goal: **govern resolves fail posture internally and hands the PEP an already-decided answer.** A PEP in Python for LangGraph, in Go for a cloud orchestrator, in a shell hook for Claude Code all implement the same trivial rule: `exit 0 → proceed, else → block`. Nuance (explicit veto vs. error-resolved-to-deny, which policy fired, the message to show the agent) lives in the **Verdict JSON on stdout** for PEPs that want a good rejection reason, and always lands in telemetry regardless. Keeping the exit code binary is what keeps the plug layer cheap in any language.
+That is the whole contract a PEP must know. This is a deliberate divergence from the linter's contract — five codes as of 2026-07-02 (`0/1/2/3/4`, the govern-era four-code `0/1/2/3` plus exit-4 untrusted; see §1.1) — justified by the portability goal: **govern resolves fail posture internally and hands the PEP an already-decided answer.** A PEP in Python for LangGraph, in Go for a cloud orchestrator, in a shell hook for Claude Code all implement the same trivial rule: `exit 0 → proceed, else → block`. Nuance (explicit veto vs. error-resolved-to-deny, which policy fired, the message to show the agent) lives in the **Verdict JSON on stdout** for PEPs that want a good rejection reason, and always lands in telemetry regardless. Keeping the exit code binary is what keeps the plug layer cheap in any language.
 
 ## 7. Fail-closed posture, trust, and bypass
 
@@ -202,16 +256,16 @@ pub trait Product {
 pub fn evaluate(actions: &[Action], policies: &PolicySet, product: &impl Product) -> Verdict;
 ```
 
-- The **linter is `Product` with `kind: write`** (glob-on-path matcher, legacy render). **Govern is `Product` with `kind: tool_call`** (tool-name matcher, Action-JSON render). "A file-write is just one action kind" becomes a concrete, testable claim.
+- The **linter is `Product` with `kind: write`** (glob-on-path matcher, legacy render). **Govern is `Product` with `kind: tool_call`** (tool-name matcher, Action-JSON render, + a baseline-policy host — §3.1). "A file-write is just one action kind" becomes a concrete, testable claim.
 - **`extends`-compose goes generic** — `resolve<T>(named_map, …)` composes any named map of `extends`-participating entries (checks *or* policies). The composability engine is shared verbatim.
-- `gate::run_gate`, `trust`, and `telemetry` move up **unchanged** (gate/trust already pure; telemetry's record gets a generalized shape).
+- `gate::run_gate`, `trust`, and `telemetry` move up **behavior-identical** (the 2026-07-07 drift — §1.1 — hardened `trust.rs` with process locking, in-repo script hashing, exit-4 enforcement, and grew `gate.rs` with env-scrubbing + process-group kill; all lift intact). "Unchanged" in the original spec meant behavior-identical; the grown surface makes the characterization suite's no-diff bar the decisive proof.
+- **Trust-gating as a pre-eval gate (exit-4 reconciliation).** The linter's 5-code contract (0/1/2/3/4) is preserved for the linter product. In the kernel, trust-gating resolves to allow/deny *before* the verdict fold — so exit-4's "untrusted → block loudly" surfaces in govern as "untrusted → deny," consistent with govern's fail-closed default. The kernel's `evaluate` is: `trust_gate(action, policy_set) → Allow | Deny` then `run → fold`. The baseline policy bypasses the trust gate (`trust_gated: false`), which is why it fires on a config-less project (§3.1).
+- **Composable-spine invariant (carried from §3.1).** The baseline policy goes through the *same* `gate::run_gate` as user policies. The migration's acceptance test for the absorb: a fixture where a Bash action triggers the baseline on a config-less project must produce the *same* verdict (exit 0/2) as today's `ironlint gate-bash` invocation — i.e., the absorb is provably a no-op for existing bash-gate behavior.
 
 **Migration sequence — order is non-negotiable:**
 
-1. **Extract the kernel *underneath* the linter, behavior byte-identical.** Pure internal refactor: gate/trust/telemetry/verdict/extends move to `ironlint-kernel`; the linter is re-expressed as `Product<write>`. The full existing suite — `cli_e2e_gates`, the `insta` snapshots, the unit tests, the ≥80% region gate — is the **characterization harness**. It must stay green **with zero snapshot churn**. Green-with-no-diff *is* the proof that the locked ABI, the `0/1/2/3` exit contract, and the verdict JSON are untouched.
-2. **Only then** build `ironlint-govern` as a *second* `Product` on the now-proven kernel — purely additive, touching nothing in the linter's dispatch.
-
-Do not interleave. Kernel-extraction-under-linter lands and stabilizes first.
+1. **Extract the kernel *underneath* the linter, behavior byte-identical.** Pure internal refactor: gate/trust/telemetry/verdict/extends move to `ironlint-kernel`; the linter is re-expressed as `Product<write>`. The full existing suite — `cli_e2e_gates`, the `insta` snapshots, the unit tests, the ≥80% region gate — is the **characterization harness**. It must stay green **with zero snapshot churn**. Green-with-no-diff *is* the proof that the locked ABI, the 5-code exit contract (`0/1/2/3/4` — code 4 added 2026-07-02, see §1.1), and the verdict JSON are untouched. The v0.9.0 repo-sweep dispatch path stays in `ironlint-core` — it is write/pre-commit dispatch, the linter product's job, not kernel territory.
+2. **Only then** build `ironlint-govern` as a *second* `Product` on the now-proven kernel — purely additive, touching nothing in the linter's dispatch. Govern ships the baseline-policy host (§3.1) and absorbs the bash-gate invocation into it as its first built-in.
 
 **Side benefits:** `runner.rs` (50K, flagged as carrying too much) shrinks — its generic load/resolve/fold/log spine leaves for the kernel; only write/pre-commit dispatch stays. The kernel inherits the same coverage (≥80% region) and cognitive-complexity (≤15) gates, so `evaluate` is decomposed (select → run → fold) rather than growing into one function.
 
@@ -232,19 +286,21 @@ An adapter/PEP does three things: install the interception point, translate the 
 - `ironlint-kernel` extracted; linter migrated (§8 step 1); suite green, no snapshot diff. This lands even if govern stalls — it shrinks `runner.rs` and is fully de-risked by the characterization suite.
 - `ironlint-govern` crate + CLI: `eval` (core), `validate`, `trust` (reused). Canonical `Action` schema and `policies:` schema, documented and versioned.
 - **One enforcement point, dogfooded:** the Claude Code `PreToolUse` hook, installed on the author's machine and governing daily agent use. The second `Product` on the kernel is what earns the abstraction; the daily dogfood is what makes it credible.
-- **OWASP-mapped example policy pack:** each policy annotated with the OWASP Agentic Top 10 item it addresses — destructive-shell veto, egress allowlist, `git push --force` block. Two credibility requirements: the destructive-shell policy must do real shell parsing, not regex (a `grep -Eq 'rm -rf'` policy is trivially bypassed by `rm -r -f` or an encoded command, and security reviewers will check exactly this), and every policy ships with fixture tests proving what it blocks *and* what it deliberately allows.
-- **The headline demo:** a coding agent attempting a destructive action and being vetoed end-to-end — the policy, the verdict JSON the agent sees, and the telemetry record, in one short walkthrough.
+- **OWASP-mapped example policy pack:** each policy annotated with the OWASP Agentic Top 10 item it addresses. Note (2026-07-07): the destructive-shell veto is now the **baseline policy** (absorbed bash-gate, §3.1) — it ships as a built-in, not in the user pack. The user pack layers *above* the baseline: egress allowlist, `git push --force` block, `mcp__*` prod-write guard. Every user policy ships with fixture tests proving what it blocks *and* what it deliberately allows. The baseline's real-shell-parsing requirement (not regex) is inherited from bash-gate's existing pure-Rust classifier.
+- **The headline demo:** a coding agent attempting a destructive action and being vetoed end-to-end — the baseline policy firing, the verdict JSON the agent sees, and the telemetry record, in one short walkthrough. A second demo: a user policy (egress allowlist) blocking a call the baseline would allow, proving the superset layer works.
 
 **Phasing** (maps to the `plans/` convention; each phase independently shippable/reviewable):
 
-1. Kernel extraction + linter migration (green, no diff).
-2. `ironlint-govern` core — schema, `eval`, trust, fail-posture, telemetry. Tested purely via stdin/exit.
-3. The Claude Code PEP + the OWASP-mapped policy pack + the dogfood install = the demo.
+1. Kernel extraction + linter migration (green, no diff). Suite green with zero snapshot churn is the gate.
+2. `ironlint-govern` core — schema, `eval`, trust, fail-posture, telemetry, **baseline-policy host** (§3.1). The baseline `ironlint gate-bash` invocation must produce byte-identical verdicts to today's bash-gate — the absorb's no-op proof.
+3. The Claude Code PEP + the OWASP-mapped user policy pack + the dogfood install = the demo.
 
 ## 11. Testing strategy
 
 - **Kernel:** the migrated linter suite as characterization net, plus new tests for `evaluate`, matcher, `render`, fail-posture resolution, and trust→deny-closed. ≥80% region, complexity ≤15.
-- **Govern CLI:** `assert_cmd` e2e mirroring `cli_e2e_gates` — feed `Action` JSON on stdin, assert exit code + verdict JSON across allow / deny / error-closed / error-open / untrusted-deny / no-policy-allow.
+- **Govern CLI:** `assert_cmd` e2e mirroring `cli_e2e_gates` — feed `Action` JSON on stdin, assert exit code + verdict JSON across allow / deny / error-closed / error-open / untrusted-deny / no-policy-allow / **baseline-fires-on-config-less-project**.
+- **Bash-gate absorb no-op test (acceptance gate for the absorb):** the exact Bash commands today's `ironlint gate-bash` allows/blocks, fed as `Action` JSON to `ironlint-govern eval` on a config-less project, must produce the same exit code (0/2) and message. The baseline policy must be provably a no-op for existing bash-gate behavior. This is the proof the composable-spine invariant (§3.1) holds.
+- **Composable-spine test:** a fixture proving the baseline and a user policy for the same `tool: Bash` action both go through `gate::run_gate` — i.e., no special-case code path for the baseline. Enforced by a mutation test: a mutant that bypasses `gate::run_gate` for the baseline must be caught.
 - **Stability surfaces:** `insta` snapshots pinning the `Action` schema and the exit contract.
 - **PEP conformance:** the same `Action` fed to `eval` directly must yield the verdict the Claude Code PEP acts on — hook-in-the-loop e2e, verified in CI. (The cross-language pytest shim moves to §12 with the framework PEP; it returns when a second-language PEP does.)
 - **Policy-pack fixtures:** every shipped example policy has tests for what it blocks and what it deliberately allows, including the known bypass shapes for the destructive-shell policy (`rm -r -f`, flag reordering, encoded commands).
