@@ -191,12 +191,19 @@ fn is_flag_token(token: &str) -> bool {
     token.starts_with("--") || (token.starts_with('-') && token.len() == 2)
 }
 
-/// True if the segment is `ironlint trust` (any trailing args), matching the
-/// direct form plus the light de-obfuscation a lazy model reaches for:
-/// path-prefixed binary names (`/usr/local/bin/ironlint`, `./ironlint`),
-/// wrapper prefixes (`nohup`, `env`, `exec`, `eval`, `timeout`), and global
-/// flags before the subcommand (`ironlint --config x.yml trust`). Does NOT
-/// match read-only subcommands (`check`, `doctor`, etc.).
+/// True if the segment invokes `ironlint trust` — the direct form plus the
+/// light de-obfuscation a lazy model reaches for: path-prefixed binary names
+/// (`/usr/local/bin/ironlint`, `./ironlint`), wrapper prefixes (`nohup`,
+/// `env`, `exec`, `eval`, `timeout`), and global flags before the subcommand
+/// (`ironlint --config x.yml trust`). Does NOT match read-only subcommands
+/// (`check`, `doctor`, etc.).
+///
+/// Checks EVERY ironlint binary occurrence in the segment, not just the first
+/// token — `ironlint check or ironlint trust` has a second binary (`or` is not
+/// a shell operator, so segments() leaves it as one segment) whose `trust`
+/// subcommand the first-binary scan misses (it short-circuits on `check`).
+/// The first-token-is-binary guard still holds, so `echo ... ironlint trust`
+/// (a string argument to echo) stays a non-match.
 fn is_ironlint_trust(segment: &str) -> bool {
     let stripped = strip_wrappers(segment);
     let tokens: Vec<&str> = stripped.split_whitespace().collect();
@@ -210,7 +217,16 @@ fn is_ironlint_trust(segment: &str) -> bool {
     if !is_ironlint_binary(first) {
         return false;
     }
-    trust_after_binary(&tokens, 0)
+    // A second ironlint binary buried in the segment (e.g. after a bare `or`)
+    // is a separate invocation whose `trust` subcommand the first-binary scan
+    // misses — check each occurrence. `trust_after_binary` itself stays strict:
+    // `ironlint check trust` (one binary, `trust` as a stray positional to
+    // `check`) still allows, because clap rejects the positional and nothing
+    // fires; only a real second `ironlint trust` invocation blocks.
+    tokens
+        .iter()
+        .enumerate()
+        .any(|(idx, t)| is_ironlint_binary(t) && trust_after_binary(&tokens, idx))
 }
 
 /// `cd .ironlint && trust` and `cd .ironlint/gates && trust`: a bare `trust`
@@ -845,6 +861,19 @@ mod tests {
     #[test]
     fn blocks_chained_ironlint_trust_with_args() {
         assert_blocks("true && ironlint trust --config x.yml");
+    }
+
+    // `or` is NOT a shell operator (that's `||`), so a lazy model confusing
+    // the two writes `ironlint check or ironlint trust`. sh runs `ironlint
+    // check`, then `or` (command not found), then `ironlint trust` — trust
+    // fires. segments() doesn't split on bare `or` (correctly — it's not a
+    // separator), so the whole string is one segment; the fix is to catch
+    // `trust` as ANY token after the ironlint binary in a segment, not just
+    // the first non-flag one. Safe because no subcommand legitimately takes
+    // `trust` as an argument (`explain` takes a file path).
+    #[test]
+    fn blocks_ironlint_check_or_ironlint_trust() {
+        assert_blocks("ironlint check or ironlint trust");
     }
 
     // --- F3: prefix wrappers (`nohup`, `env`, `exec`, `eval`, `timeout`) ---
