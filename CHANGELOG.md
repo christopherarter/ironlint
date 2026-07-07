@@ -48,6 +48,19 @@ policy surface (`.ironlint.yml`, `.ironlint/gates/`) through Bash redirections.
   non-reasoning models"; the honest contract is pinning both what it catches and
   what it doesn't. See
   `docs/superpowers/specs/2026-07-06-bash-gate-self-trust-prevention-design.md`.
+- **`sh -c 'ironlint trust'` / `bash -c 'ironlint trust'`** — **not blocked in
+  0.9.1.** The matcher's `normalize` step strips quotes from the whole string,
+  so the gate analyzes a *different* command than the shell executes (it sees
+  `sh -c ironlint trust`, where sh runs only `ironlint`, instead of the quoted
+  form where sh runs `ironlint trust`). The literal string `ironlint trust` is
+  present in the command but the wrapper-descent into `sh -c`/`bash -c`'s command
+  argument is not yet implemented. **HIGH realism for a lazy model.** Tracked for
+  0.9.2.
+- **Bare `VAR=val ironlint trust`** (env-var prefix without `env`) — **not
+  blocked in 0.9.1.** The `env VAR=val ironlint trust` form IS caught (the `env`
+  wrapper is recognized and `VAR=val` assignments skipped), but the semantically
+  equivalent bare prefix (`IRONLINT_ROOT=/x ironlint trust`) is not. **MEDIUM-HIGH
+  realism.** Tracked for 0.9.2.
 
 ### Changed
 
