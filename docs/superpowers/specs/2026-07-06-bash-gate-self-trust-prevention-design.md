@@ -166,6 +166,37 @@ a shell parser:
   `&&`/`;`/`|` before a bare `trust` — collapsed so the `trust` token is
   caught even without the binary prefix.
 
+### Direct forms caught by the segment/wrapper layer (code-review hardening)
+
+After the initial pass, a review surfaced direct-form escapes a lazy model
+plausibly emits (not indirection — the binary is invoked by literal name, the
+write targets a literal path). These are caught by a second layer on top of
+the de-obfuscation pass:
+
+- **Chained commands**: `ironlint check || ironlint trust` (the textbook
+  escape — "the check failed, so just trust it"), plus `&&`, `;`, `|`. The
+  command is split at the shell separators into segments; a `trust` or policy
+  write in ANY segment blocks the whole command. (`>|` clobber is NUL-sentinel-
+  protected so its `|` isn't mis-split as a pipe.)
+- **Prefix wrappers**: `nohup`, `env [VAR=val]…`, `exec`, `eval`,
+  `timeout <N>` — stripped before the binary check, recovering the direct form.
+- **Path-prefixed binary**: `/usr/local/bin/ironlint trust`, `./ironlint trust`
+  — `is_ironlint_binary` matches the literal name OR a path ending `/ironlint`.
+- **Global flags before the subcommand**: `ironlint -v trust`,
+  `ironlint --verbose trust` — skipped; the first non-flag token decides
+  (`trust` blocks, a read-only subcommand allows). (Note: clap rejects
+  `--config` before a subcommand at runtime, so `ironlint --config x.yml
+  trust` can't actually run — but the no-value global-flag forms are real.)
+- **End-glued redirects**: `echo x>.ironlint.yml` (the most common form — no
+  space before the `>`) — a token containing a redirect op AND ending in a
+  policy path blocks; the start-glued and bare-op forms were already caught.
+- **Additional write primitives**: `dd of=<policy>`, `install`/`rsync` with a
+  policy destination, `sponge <policy>`. (`cp`/`mv` destination check
+  extended to `install`/`rsync`; `dd`'s `of=` operand checked, source `if=`
+  not.)
+- **Subshell / brace grouping**: `(ironlint trust)`, `{ ironlint trust; }` —
+  `(` `)` `{` `}` stripped in normalize, collapsing to the direct form.
+
 ### What it does NOT block (known gap, pinned by tests)
 
 - Variable-substitution indirection: `iron$(echo lint) trust`,
