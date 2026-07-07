@@ -4,6 +4,60 @@ Notable changes to IronLint, newest first. In-flight work lives in `plans/`.
 
 ## [Unreleased]
 
+## [0.9.1] — 2026-07-07 — Bash gate: self-trust prevention
+
+Every adapter now gates the agent's Bash tool, closing the escape hatch where an
+agent could free itself from ironlint by running `ironlint trust` or writing the
+policy surface (`.ironlint.yml`, `.ironlint/gates/`) through Bash redirections.
+
+### Added
+
+- **`ironlint gate-bash`** — a pure-Rust Bash-command classifier (new
+  `ironlint-bash-gate` crate). It is not a `check` and not trust-gated; it runs
+  even with no `.ironlint.yml` present — exactly when an agent is most motivated
+  to self-trust. Exit contract: `0` = allow (empty stdout), `2` = block (reason
+  on stdout); any other exit (spawn failure, signal) is treated as fail-closed
+  by the adapters.
+- **Bash branches in all four adapters** (claude-code, codex, pi, opencode).
+  Each adapter's Bash branch shells out to `ironlint gate-bash` with the command
+  on stdin, *before* the config-existence check, so the gate fires in
+  config-less projects too.
+- **Blocked commands** (the matcher denies these):
+  - `ironlint trust` — including de-obfuscated forms: prefix wrappers
+    (`nohup`, `env`, `exec`, `eval`, `timeout`), full/relative paths
+    (`/usr/local/bin/ironlint trust`, `./ironlint trust`), global flags before
+    the subcommand (`ironlint -v trust`), chained commands (`ironlint check ||
+    ironlint trust`, `&&`/`;`/`|`), and subshell/brace grouping
+    (`(ironlint trust)`, `{ ironlint trust; }`).
+  - **Bash writes to the policy surface** — redirects (`echo x>.ironlint.yml`,
+    `>>`, the `>|` clobber), `tee`, `sed -i`, `ed`, `cp`/`mv`/`install`/`rsync`
+    onto `.ironlint.yml` or `.ironlint/gates/`, `dd of=`, and `sponge`. The
+    Write/Edit path to those files stays open (it is already gated); this closes
+    the *ungated* Bash escape.
+
+### Known gaps
+
+- **Variable-substitution indirection** — `iron$(echo lint) trust`,
+  `IRON=ironlint; $IRON trust`, `base64 -d | sh`, or invoking through a script
+  file (`bash scripts/x.sh` where `x.sh` runs `ironlint trust`) is **not
+  blocked**. Catching it requires real shell evaluation, which crosses into the
+  adversarial tier this gate explicitly scopes out. The threat tier is "lazy
+  non-reasoning models"; the honest contract is pinning both what it catches and
+  what it doesn't. See
+  `docs/superpowers/specs/2026-07-06-bash-gate-self-trust-prevention-design.md`.
+
+### Changed
+
+- **`.ironlint.yml` self-check coverage expanded** from 3 macro-ban checks to 6:
+  the `todo!`/`unimplemented!`/`dbg!` bans consolidated into one `steps`-based
+  check, plus a banned-jargon-in-markdown check, `rustfmt-on-write`,
+  `no-trailing-whitespace`, `final-newline`, and `rust-pre-commit`
+  (`on: [pre-commit]`: clippy + unit tests). The trust hash changed and was
+  re-blessed.
+- **`.gitignore`** now excludes machine-local agent install state and tool
+  caches (`.pi/`, `.opencode/`, `.agents/`, `.codegraph/`, `.understand-anything/`)
+  created by `ironlint init` or local tools.
+
 ## [0.8.2] — 2026-07-05 — Watch live-tail motion
 
 ### Added
