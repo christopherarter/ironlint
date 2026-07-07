@@ -417,6 +417,20 @@ mod tests {
     }
 
     #[test]
+    fn build_items_none_detected_yields_four_unchecked() {
+        let items = build_items(&[]);
+        let names: Vec<&str> = items.iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(names, vec!["claude-code", "codex", "pi", "opencode"]);
+        for item in &items {
+            assert!(
+                !item.detected && !item.selected,
+                "{} should be undetected and unchecked",
+                item.name
+            );
+        }
+    }
+
+    #[test]
     fn reconcile_preserves_detected() {
         let selected = vec![
             ("claude-code".to_string(), Source::Detected),
