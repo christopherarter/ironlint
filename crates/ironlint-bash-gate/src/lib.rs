@@ -66,9 +66,13 @@ fn normalize(command: &str) -> String {
                 }
                 s.push('$');
             }
-            // closing paren — drop (a $() closer, or a bare ')' which is
-            // harmless to drop for matching).
-            ')' => continue,
+            // Shell grouping chars — `(`, `)`, `{`, `}`. Dropping them turns
+            // `(ironlint trust)` and `{ ironlint trust; }` into `ironlint trust`
+            // (the `;` is a separator handled by the caller's segment split).
+            // These denote grouping, not tokens; dropping them is safe for
+            // matching and does not collapse indirection (a `$(` is already
+            // consumed above before its `(` could reach here).
+            '(' | ')' | '{' | '}' => continue,
             other => s.push(other),
         }
     }
@@ -78,52 +82,162 @@ fn normalize(command: &str) -> String {
     //    Only the quote chars are removed; quoted strings otherwise survive.
     s = s.chars().filter(|&c| c != '\'' && c != '"').collect();
 
-    // 3. Collapse runs of whitespace (spaces + tabs) into a single space, so
-    //    `ironlint   trust` and `ironlint\ttrust` match the same pattern.
-    let mut collapsed = String::with_capacity(s.len());
-    let mut prev_space = false;
-    for c in s.chars() {
-        if c == ' ' || c == '\t' {
-            if !prev_space {
-                collapsed.push(' ');
-            }
-            prev_space = true;
-        } else {
-            collapsed.push(c);
-            prev_space = false;
-        }
-    }
-    collapsed.trim().to_string()
+    // 3. Trim leading/trailing whitespace. (Runs of internal whitespace are NOT
+    //    collapsed here — every consumer re-splits on `split_whitespace()`,
+    //    which collapses internally, so a collapse step would be dead code that
+    //    only generates un-killable mutation survivors. `strip_wrappers` and
+    //    `is_policy_write` both `split_whitespace`, so `ironlint   trust` and
+    //    `ironlint\ttrust` normalize to the same token list regardless.)
+    s.trim().to_string()
 }
 
-/// True if the normalized command is `ironlint trust` (any trailing args).
-/// Matches `ironlint trust`, `ironlint trust --config x`, `ironlint trust .`.
-/// Does NOT match `ironlint check`, `ironlint doctor`, etc.
-fn is_ironlint_trust(normalized: &str) -> bool {
-    // `ironlint trust` as a command, possibly with trailing args. Require a
-    // word boundary after `trust` so `ironlint trustworthy` does not match.
-    // The `echo "ironlint trust"` false-positive guard is handled by the
-    // caller checking the command starts with `ironlint trust`, not just
-    // contains it — `echo` starts with `echo`, not `ironlint`.
-    if normalized == "ironlint trust" || normalized.starts_with("ironlint trust ") {
-        return true;
-    }
-    // `cd .ironlint && trust` and `cd .ironlint/gates && trust`: a bare
-    // `trust` after a `cd` into the policy dir (`.ironlint` itself or
-    // anything under `.ironlint/`). Match the chained form explicitly — a
-    // bare `trust` elsewhere is not a trust invocation. The `cd` target must
-    // start the `.ironlint` path component (not `cd .ironlintfoo`), so check
-    // for `cd .ironlint` followed by a path separator or whitespace.
-    if let Some(rest) = normalized.strip_prefix("cd .ironlint") {
-        let boundary = rest
-            .chars()
-            .next()
-            .is_none_or(|c| c == '/' || c == ' ' || c == '\t');
-        if boundary && normalized.contains(" trust") {
-            return true;
+/// Split a normalized command into independently-checkable segments at the
+/// shell command separators `&&`, `||`, `;`, and `|`. A `trust` (or a policy
+/// write) in ANY segment blocks — `ironlint check || ironlint trust` is the
+/// textbook lazy escape. String surgery on the separators, not shell
+/// evaluation; a pipe inside a quoted string would be mis-split, but quotes
+/// are stripped in `normalize` and the threat tier is lazy models, not
+/// adversarial quoting.
+fn segments(normalized: &str) -> Vec<String> {
+    // `>|` (clobber redirect) is the only redirect operator containing `|`.
+    // Protect it with a NUL sentinel before splitting on `|` (pipe), then
+    // restore it in each segment. The two-char separators `&&`/`||` are
+    // collapsed to a DISTINCT sentinel (`;`-equivalent) so a lone `|` of a
+    // split `||` isn't double-counted. Both sentinels are NUL-free bytes a
+    // Bash command can't contain.
+    const CLOBBER: &str = "\u{0}";
+    const SEP: &str = "\u{1}";
+    let protected = normalized.replace(">|", CLOBBER);
+    let with_seps = protected.replace("&&", SEP).replace("||", SEP);
+    with_seps
+        .split([';', '|', '\u{1}'])
+        .map(str::trim)
+        .filter(|seg| !seg.is_empty())
+        .map(|seg| seg.replace(CLOBBER, ">|").to_string())
+        .collect()
+}
+
+/// The command prefixes that wrap an ironlint invocation without changing
+/// its meaning: `nohup`, `env [VAR=val]...`, `exec`, `eval`, `timeout <N>`.
+/// A lazy model prepends these to "make sure it runs"; stripping them recovers
+/// the direct form. Bounded explicit list — not shell evaluation.
+fn strip_wrappers(segment: &str) -> String {
+    // Drop leading wrapper prefixes (nohup/env/exec/eval/timeout) one at a
+    // time. Uses `split_first` over a slice cursor — no `+=`/`+` index
+    // arithmetic to mutate-hang or mutate-survive.
+    let all: Vec<&str> = segment.split_whitespace().collect();
+    let mut rest = all.as_slice();
+    while let Some((first, tail)) = rest.split_first() {
+        match *first {
+            "nohup" | "exec" | "eval" => rest = tail,
+            // env itself + any leading VAR=val assignments it carries.
+            "env" => rest = skip_assignments(tail),
+            // timeout + its single duration arg.
+            "timeout" => rest = tail.split_first().map(|(_, t)| t).unwrap_or(&[]),
+            _ => break,
         }
     }
+    rest.join(" ")
+}
+
+/// Given the tokens AFTER `env`, drop `env`'s leading `VAR=val` assignments
+/// and return the slice that follows them (the actual command). Iterator-
+/// driven so a mutation to the skip logic can't hang.
+fn skip_assignments<'a>(tail: &'a [&'a str]) -> &'a [&'a str] {
+    let end = tail.iter().take_while(|t| t.contains('=')).count();
+    &tail[end..]
+}
+
+/// True if a token is the ironlint binary: the literal name, or a path ending
+/// in `/ironlint` (absolute) or `./ironlint` (relative). Indirection
+/// (`$IRON`) is NOT matched — that's the documented known gap.
+fn is_ironlint_binary(token: &str) -> bool {
+    token == "ironlint" || token.ends_with("/ironlint") || token == "./ironlint"
+}
+
+/// Given a tokenized segment with the ironlint binary at `bin_idx`, decide
+/// whether `trust` follows as the subcommand. Handles global flags before the
+/// subcommand: `ironlint --config x.yml trust`, `ironlint -v trust`. The rule
+/// is permissive in the flag tokens but strict on the subcommand: if ANY
+/// non-flag token after the binary is a read-only subcommand (`check`,
+/// `doctor`), it's not a trust invocation. Otherwise, if `trust` appears as a
+/// token after the binary, block.
+///
+/// `ironlint check --config x` (read-only subcommand THEN a flag) must allow —
+/// the read-only subcommand short-circuits. `ironlint --config x.yml trust`
+/// blocks (flag, then trust). `ironlint --config x.yml check` allows (flag,
+/// then check). `ironlint trust --config x` blocks (trust first).
+/// True if `trust` follows the ironlint binary at `tokens[bin_idx]`, after
+/// skipping any global flags. The first non-flag token decides: `trust` blocks;
+/// a read-only subcommand allows. Iterator-driven (no index arithmetic to
+/// mutate-hang or mutate-survive).
+fn trust_after_binary(tokens: &[&str], bin_idx: usize) -> bool {
+    for t in &tokens[bin_idx + 1..] {
+        if *t == "trust" {
+            return true;
+        }
+        if !is_flag_token(t) {
+            // A read-only subcommand (or any non-flag non-trust token) — allow.
+            return false;
+        }
+        // A flag — skip and keep scanning.
+    }
     false
+}
+
+/// True if `token` looks like a flag: a `--long[=val]` or a `-x` short flag.
+/// Used to skip global flags between the ironlint binary and its subcommand.
+fn is_flag_token(token: &str) -> bool {
+    token.starts_with("--") || (token.starts_with('-') && token.len() == 2)
+}
+
+/// True if the segment is `ironlint trust` (any trailing args), matching the
+/// direct form plus the light de-obfuscation a lazy model reaches for:
+/// path-prefixed binary names (`/usr/local/bin/ironlint`, `./ironlint`),
+/// wrapper prefixes (`nohup`, `env`, `exec`, `eval`, `timeout`), and global
+/// flags before the subcommand (`ironlint --config x.yml trust`). Does NOT
+/// match read-only subcommands (`check`, `doctor`, etc.).
+fn is_ironlint_trust(segment: &str) -> bool {
+    let stripped = strip_wrappers(segment);
+    let tokens: Vec<&str> = stripped.split_whitespace().collect();
+    // The ironlint binary must be the FIRST token of the (wrapper-stripped)
+    // segment — `echo ... ironlint trust` is a string argument to echo, not a
+    // trust invocation. This is the false-positive guard: `echo "run
+    // ironlint trust to bless"` starts with `echo`, not `ironlint`.
+    let Some(&first) = tokens.first() else {
+        return false;
+    };
+    if !is_ironlint_binary(first) {
+        return false;
+    }
+    trust_after_binary(&tokens, 0)
+}
+
+/// `cd .ironlint && trust` and `cd .ironlint/gates && trust`: a bare `trust`
+/// in a later segment after a `cd` into the policy dir (`.ironlint` itself
+/// or anything under `.ironlint/`). A bare `trust` elsewhere is not a trust
+/// invocation. The `cd` target must start the `.ironlint` path component (not
+/// `cd .ironlintfoo`). Returns true if some segment cds into the policy dir
+/// and a later segment is exactly `trust` (with optional trailing args).
+fn cd_into_policy_then_trust(segs: &[String]) -> bool {
+    // Find the FIRST segment that cds into the policy dir, then check whether
+    // a LATER segment runs `trust`. Scoping the trust check to segments after
+    // the cd (not `any` over all segments) makes the bare-`trust` equality
+    // observable: under a `== -> !=` mutation, the cd segment itself would
+    // satisfy `!= "trust"` and false-block.
+    //
+    // The `cd_idx + 1` is intrinsic to mutate-kill: the cd segment (`cd
+    // .ironlint`) can never itself be `trust`, so including it (`+ -> *` =
+    // `cd_idx * 1`) yields the same verdict. Decomposing to avoid the `+ 1`
+    // would reintroduce the `==` survivor this structure was built to kill.
+    let cd_idx = segs.iter().position(|s| {
+        s.strip_prefix("cd .ironlint")
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+    });
+    let Some(cd_idx) = cd_idx else { return false };
+    segs[cd_idx + 1..]
+        .iter()
+        .any(|s| s == "trust" || s.starts_with("trust "))
 }
 
 /// True if a path token refers to the policy surface: the literal
@@ -146,50 +260,63 @@ fn is_policy_path(token: &str) -> bool {
         || token.contains(".ironlint/gates/")
 }
 
-/// True if the normalized command writes to the policy surface. Detected via:
+/// True if the normalized segment writes to the policy surface. Detected via:
 ///   - redirect operators targeting a policy path: >, >>, >|, &>, &>>
+///     (bare, start-glued, or end-glued to the preceding arg)
 ///   - `tee` writing a policy path
 ///   - in-place editors: `sed -i`, `ed`, `perl -i`
-///   - `cp`/`mv` with a policy path as the DESTINATION (last arg)
+///   - `cp`/`mv`/`install`/`rsync` with a policy path as the DESTINATION
+///   - `dd of=<policy path>` / `sponge <policy path>`
 ///
-/// `cp .ironlint.yml /tmp/backup` (policy path as source) is a read and MUST
-/// allow — only the destination is checked for cp/mv.
-fn is_policy_write(normalized: &str) -> bool {
-    // Split into whitespace-separated tokens. This is deliberately crude —
-    // the matcher's job is the direct form, not surviving quoting games.
-    let tokens: Vec<&str> = normalized.split_whitespace().collect();
+/// A policy path as a SOURCE (e.g. `cp .ironlint.yml /tmp/backup`,
+/// `dd if=.ironlint.yml of=/tmp/backup`) is a read and MUST allow — only the
+/// destination is checked.
+fn is_policy_write(segment: &str) -> bool {
+    let tokens: Vec<&str> = segment.split_whitespace().collect();
 
     redirect_targets_policy(&tokens)
         || tee_targets_policy(&tokens)
         || inplace_editor_targets_policy(&tokens)
         || cp_mv_destination_is_policy(&tokens)
+        || dd_targets_policy(&tokens)
+        || sponge_targets_policy(&tokens)
 }
 
-/// Redirect operators: the token AFTER `>`, `>>`, `>|`, `&>`, `&>>` is the
-/// target. Also catch a redirect glued to a path (`>.ironlint.yml`).
+/// The redirect operators we gate, longest-first so `>>` is tried before `>`.
+const REDIRECT_OPS: &[&str] = &["&>>", ">>", "&>", ">|", ">"];
+
+/// Redirect operators targeting a policy path. Three forms:
+///   - bare operator + next token: `> .ironlint.yml`
+///   - operator glued to the START of a token: `>.ironlint.yml`
+///   - operator glued to the END of a preceding arg: `echo x>.ironlint.yml`
+///     (the most common form a model emits — no space before the `>`).
 fn redirect_targets_policy(tokens: &[&str]) -> bool {
     for (i, t) in tokens.iter().enumerate() {
-        // Glued form: `>.ironlint.yml`, `>>.ironlint.yml`
-        let stripped = t
-            .strip_prefix(">>")
-            .or_else(|| t.strip_prefix(">"))
-            .or_else(|| t.strip_prefix("&>>"))
-            .or_else(|| t.strip_prefix("&>"));
-        if let Some(rest) = stripped {
-            if is_policy_path(rest) {
-                return true;
-            }
-        }
-        // Bare operator form: `> .ironlint.yml` (next token is the target)
-        if matches!(*t, ">" | ">>" | ">|" | "&>" | "&>>") {
+        // Bare operator: `> .ironlint.yml` — the NEXT token is the target.
+        if REDIRECT_OPS.contains(t) {
             if let Some(next) = tokens.get(i + 1) {
                 if is_policy_path(next) {
                     return true;
                 }
             }
         }
+        // Glued (start OR end): a token that contains a redirect op AND ends
+        // with a policy path. `>.ironlint.yml` and `x>.ironlint.yml` both
+        // satisfy `ends_with(".ironlint.yml")` and contain a redirect op, so one
+        // check covers both — no need to split the token. Skip the bare-op
+        // tokens (handled above) to avoid a double-count false signal.
+        if !REDIRECT_OPS.contains(t) && contains_redirect_op(t) && is_policy_path(t) {
+            return true;
+        }
     }
     false
+}
+
+/// True if `token` contains any redirect operator (`>`, `>>`, `>|`, `&>`,
+/// `&>>`) anywhere in it. Used to distinguish a glued redirect
+/// (`x>.ironlint.yml`) from a plain path token (`.ironlint.yml`).
+fn contains_redirect_op(token: &str) -> bool {
+    REDIRECT_OPS.iter().any(|op| token.contains(op))
 }
 
 /// `tee` / `tee -a`: a later argument is the destination file. `tee` may
@@ -239,36 +366,84 @@ fn has_dash_i_prefixed_flag(tokens: &[&str]) -> bool {
     tokens.iter().any(|t| t.starts_with("-i") && *t != "-i")
 }
 
-/// `cp`/`mv` with a policy path as the DESTINATION. The destination is the
-/// last argument (for both two-arg and multi-source forms). A policy path as
-/// a SOURCE (e.g. `cp .ironlint.yml /tmp/backup`) MUST allow — that's why
-/// only the last token is checked.
+/// `cp`/`mv`/`install`/`rsync` with a policy path as the DESTINATION. The
+/// destination is the last argument (for both two-arg and multi-source forms).
+/// A policy path as a SOURCE (e.g. `cp .ironlint.yml /tmp/backup`) MUST
+/// allow — that's why only the last token is checked. `install` and `rsync`
+/// share the cp/mv destination semantics for our purposes.
 fn cp_mv_destination_is_policy(tokens: &[&str]) -> bool {
     let Some(&cmd) = tokens.first() else {
         return false;
     };
-    matches!(cmd, "cp" | "mv")
+    matches!(cmd, "cp" | "mv" | "install" | "rsync")
         && tokens.len() >= 3
         && tokens.last().is_some_and(|dest| is_policy_path(dest))
+}
+
+/// `dd of=<policy path>`: dd writes via its `of=` operand, not a positional
+/// arg. Block if any token is `of=<policy path>` OR `of` followed by a policy
+/// path token. `dd if=.ironlint.yml of=/tmp/backup` (policy as INPUT) MUST
+/// allow — only the `of=` destination is checked.
+fn dd_targets_policy(tokens: &[&str]) -> bool {
+    let is_dd = tokens.first().is_some_and(|c| *c == "dd");
+    if !is_dd {
+        return false;
+    }
+    for (i, t) in tokens.iter().enumerate() {
+        // Glued: `of=.ironlint.yml`.
+        if let Some(rest) = t.strip_prefix("of=") {
+            if is_policy_path(rest) {
+                return true;
+            }
+        }
+        // Separated: `of .ironlint.yml`.
+        if *t == "of" {
+            if let Some(next) = tokens.get(i + 1) {
+                if is_policy_path(next) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// `sponge <file>` (from moreutils): writes its stdin to a file. The file is
+/// the LAST argument. `echo x | sponge .ironlint.yml` is a policy write.
+fn sponge_targets_policy(tokens: &[&str]) -> bool {
+    let is_sponge = tokens.first().is_some_and(|c| *c == "sponge");
+    is_sponge && tokens.last().is_some_and(|last| is_policy_path(last))
 }
 
 /// Decide whether `command` may run.
 ///
 /// Pure: no I/O, no state. Returns `Block(reason)` for `ironlint trust` (any
-/// args) and Bash writes to the policy surface; `Allow` otherwise, including
-/// the documented indirection gap (which is *intentionally* allowed).
+/// args, in any command segment) and Bash writes to the policy surface;
+/// `Allow` otherwise, including the documented indirection gap (which is
+/// *intentionally* allowed). A `trust` or policy write in ANY segment of a
+/// chained command (`a && ironlint trust`, `check || trust`) blocks — the
+/// whole command is denied.
 pub fn decide(command: &str) -> Decision {
     let n = normalize(command);
+    let segs = segments(&n);
 
-    if is_ironlint_trust(&n) {
+    // `cd .ironlint && trust`: a bare `trust` after a `cd` into the policy
+    // dir. The `&&` splits this into two segments, so check across the
+    // segment list — does any segment cd into the policy dir, and does a
+    // later segment run a bare `trust`?
+    if cd_into_policy_then_trust(&segs) {
         return Decision::Block(TRUST_REASON.to_string());
     }
-    if is_policy_write(&n) {
-        // reason set in Task 3
-        return Decision::Block(
-            "ironlint policy files must be edited through the Write/Edit tool (which is gated), not via Bash"
-                .to_string(),
-        );
+    for seg in &segs {
+        if is_ironlint_trust(seg) {
+            return Decision::Block(TRUST_REASON.to_string());
+        }
+        if is_policy_write(seg) {
+            return Decision::Block(
+                "ironlint policy files must be edited through the Write/Edit tool (which is gated), not via Bash"
+                    .to_string(),
+            );
+        }
     }
     Decision::Allow
 }
@@ -607,5 +782,242 @@ mod tests {
     #[test]
     fn allows_echo_trailing_dollar() {
         assert_allows("echo $");
+    }
+
+    // =====================================================================
+    // Code-review hardening (2026-07-06): direct-form bypasses a lazy
+    // non-reasoning model plausibly emits. These are NOT indirection — the
+    // binary is invoked by literal name / the write targets a literal path.
+    // =====================================================================
+
+    // --- F1: end-glued redirect (op glued to the PRECEDING arg's tail) ---
+    // `echo x>.ironlint.yml` — the MOST common form a model emits (no space
+    // before the `>`). All redirect variants must block here too.
+    #[test]
+    fn blocks_end_glued_redirect_to_ironlint_yml() {
+        assert_blocks("echo x>.ironlint.yml");
+    }
+
+    #[test]
+    fn blocks_end_glued_append_to_ironlint_yml() {
+        assert_blocks("echo x>>.ironlint.yml");
+    }
+
+    #[test]
+    fn blocks_end_glued_clobber_to_ironlint_yml() {
+        assert_blocks("echo x>|.ironlint.yml");
+    }
+
+    #[test]
+    fn blocks_end_glued_amp_redirect_to_ironlint_yml() {
+        assert_blocks("echo x&>.ironlint.yml");
+    }
+
+    #[test]
+    fn blocks_end_glued_amp_append_to_ironlint_yml() {
+        assert_blocks("echo x&>>.ironlint.yml");
+    }
+
+    // --- F2: chained commands — `ironlint trust` after a separator ---
+    // `ironlint check || ironlint trust` is the textbook lazy escape: "the
+    // check failed, so just trust it." Each separator form must block.
+    #[test]
+    fn blocks_chained_ampamp_ironlint_trust() {
+        assert_blocks("echo done && ironlint trust");
+    }
+
+    #[test]
+    fn blocks_chained_oror_ironlint_trust() {
+        assert_blocks("ironlint check || ironlint trust");
+    }
+
+    #[test]
+    fn blocks_chained_semicolon_ironlint_trust() {
+        assert_blocks("echo hi; ironlint trust");
+    }
+
+    #[test]
+    fn blocks_chained_pipe_ironlint_trust() {
+        assert_blocks("echo hi | ironlint trust");
+    }
+
+    // A chained trust with args (defense against `... && ironlint trust -c x`).
+    #[test]
+    fn blocks_chained_ironlint_trust_with_args() {
+        assert_blocks("true && ironlint trust --config x.yml");
+    }
+
+    // --- F3: prefix wrappers (`nohup`, `env`, `exec`, `eval`, `timeout`) ---
+    #[test]
+    fn blocks_nohup_ironlint_trust() {
+        assert_blocks("nohup ironlint trust");
+    }
+
+    #[test]
+    fn blocks_env_ironlint_trust() {
+        assert_blocks("env ironlint trust");
+    }
+
+    #[test]
+    fn blocks_exec_ironlint_trust() {
+        assert_blocks("exec ironlint trust");
+    }
+
+    #[test]
+    fn blocks_eval_ironlint_trust() {
+        assert_blocks("eval ironlint trust");
+    }
+
+    #[test]
+    fn blocks_timeout_ironlint_trust() {
+        assert_blocks("timeout 5 ironlint trust");
+    }
+
+    // `env VAR=val ironlint trust` (env with an assignment) — a wrapper with
+    // a leading var assignment still wraps a direct invocation.
+    #[test]
+    fn blocks_env_with_assignment_ironlint_trust() {
+        assert_blocks("env IRONLINT_TIMEOUT=10 ironlint trust");
+    }
+
+    // --- F4: full-path / relative-path invocation ---
+    #[test]
+    fn blocks_absolute_path_ironlint_trust() {
+        assert_blocks("/usr/local/bin/ironlint trust");
+    }
+
+    #[test]
+    fn blocks_cargo_bin_path_ironlint_trust() {
+        assert_blocks("/Users/me/.cargo/bin/ironlint trust");
+    }
+
+    #[test]
+    fn blocks_relative_path_ironlint_trust() {
+        assert_blocks("./ironlint trust");
+    }
+
+    // --- F5: global flags before the `trust` subcommand ---
+    // `ironlint -v trust` and `ironlint --verbose trust` (no-value global
+    // flags) must block. NOTE: `ironlint --config x.yml trust` is rejected by
+    // clap at runtime (`--config` is a per-subcommand flag, not global), so a
+    // model emitting it can't actually run trust that way — but the no-value
+    // global-flag forms are real and must block.
+    #[test]
+    fn blocks_global_verbose_flag_before_trust() {
+        assert_blocks("ironlint -v trust");
+    }
+
+    #[test]
+    fn blocks_global_long_verbose_flag_before_trust() {
+        assert_blocks("ironlint --verbose trust");
+    }
+
+    #[test]
+    fn blocks_global_quiet_flag_before_trust() {
+        assert_blocks("ironlint -q trust");
+    }
+
+    // --- F6: additional write primitives (dd, install, rsync, sponge) ---
+    #[test]
+    fn blocks_dd_of_ironlint_yml() {
+        assert_blocks("dd if=/dev/zero of=.ironlint.yml bs=1 count=1");
+    }
+
+    #[test]
+    fn blocks_dd_of_gate_script() {
+        assert_blocks("dd of=.ironlint/gates/x.sh");
+    }
+
+    // `dd of .ironlint.yml` (SEPARATED form — `of` then the path) pins the
+    // `tokens.get(i + 1)` next-token lookup. Under a `+ -> -` mutation the
+    // check would read the token BEFORE `of` (not the path) and miss it.
+    #[test]
+    fn blocks_dd_separated_of_ironlint_yml() {
+        assert_blocks("dd if=/dev/zero of .ironlint.yml");
+    }
+
+    #[test]
+    fn blocks_install_onto_ironlint_yml() {
+        assert_blocks("install -m 644 bad.yml .ironlint.yml");
+    }
+
+    #[test]
+    fn blocks_rsync_onto_ironlint_yml() {
+        assert_blocks("rsync bad.yml .ironlint.yml");
+    }
+
+    #[test]
+    fn blocks_sponge_ironlint_yml() {
+        assert_blocks("echo x | sponge .ironlint.yml");
+    }
+
+    // --- F?: subshell / brace-group grouping around a direct trust ---
+    #[test]
+    fn blocks_subshell_ironlint_trust() {
+        assert_blocks("(ironlint trust)");
+    }
+
+    #[test]
+    fn blocks_brace_group_ironlint_trust() {
+        assert_blocks("{ ironlint trust; }");
+    }
+
+    // --- regression guards: the new detectors must NOT over-block reads ---
+    // `ironlint --config x.yml check` is a legit read (flag before a read-only
+    // subcommand) and must allow — pins that the global-flag-skip only fires
+    // for `trust`, not every subcommand.
+    #[test]
+    fn allows_global_config_flag_before_check() {
+        assert_allows("ironlint --config x.yml check");
+    }
+
+    // `nohup ironlint check` is a legit read wrapped in nohup — allow.
+    #[test]
+    fn allows_nohup_ironlint_check() {
+        assert_allows("nohup ironlint check");
+    }
+
+    // `env ironlint doctor` — allow (read-only subcommand, even wrapped).
+    #[test]
+    fn allows_env_ironlint_doctor() {
+        assert_allows("env ironlint doctor");
+    }
+
+    // A chained `ironlint check` after a separator must allow (it's a read).
+    #[test]
+    fn allows_chained_ironlint_check() {
+        assert_allows("echo done && ironlint check");
+    }
+
+    // `ironlint xy trust` (a 2-char NON-flag token before `trust`) must ALLOW —
+    // `xy` is not a flag, so the first non-flag token short-circuits. Pins
+    // `is_flag_token`'s `&&`: under `||`, a 2-char token is mis-flagged, skipped,
+    // and `trust` is reached → false block.
+    #[test]
+    fn allows_two_char_nonflag_before_trust() {
+        assert_allows("ironlint xy trust");
+    }
+
+    // `ironlint check trust` (a non-flag subcommand before `trust`) must ALLOW
+    // — `check` is the subcommand, not a flag, so scanning stops. Pins
+    // `is_flag_token -> true`: under that mutant, `check` is mis-flagged,
+    // skipped, and `trust` is reached → false block.
+    #[test]
+    fn allows_nonflag_subcommand_before_trust() {
+        assert_allows("ironlint check trust");
+    }
+
+    // `cp .ironlint.yml /tmp/backup` via the multi-source form still allows
+    // (policy path as SOURCE, not destination) — re-pin after dd/install work.
+    #[test]
+    fn allows_cp_from_ironlint_yml_still_allows() {
+        assert_allows("cp .ironlint.yml /tmp/backup");
+    }
+
+    // `dd if=.ironlint.yml of=/tmp/backup` reads the policy file (source) and
+    // writes a NON-policy destination — must allow.
+    #[test]
+    fn allows_dd_from_ironlint_yml_as_source() {
+        assert_allows("dd if=.ironlint.yml of=/tmp/backup");
     }
 }
