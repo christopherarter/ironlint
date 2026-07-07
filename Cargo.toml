@@ -3,10 +3,10 @@ resolver = "2"
 members = ["crates/ironlint-core", "crates/ironlint-cli", "crates/ironlint-bash-gate"]
 
 [workspace.package]
-version = "0.9.1"
+version = "0.9.2"
 edition = "2021"
 license = "Apache-2.0"
-repository = "https://github.com/christopherarter/ironlint"
+repository = "https://github.com/ironlint/ironlint"
 # MSRV floor (readiness review S6 / Task 3.7). In-house code needs only 1.87
 # (gate.rs `u32::cast_signed()`), but the dependency tree raises the effective
 # floor to 1.88: darling 0.23, image 0.25, instability 0.3, and homedir 0.3

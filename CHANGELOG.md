@@ -4,6 +4,45 @@ Notable changes to IronLint, newest first. In-flight work lives in `plans/`.
 
 ## [Unreleased]
 
+## [0.9.2] — 2026-07-07 — Bash gate: close `sh -c` and bare `VAR=val` bypasses
+
+Two adjacent bash-gate bypasses found during v0.9.1 release review are now
+closed. Both let a lazy non-reasoning model run `ironlint trust` through its
+Bash tool despite the matcher.
+
+### Fixed
+
+- **`sh -c 'ironlint trust'` / `bash -c "ironlint trust"`** — the matcher's
+  `normalize` step strips quotes from the whole string, so the gate was
+  analyzing a *different* command than the shell executes (it saw `sh -c
+  ironlint trust`, where sh runs only `ironlint` and `trust` becomes `$0`).
+  `strip_wrappers` now recognizes `sh`/`bash` and, when followed by `-c`,
+  descends into the command-string argument tokens and re-checks them
+  (mirroring how `eval`/`exec` unwrap to their argument). Without `-c`
+  (`sh script.sh`) the wrapper breaks — that's the documented script-file
+  indirection gap (adversarial tier, out of scope). **HIGH realism for a lazy
+  model.**
+- **Bare `VAR=val ironlint trust`** (env-var prefix without `env`) — the
+  `env VAR=val ironlint trust` form was already caught, but the semantically
+  equivalent bare prefix (`IRONLINT_ROOT=/x ironlint trust`) was not. The
+  wrapper fall-through now recognizes a leading `VAR=val` assignment via a new
+  shared `is_assignment` helper (a strict shell-identifier check — letters/
+  digits/underscore, not digit-leading — so a leading `--config=x.yml` flag is
+  NOT over-skipped) and strips it one token at a time, so multiple leading
+  assignments (`FOO=bar BAZ=qux ironlint trust`) all strip. **MEDIUM-HIGH
+  realism.**
+- Added sibling-token regression pins for `and`/newline/comma forms
+  (`ironlint check and ironlint trust`, etc.) — caught today by the
+  every-binary scan but previously unpinned. Added `is_assignment` predicate
+  pins (underscore-leading blocks; digit-leading allows) that kill two new
+  mutation survivors.
+
+### Changed
+
+- `skip_assignments` now uses the strict `is_assignment` helper instead of a
+  bare `.contains('=')` — the stricter check is consistent with the new
+  bare-prefix arm and does not regress the existing `env VAR=val` tests.
+
 ## [0.9.1] — 2026-07-07 — Bash gate: self-trust prevention
 
 Every adapter now gates the agent's Bash tool, closing the escape hatch where an
@@ -54,13 +93,13 @@ policy surface (`.ironlint.yml`, `.ironlint/gates/`) through Bash redirections.
   `sh -c ironlint trust`, where sh runs only `ironlint`, instead of the quoted
   form where sh runs `ironlint trust`). The literal string `ironlint trust` is
   present in the command but the wrapper-descent into `sh -c`/`bash -c`'s command
-  argument is not yet implemented. **HIGH realism for a lazy model.** Tracked for
+  argument is not yet implemented. **HIGH realism for a lazy model.** Closed in
   0.9.2.
 - **Bare `VAR=val ironlint trust`** (env-var prefix without `env`) — **not
   blocked in 0.9.1.** The `env VAR=val ironlint trust` form IS caught (the `env`
   wrapper is recognized and `VAR=val` assignments skipped), but the semantically
   equivalent bare prefix (`IRONLINT_ROOT=/x ironlint trust`) is not. **MEDIUM-HIGH
-  realism.** Tracked for 0.9.2.
+  realism.** Closed in 0.9.2.
 
 ### Changed
 

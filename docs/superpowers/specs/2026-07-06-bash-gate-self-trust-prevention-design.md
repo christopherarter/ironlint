@@ -189,7 +189,16 @@ the de-obfuscation pass:
   (`ironlint check trust`, where `trust` is a positional to `check` that clap
   rejects) still allows — only a real second `ironlint trust` invocation blocks.
 - **Prefix wrappers**: `nohup`, `env [VAR=val]…`, `exec`, `eval`,
-  `timeout <N>` — stripped before the binary check, recovering the direct form.
+  `timeout <N>`, and `sh`/`bash -c '<cmd>'` — stripped before the binary check,
+  recovering the direct form. For `sh`/`bash`, the `-c` command-string argument
+  is descended into (normalize already stripped its quotes, so its tokens are
+  re-checked); without `-c` (`sh script.sh`) the wrapper breaks — that's the
+  script-file indirection gap (adversarial tier). **Bare `VAR=val ironlint
+  trust`** is semantically identical to `env VAR=val ironlint trust` (sh
+  exports the assignment to the command's env); the bare prefix is stripped the
+  same way `env`'s assignments are, via the shared `is_assignment` helper (a
+  strict shell-identifier check — letters/digits/underscore, not digit-leading
+  — so a leading `--config=x.yml` flag is NOT over-skipped).
 - **Path-prefixed binary**: `/usr/local/bin/ironlint trust`, `./ironlint trust`
   — `is_ironlint_binary` matches the literal name OR a path ending `/ironlint`.
 - **Global flags before the subcommand**: `ironlint -v trust`,
