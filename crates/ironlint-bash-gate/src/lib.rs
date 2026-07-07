@@ -135,14 +135,19 @@ fn strip_wrappers(segment: &str) -> String {
             "env" => rest = skip_assignments(tail),
             // timeout + its single duration arg.
             "timeout" => rest = tail.split_first().map(|(_, t)| t).unwrap_or(&[]),
-            // `sh -c '<cmd>'` / `bash -c "<cmd>"`: the command string is the
-            // argument after `-c`. normalize() already stripped the quotes,
-            // so the command string's tokens are the slice beyond `-c` —
-            // descend into it and let the loop re-check (mirrors eval/exec
-            // unwrapping to their argument). Without `-c` (`sh script.sh`),
-            // sh runs a script file — that's the documented indirection gap
-            // (adversarial tier); don't descend.
-            "sh" | "bash" if tail.first() == Some(&"-c") => rest = &tail[1..],
+            // `sh -c '<cmd>'` / `bash -c "<cmd>"` (and `dash`/`ash`/`zsh`/`ksh`,
+            // the same `-c` command-string shape): the command string is the
+            // argument after `-c`. normalize() already stripped the quotes, so
+            // its tokens are the slice beyond `-c` — descend into it and let
+            // the loop re-check (mirrors eval/exec unwrapping to its argument).
+            // `dash` is /bin/sh on Debian/Ubuntu; `ash` is the BusyBox sh
+            // (Alpine/containers); a lazy model that knows its shell emits the
+            // specific name. Without `-c` (`sh script.sh`), the shell runs a
+            // script file — the documented indirection gap (adversarial tier);
+            // don't descend.
+            "sh" | "bash" | "dash" | "ash" | "zsh" | "ksh" if tail.first() == Some(&"-c") => {
+                rest = &tail[1..]
+            }
             // Bare `VAR=val ironlint trust`: a leading assignment with no
             // `env` wrapper is semantically identical to `env VAR=val ...`
             // (sh exports the assignment to the command's env). Skip it one
@@ -1178,6 +1183,37 @@ mod tests {
     #[test]
     fn allows_digit_leading_non_assignment_prefix() {
         assert_allows("9x=1 ironlint trust");
+    }
+
+    // =====================================================================
+    // v0.9.2 review follow-up: other shells with -c. `sh -c` descent was
+    // scoped to sh/bash, but `dash` IS /bin/sh on Debian/Ubuntu (the
+    // dominant Linux dev/CI env) — same binary, same threat. `ash` is the
+    // BusyBox sh (Alpine, common in containers); `zsh` is the macOS default
+    // interactive shell. A lazy model that knows its shell emits the
+    // specific name. Bounded explicit list — same pattern as the existing
+    // wrapper prefixes, not shell evaluation.
+    // =====================================================================
+    #[test]
+    fn blocks_dash_c_ironlint_trust() {
+        assert_blocks("dash -c 'ironlint trust'");
+    }
+
+    #[test]
+    fn blocks_ash_c_ironlint_trust() {
+        assert_blocks("ash -c 'ironlint trust'");
+    }
+
+    #[test]
+    fn blocks_zsh_c_ironlint_trust() {
+        assert_blocks("zsh -c 'ironlint trust'");
+    }
+
+    // False-positive guard: a read-only subcommand under `dash -c` MUST
+    // still allow.
+    #[test]
+    fn allows_dash_c_readonly_ironlint_check() {
+        assert_allows("dash -c 'ironlint check'");
     }
 
     // =====================================================================

@@ -8,20 +8,25 @@ Notable changes to IronLint, newest first. In-flight work lives in `plans/`.
 
 Two adjacent bash-gate bypasses found during v0.9.1 release review are now
 closed. Both let a lazy non-reasoning model run `ironlint trust` through its
-Bash tool despite the matcher.
+Bash tool despite the matcher. A code review of the v0.9.2 fixes surfaced a
+third symmetric form — `dash -c` (and `ash`/`zsh`/`ksh -c`) — which is the
+same `-c <command-string>` shape as `sh -c`; the descent now recognizes all
+six common shells rather than just `sh`/`bash`.
 
 ### Fixed
 
-- **`sh -c 'ironlint trust'` / `bash -c "ironlint trust"`** — the matcher's
-  `normalize` step strips quotes from the whole string, so the gate was
-  analyzing a *different* command than the shell executes (it saw `sh -c
-  ironlint trust`, where sh runs only `ironlint` and `trust` becomes `$0`).
-  `strip_wrappers` now recognizes `sh`/`bash` and, when followed by `-c`,
-  descends into the command-string argument tokens and re-checks them
-  (mirroring how `eval`/`exec` unwrap to their argument). Without `-c`
-  (`sh script.sh`) the wrapper breaks — that's the documented script-file
-  indirection gap (adversarial tier, out of scope). **HIGH realism for a lazy
-  model.**
+- **`sh -c 'ironlint trust'` / `bash -c "ironlint trust"`** (and `dash`/`ash`/
+  `zsh`/`ksh -c`) — the matcher's `normalize` step strips quotes from the whole
+  string, so the gate was analyzing a *different* command than the shell
+  executes (it saw `sh -c ironlint trust`, where sh runs only `ironlint` and
+  `trust` becomes `$0`). `strip_wrappers` now recognizes the common
+  `-c <command-string>` shells (`sh`, `bash`, `dash` — which IS `/bin/sh` on
+  Debian/Ubuntu, `ash` — the BusyBox sh in Alpine/containers, `zsh`, `ksh`)
+  and, when followed by `-c`, descends into the command-string argument tokens
+  and re-checks them (mirroring how `eval`/`exec` unwrap to their argument).
+  Without `-c` (`sh script.sh`) the wrapper does not descend — that's the
+  documented script-file indirection gap (adversarial tier, out of scope).
+  **HIGH realism for a lazy model.**
 - **Bare `VAR=val ironlint trust`** (env-var prefix without `env`) — the
   `env VAR=val ironlint trust` form was already caught, but the semantically
   equivalent bare prefix (`IRONLINT_ROOT=/x ironlint trust`) was not. The
@@ -42,6 +47,18 @@ Bash tool despite the matcher.
 - `skip_assignments` now uses the strict `is_assignment` helper instead of a
   bare `.contains('=')` — the stricter check is consistent with the new
   bare-prefix arm and does not regress the existing `env VAR=val` tests.
+
+### Known gaps
+
+- **`VAR+=val ironlint trust`** (append-assignment prefix) — **not blocked in
+  0.9.2.** `+=` is a valid bash append-assignment exported to the command's
+  env, semantically identical to `VAR=val` for running `ironlint trust`, but
+  `is_assignment`'s strict shell-identifier check rejects the `+` in the name
+  part. **LOWER realism** — `+=` is a specific append idiom, not the obvious
+  set form a lazy model reaches for first. Documented as a conscious decision
+  rather than an accident; expanding the assignment grammar is scope creep for
+  a marginal form. See
+  `docs/superpowers/specs/2026-07-06-bash-gate-self-trust-prevention-design.md`.
 
 ## [0.9.1] — 2026-07-07 — Bash gate: self-trust prevention
 
