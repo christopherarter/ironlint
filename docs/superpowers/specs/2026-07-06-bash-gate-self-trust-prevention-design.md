@@ -178,6 +178,16 @@ the de-obfuscation pass:
   command is split at the shell separators into segments; a `trust` or policy
   write in ANY segment blocks the whole command. (`>|` clobber is NUL-sentinel-
   protected so its `|` isn't mis-split as a pipe.)
+- **`or`-confusion (non-separator token)**: `ironlint check or ironlint trust`
+  — `or` is not a shell operator (that's `||`), so a lazy model confusing the
+  two leaves the whole string as ONE segment (segments() correctly does not
+  split on bare `or`). sh runs `ironlint check`, then `or` (command not found),
+  then `ironlint trust` — trust fires. `is_ironlint_trust` checks EVERY
+  ironlint binary occurrence in the segment (not just the first token), so the
+  second binary's `trust` subcommand is caught even though the first binary's
+  `check` short-circuits. The single-binary stray-positional case
+  (`ironlint check trust`, where `trust` is a positional to `check` that clap
+  rejects) still allows — only a real second `ironlint trust` invocation blocks.
 - **Prefix wrappers**: `nohup`, `env [VAR=val]…`, `exec`, `eval`,
   `timeout <N>` — stripped before the binary check, recovering the direct form.
 - **Path-prefixed binary**: `/usr/local/bin/ironlint trust`, `./ironlint trust`
