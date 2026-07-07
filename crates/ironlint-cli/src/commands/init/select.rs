@@ -3,8 +3,6 @@
 //! Pure render logic (`render_select`) and a pure update reducer (`update_select`)
 //! are unit-tested with ratatui's `TestBackend`; the thin live event loop in
 //! `prompt_multi_select` is intentionally untested TTY glue.
-#![allow(dead_code)]
-
 use anyhow::Result;
 use std::io::Stdout;
 
@@ -27,7 +25,7 @@ use ratatui::Terminal;
 pub use ratatui::crossterm::event::KeyEvent;
 pub use ratatui::widgets::ListState;
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct SelectItem {
     pub name: String,
     pub detected: bool,
@@ -36,6 +34,7 @@ pub struct SelectItem {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum SelectOutcome {
+    #[allow(dead_code)]
     Pending,
     Confirmed,
     Aborted,
@@ -193,8 +192,9 @@ fn render_select(f: &mut Frame, items: &[SelectItem], state: &ListState) {
 
     let selected_count = items.iter().filter(|i| i.selected).count();
     let footer = Paragraph::new(format!(
-        "\u{2500} {} of 4 selected \u{2500}",
-        selected_count
+        "\u{2500} {} of {} selected \u{2500}",
+        selected_count,
+        items.len()
     ))
     .alignment(Alignment::Center);
     f.render_widget(footer, chunks[3]);

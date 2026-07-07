@@ -8,6 +8,8 @@
 .ironlint/
 # Local Claude Code agent state (worktrees, settings).
 .claude/
+# Superpowers scratch workspace (SDD artifacts, task reports, ephemeral plans).
+.superpowers/
 # cargo-mutants local report directories (current run + previous run rename).
 mutants.out*/
 # `cargo mutants --in-diff pr.diff` scratch — diff file generated on demand.

@@ -245,7 +245,8 @@ fn yes_bypasses_toggle_and_installs_detected() {
         "--yes must bypass the multi-select UI:\n{s}"
     );
     assert!(
-        home.join(".config/ironlint/adapters/codex/hook.sh").exists(),
+        home.join(".config/ironlint/adapters/codex/hook.sh")
+            .exists(),
         "codex hook should be installed when detected"
     );
 }
@@ -270,7 +271,8 @@ fn explicit_harness_with_yes_skips_toggle_and_installs() {
         "explicit --harness must skip the multi-select UI:\n{s}"
     );
     assert!(
-        home.join(".config/ironlint/adapters/codex/hook.sh").exists(),
+        home.join(".config/ironlint/adapters/codex/hook.sh")
+            .exists(),
         "codex hook should be installed"
     );
 }
@@ -300,5 +302,8 @@ fn dry_run_does_not_enter_toggle() {
             .exists(),
         "dry-run must not install anything"
     );
-    assert!(!project.join(".codex/hooks.json").exists(), "dry-run writes nothing");
+    assert!(
+        !project.join(".codex/hooks.json").exists(),
+        "dry-run writes nothing"
+    );
 }

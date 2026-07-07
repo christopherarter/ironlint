@@ -39,10 +39,16 @@ pub fn run_hook_phase(env: &AdapterEnv, opts: &Options) -> Result<i32> {
         Proceed::No => return Ok(0),
         Proceed::Yes => {}
     }
-    // Rebuild plans from the possibly mutated selection before applying; this
-    // validates the new set and mirrors the spec contract even though `apply`
-    // recomputes its own plan internally.
-    let _ = build_plans(&selected, env, scope, opts.uninstall);
+    let names = selected
+        .iter()
+        .map(|(n, _)| n.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    if opts.uninstall {
+        println!("  uninstalling: {names}");
+    } else {
+        println!("  installing: {names}");
+    }
     Ok(apply(&selected, env, scope, opts))
 }
 
