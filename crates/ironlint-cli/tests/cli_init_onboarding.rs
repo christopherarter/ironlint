@@ -230,7 +230,7 @@ fn yes_bypasses_toggle_and_installs_detected() {
     let home = tmp.path().join("home");
     let project = tmp.path().join("proj");
     std::fs::create_dir_all(&project).unwrap();
-    std::fs::create_dir_all(&home.join(".codex")).unwrap();
+    std::fs::create_dir_all(home.join(".codex")).unwrap();
 
     let out = ironlint(&home, &project)
         .args(["init", "--hook-only", "--yes"])
