@@ -1,9 +1,8 @@
 use crate::adapter::sha256_digest_hex;
-use crate::config::Config;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -17,7 +16,7 @@ fn hash_entry(hasher: &mut Sha256, label: &str, bytes: &[u8]) {
     hasher.update(bytes);
 }
 
-/// Filesystem classification of a path in the gates hash walk, computed via
+/// Filesystem classification of a path in the scripts hash walk, computed via
 /// `symlink_metadata` (which does **not** follow symlinks) rather than
 /// `is_dir()`/`is_file()` (which do).
 #[derive(Debug)]
@@ -27,7 +26,7 @@ enum EntryKind {
     Missing,
 }
 
-/// Classify `path` for the gates hash walk without ever following a
+/// Classify `path` for the scripts hash walk without ever following a
 /// symlink. This walk runs on **unblessed** repo content before the trust
 /// verdict is decided — it is the security boundary — so an unusual entry
 /// is a hard error rather than a silent skip: a skipped file is un-hashed
@@ -39,7 +38,7 @@ enum EntryKind {
 /// - any other non-regular file (FIFO, socket, device, ...).
 ///
 /// A missing path is not an error — the caller decides what "missing"
-/// means for its position in the walk (e.g. an absent gates dir has
+/// means for its position in the walk (e.g. an absent scripts dir has
 /// nothing to hash). A path whose parent isn't even a directory (e.g. a
 /// plain file sits where `.ironlint/` should be) is treated the same as
 /// missing: there is nothing there to hash, and this isn't the
@@ -50,7 +49,7 @@ fn classify_entry(path: &Path) -> Result<EntryKind> {
             let file_type = meta.file_type();
             if file_type.is_symlink() {
                 anyhow::bail!(
-                    "gates dir contains a symlink ({}); refuse to hash — replace it with a regular file",
+                    "scripts dir contains a symlink ({}); refuse to hash — replace it with a regular file",
                     path.display()
                 );
             }
@@ -61,7 +60,7 @@ fn classify_entry(path: &Path) -> Result<EntryKind> {
                 return Ok(EntryKind::File);
             }
             anyhow::bail!(
-                "gates dir contains a non-regular file ({}); refuse to hash",
+                "scripts dir contains a non-regular file ({}); refuse to hash",
                 path.display()
             );
         }
@@ -95,7 +94,7 @@ fn collect_into(root: &Path, dir: &Path, out: &mut Vec<(String, Vec<u8>)>) -> Re
             EntryKind::File => {
                 let rel = path
                     .strip_prefix(root)
-                    .expect("walked path must live under the gates root")
+                    .expect("walked path must live under the scripts root")
                     .components()
                     .map(|c| c.as_os_str().to_string_lossy())
                     .collect::<Vec<_>>()
@@ -107,191 +106,51 @@ fn collect_into(root: &Path, dir: &Path, out: &mut Vec<(String, Vec<u8>)>) -> Re
             EntryKind::Missing => {
                 // TOCTOU: read_dir just enumerated this entry, so it should
                 // exist. If it vanished between listing and stat, fail
-                // loudly rather than silently under-hashing the gates dir.
-                anyhow::bail!("gates dir entry disappeared mid-walk ({})", path.display());
+                // loudly rather than silently under-hashing the scripts dir.
+                anyhow::bail!(
+                    "scripts dir entry disappeared mid-walk ({})",
+                    path.display()
+                );
             }
         }
     }
     Ok(())
 }
 
-/// Split a shell command string into candidate path tokens: whitespace AND a
-/// liberal set of shell metacharacters are all treated as separators. This is
-/// deliberately not a real shell parser — it is a conservative *extractor*
-/// for the referenced-scripts hash fold (see [`referenced_repo_files`]):
-/// false positives (a token that happens to coincide with a real file, but
-/// isn't actually "the script") are harmless, so splitting too eagerly is
-/// safe. Splitting on quote characters means a quoted path containing a
-/// space (e.g. `'my script.sh'`) is not recovered as one token — a known,
-/// acceptable gap for a conservative, inclusion-biased extractor.
-fn tokenize_command(cmd: &str) -> Vec<String> {
-    const METACHARS: &[char] = &[
-        ';', '|', '&', '>', '<', '(', ')', '{', '}', '$', '`', '\'', '"', '=', '*',
-    ];
-    cmd.split(|c: char| c.is_whitespace() || METACHARS.contains(&c))
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
-        .collect()
-}
-
-/// `true` iff `path` is a regular file **without following a symlink** at
-/// the final component — mirrors the guard [`classify_entry`] applies to the
-/// gates walk, but here a non-match is a silent skip rather than a hard
-/// error: most command tokens are not paths at all, so treating every
-/// unusual token as fatal would make `compute_hash` fail on ordinary
-/// configs. A symlink-referenced script is therefore a residual gap: its
-/// target is not covered by this hash, so it can be swapped without
-/// revoking trust.
-fn is_regular_file_no_follow(path: &Path) -> bool {
-    std::fs::symlink_metadata(path)
-        .map(|m| m.file_type().is_file())
-        .unwrap_or(false)
-}
-
-/// Resolve `token` against `root` and return its repo-relative (`/`-joined)
-/// path iff it names an existing, in-repo, regular, non-symlink file that
-/// isn't already under one of `gate_dirs` (those are folded once by the
-/// caller's separate gates walk — double-folding them would change the hash
-/// of every config that references a gate script via `run:`, breaking the
-/// "no-scripts/gates-only hash is unchanged" invariant). `None` for anything
-/// that doesn't resolve, escapes `root`, isn't a regular file, or duplicates
-/// a gate file.
-fn candidate_repo_relative(token: &str, root: &Path, gate_dirs: &[PathBuf]) -> Option<String> {
-    // `Path::join` with an absolute `token` discards `root` entirely (per
-    // `std::path::PathBuf::push` semantics), which is exactly what we want:
-    // an absolute token still gets canonicalized and containment-checked
-    // below, so an absolute in-repo path is included and an absolute
-    // out-of-repo path is excluded by the `starts_with` check either way.
-    let joined = root.join(token);
-    // Check symlink-ness on the JOINED (pre-canonicalize) path, not the
-    // canonicalized one: `canonicalize()` fully dereferences symlinks
-    // (that's its job), so by the time a path is canonical it can never
-    // itself "be a symlink" — checking after canonicalizing would silently
-    // follow the very symlinks this guard exists to skip. `symlink_metadata`
-    // here still resolves any symlinked *intermediate* directories (only the
-    // final path component is left un-followed), matching `classify_entry`'s
-    // guard elsewhere in this file.
-    if !is_regular_file_no_follow(&joined) {
-        return None;
-    }
-    let canon = joined.canonicalize().ok()?;
-    if !canon.starts_with(root) {
-        return None;
-    }
-    if gate_dirs.iter().any(|g| canon.starts_with(g)) {
-        return None;
-    }
-    let rel = canon.strip_prefix(root).ok()?;
-    Some(
-        rel.components()
-            .map(|c| c.as_os_str().to_string_lossy())
-            .collect::<Vec<_>>()
-            .join("/"),
-    )
-}
-
-/// Extract every in-repo script referenced by any check's `run` or
-/// `steps[].run`, resolved against `root`, excluding files already under
-/// `gate_dirs`. Returns `(repo-relative path, bytes)` pairs sorted and
-/// deduped by relative path, ready to fold into the trust hash.
-///
-/// Conservative by design (see [`tokenize_command`] and
-/// [`candidate_repo_relative`]): err toward inclusion for anything that
-/// resolves to a real in-repo regular file, since a missed script (false
-/// negative) is the actual danger — a coincidental match (false positive)
-/// only adds harmless extra bytes to the hash.
-fn referenced_repo_files(
-    cfg: &Config,
-    root: &Path,
-    gate_dirs: &[PathBuf],
-) -> Result<Vec<(String, Vec<u8>)>> {
-    let mut rels: BTreeSet<String> = BTreeSet::new();
-    for check in cfg.checks.values() {
-        for step in check.effective_steps() {
-            for token in tokenize_command(&step.run) {
-                if let Some(rel) = candidate_repo_relative(&token, root, gate_dirs) {
-                    rels.insert(rel);
-                }
-            }
-        }
-    }
-    let mut out = Vec::with_capacity(rels.len());
-    for rel in rels {
-        let path = root.join(&rel);
-        let bytes = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
-        out.push((rel, bytes));
-    }
-    Ok(out)
-}
-
-/// Fold every in-repo script referenced by the merged config's checks into
-/// `hasher`, under the `run-ref\0<repo-relative-path>` label namespace (kept
-/// distinct from `config\0` and `gates\0` so no cross-namespace collision is
-/// possible). `root` is the **primary** config's directory — checks run with
-/// that as their cwd regardless of which `extends:`-inherited file defined
-/// them, so that's what `run:` tokens resolve against.
-///
-/// Resolution failures here fold nothing rather than erroring: an
-/// unparseable/unresolvable config runs no checks at all, so there is no
-/// `run:` string to reference a script from and thus no RCE surface from
-/// skipping this step — the config's own bytes are already folded by the
-/// caller regardless. This mirrors [`compute_hash`]'s existing behavior of
-/// never erroring on a config it could previously hash by bytes alone.
-fn fold_referenced_scripts(
-    hasher: &mut Sha256,
-    config_path: &Path,
-    gate_dirs: &[PathBuf],
-) -> Result<()> {
-    let Ok(canon_config) = config_path.canonicalize() else {
-        return Ok(());
-    };
-    let root = canon_config
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .to_path_buf();
-    let Ok(merged) = crate::config::extends::resolve(config_path) else {
-        return Ok(());
-    };
-    for (rel, bytes) in referenced_repo_files(&merged, &root, gate_dirs)? {
-        hash_entry(hasher, &format!("run-ref\0{rel}"), &bytes);
-    }
-    Ok(())
-}
-
-/// Derive the sorted, deduped `.ironlint/gates` directories participating in
-/// an extends closure — one per distinct config-file directory in
+/// Derive the sorted, deduped `.ironlint/scripts` directories participating
+/// in an extends closure — one per distinct config-file directory in
 /// `config_paths`. Shared by [`compute_hash`] (which folds these into the
 /// hash) and [`blessed_summary`] (which enumerates them for display), so the
 /// two can never disagree about which directories are in scope.
-fn closure_gate_dirs(config_paths: &[PathBuf]) -> Vec<PathBuf> {
-    let mut gate_dirs: Vec<PathBuf> = config_paths
+fn closure_script_dirs(config_paths: &[PathBuf]) -> Vec<PathBuf> {
+    let mut script_dirs: Vec<PathBuf> = config_paths
         .iter()
         .map(|p| {
             p.parent()
                 .unwrap_or_else(|| Path::new("."))
                 .join(".ironlint")
-                .join("gates")
+                .join("scripts")
         })
         .collect();
-    gate_dirs.sort();
-    gate_dirs.dedup();
-    gate_dirs
+    script_dirs.sort();
+    script_dirs.dedup();
+    script_dirs
 }
 
 /// Compute the trust hash of a config over its **entire `extends:` closure**.
 ///
 /// Sha256 over every config file reachable from `config_path` (the root plus
 /// every transitively-extended file) plus every file under each participating
-/// config dir's `.ironlint/gates/`. Returns `"sha256:<hex>"`.
+/// config dir's `.ironlint/scripts/`. Returns `"sha256:<hex>"`.
 ///
 /// Folding only the root config would let a blessed child that `extends:` a base
-/// have that base — or the base's gate scripts — swapped under it without
+/// have that base — or the base's scripts — swapped under it without
 /// invalidating the hash. Every blob is folded with [`hash_entry`]'s
 /// length-prefixed framing and a label bound to the blob's identity (its
-/// canonical config path, or its gates dir + relative path), so neither
+/// canonical config path, or its scripts dir + relative path), so neither
 /// reordering nor relabeling can produce a collision. A no-`extends:` config
 /// resolves to a one-element closure and keeps its prior behaviour: its own
-/// edits, and edits to its own gate scripts, still revoke trust.
+/// edits, and edits to its own scripts, still revoke trust.
 pub fn compute_hash(config_path: &Path) -> Result<String> {
     let mut hasher = Sha256::new();
 
@@ -304,17 +163,17 @@ pub fn compute_hash(config_path: &Path) -> Result<String> {
         hash_entry(&mut hasher, &format!("config\0{}", path.display()), &bytes);
     }
 
-    // Fold gate scripts under each distinct participating config dir's
-    // `.ironlint/gates/`. Dedup so a shared dir is never double-folded.
-    let gate_dirs = closure_gate_dirs(&config_paths);
+    // Fold scripts under each distinct participating config dir's
+    // `.ironlint/scripts/`. Dedup so a shared dir is never double-folded.
+    let script_dirs = closure_script_dirs(&config_paths);
 
-    for gates_dir in &gate_dirs {
-        match classify_entry(gates_dir)? {
+    for scripts_dir in &script_dirs {
+        match classify_entry(scripts_dir)? {
             EntryKind::Dir => {
-                for (rel, bytes) in collect_gate_files(gates_dir)? {
+                for (rel, bytes) in collect_gate_files(scripts_dir)? {
                     hash_entry(
                         &mut hasher,
-                        &format!("gates\0{}\0{rel}", gates_dir.display()),
+                        &format!("scripts\0{}\0{rel}", scripts_dir.display()),
                         &bytes,
                     );
                 }
@@ -322,30 +181,22 @@ pub fn compute_hash(config_path: &Path) -> Result<String> {
             EntryKind::Missing => {}
             EntryKind::File => {
                 anyhow::bail!(
-                    "expected {} to be a directory (gates dir)",
-                    gates_dir.display()
+                    "expected {} to be a directory (scripts dir)",
+                    scripts_dir.display()
                 );
             }
         }
     }
-
-    // Fold in-repo scripts referenced by any check's run/steps that aren't
-    // already covered by the gates loop above — closes the post-bless
-    // script-swap gap (Task 3.3 / Finding C6): `run: "bash scripts/lint.sh"`
-    // used to be trusted by its command *string* only, so scripts/lint.sh
-    // could be rewritten after blessing and run on the next agent edit with
-    // no re-bless. See `fold_referenced_scripts` for the leniency rationale.
-    fold_referenced_scripts(&mut hasher, config_path, &gate_dirs)?;
 
     Ok(sha256_digest_hex(&hasher.finalize()))
 }
 
 /// A read-only, human-facing enumeration of exactly what trust covers.
 ///
-/// Covers the digest itself, plus every gate file and every in-repo
-/// referenced script folded into it. `compute_hash` retains no file list of
-/// its own (it only ever returns the final digest), so this is a fresh,
-/// faithful re-walk via the same helpers — not a cache of anything
+/// Covers the digest itself, the number of resolved checks, and every file
+/// under `.ironlint/scripts/` folded into it. `compute_hash` retains no file
+/// list of its own (it only ever returns the final digest), so this is a
+/// fresh, faithful re-walk via the same helpers — not a cache of anything
 /// `compute_hash` remembers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlessedSummary {
@@ -354,67 +205,53 @@ pub struct BlessedSummary {
     /// The authoritative digest, `"sha256:<hex>"`, identical to what
     /// [`compute_hash`] would return for the same `config_path`.
     pub config_hash: String,
-    /// Every gate-file relative path (relative to its own `.ironlint/gates/`
-    /// dir) across the whole extends closure, sorted and deduped.
-    pub gates: Vec<String>,
-    /// Every in-repo script referenced by a check's `run`/`steps[].run` that
-    /// isn't already under a gates dir, repo-relative, sorted and deduped.
+    /// Number of resolved checks (post-extends merge).
+    pub checks: usize,
+    /// Every file relative path under `.ironlint/scripts/`, sorted and deduped.
     pub scripts: Vec<String>,
 }
 
 /// Enumerate what trust covers for `config_path`.
 ///
-/// Reports the digest plus the gate files and referenced scripts folded into
-/// it. Read-only — never writes the store or the filesystem; safe to call
-/// any time after a config parses (typically right after a successful
-/// [`bless`]).
+/// Reports the digest plus the resolved check count and the scripts under
+/// `.ironlint/scripts/` folded into it. Read-only — never writes the store or
+/// the filesystem; safe to call any time after a config parses (typically
+/// right after a successful [`bless`]).
 ///
 /// Faithful to the full trust surface [`compute_hash`] folds (config +
-/// gates + referenced scripts) — a summary that silently omitted the
-/// referenced-scripts surface would misrepresent what was actually blessed.
+/// scripts) — a summary that silently omitted the scripts surface would
+/// misrepresent what was actually blessed.
 pub fn blessed_summary(config_path: &Path) -> Result<BlessedSummary> {
     let config_hash = compute_hash(config_path)?;
 
     let config_paths = crate::config::extends::resolve_paths(config_path)
         .with_context(|| format!("resolving extends closure for {}", config_path.display()))?;
-    let gate_dirs = closure_gate_dirs(&config_paths);
+    let script_dirs = closure_script_dirs(&config_paths);
 
-    let mut gates: Vec<String> = Vec::new();
-    for dir in &gate_dirs {
+    let mut scripts: Vec<String> = Vec::new();
+    for dir in &script_dirs {
         match classify_entry(dir)? {
             EntryKind::Dir => {
                 for (rel, _bytes) in collect_gate_files(dir)? {
-                    gates.push(rel);
+                    scripts.push(rel);
                 }
             }
             EntryKind::Missing => {}
             EntryKind::File => {
-                anyhow::bail!("expected {} to be a directory (gates dir)", dir.display());
+                anyhow::bail!("expected {} to be a directory (scripts dir)", dir.display());
             }
         }
     }
-    gates.sort();
-    gates.dedup();
-
-    let canon_config = config_path
-        .canonicalize()
-        .with_context(|| format!("resolving {}", config_path.display()))?;
-    let root = canon_config
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .to_path_buf();
-    let merged_cfg = crate::config::extends::resolve(config_path)?;
-    let mut scripts: Vec<String> = referenced_repo_files(&merged_cfg, &root, &gate_dirs)?
-        .into_iter()
-        .map(|(rel, _bytes)| rel)
-        .collect();
     scripts.sort();
     scripts.dedup();
+
+    let merged = crate::config::extends::resolve(config_path)?;
+    let checks = merged.checks.len();
 
     Ok(BlessedSummary {
         config_path: config_path.to_path_buf(),
         config_hash,
-        gates,
+        checks,
         scripts,
     })
 }
@@ -627,7 +464,7 @@ pub enum TrustOutcome {
     Untrusted(anyhow::Error),
     /// The trust hash could not be *computed* at all — the config (or an
     /// `extends:` target) doesn't parse, a referenced path is missing, a
-    /// gates dir contains a symlink, etc. This is a structural config
+    /// scripts dir contains a symlink, etc. This is a structural config
     /// problem, not a trust decision: defer to the engine's own load error.
     Unverifiable(anyhow::Error),
 }
@@ -650,12 +487,12 @@ pub fn check_trust_in(config_path: &Path, store_path: &Path) -> TrustOutcome {
     match store.entries.get(&key) {
         Some(entry) if entry.hash == expected => TrustOutcome::Trusted,
         _ => TrustOutcome::Untrusted(anyhow::anyhow!(
-            "config/gates not trusted — review and run `ironlint trust`"
+            "config/scripts not trusted — review and run `ironlint trust`"
         )),
     }
 }
 
-/// Verify `config_path` (and its gate scripts) match a blessed entry in the
+/// Verify `config_path` (and its scripts) match a blessed entry in the
 /// store at `store_path`. Fails closed with a fixed, actionable message.
 ///
 /// Thin boolean wrapper over [`check_trust_in`] for callers that only need
@@ -766,29 +603,29 @@ mod tests {
     }
 
     #[test]
-    fn editing_a_gate_script_changes_hash() {
+    fn editing_a_script_changes_hash() {
         let dir = tempfile::tempdir().unwrap();
         let cfg = dir.path().join(".ironlint.yml");
         write(
             &cfg,
-            "checks:\n  g:\n    files: \"*.rs\"\n    run: \".ironlint/gates/g.sh\"\n",
+            "checks:\n  g:\n    files: \"*.rs\"\n    run: \".ironlint/scripts/g.sh\"\n",
         );
-        let script = dir.path().join(".ironlint/gates/g.sh");
+        let script = dir.path().join(".ironlint/scripts/g.sh");
         write(&script, "#!/bin/sh\nexit 0\n");
         let before = compute_hash(&cfg).unwrap();
         write(&script, "#!/bin/sh\nexit 2\n");
         let after = compute_hash(&cfg).unwrap();
-        assert_ne!(before, after, "a gate-script edit must invalidate the hash");
+        assert_ne!(before, after, "a script edit must invalidate the hash");
     }
 
     #[test]
-    fn hash_folds_gate_files_in_sorted_order() {
-        // compute_hash must fold the config plus its gate files in a
+    fn hash_folds_scripts_in_sorted_order() {
+        // compute_hash must fold the config plus its script files in a
         // deterministic, identity-bound frame: each config keyed by its
-        // canonical path, each gate file keyed by its gates dir + sorted
+        // canonical path, each script file keyed by its scripts dir + sorted
         // relative path (independent of OS enumeration order). We pin the exact
         // scheme by recomputing the digest the same way using the impl's own
-        // framing helper. This fails if the impl stops sorting gate files (the
+        // framing helper. This fails if the impl stops sorting script files (the
         // `out.sort_by` in collect_gate_files) — on a filesystem whose read_dir
         // yields b before a — or if the label binding / length prefixes change,
         // which doubles as a regression lock on the stored-hash encoding.
@@ -796,12 +633,12 @@ mod tests {
         let cfg = dir.path().join(".ironlint.yml");
         let cfg_body = "checks:\n  g:\n    files: \"*\"\n    run: \"true\"\n";
         write(&cfg, cfg_body);
-        write(&dir.path().join(".ironlint/gates/a.sh"), "a\n");
-        write(&dir.path().join(".ironlint/gates/b.sh"), "b\n");
+        write(&dir.path().join(".ironlint/scripts/a.sh"), "a\n");
+        write(&dir.path().join(".ironlint/scripts/b.sh"), "b\n");
 
         // Labels carry canonical paths, so recompute against the canonical form.
         let canon = cfg.canonicalize().unwrap();
-        let gates_dir = canon.parent().unwrap().join(".ironlint").join("gates");
+        let scripts_dir = canon.parent().unwrap().join(".ironlint").join("scripts");
 
         let mut expected = Sha256::new();
         hash_entry(
@@ -811,12 +648,12 @@ mod tests {
         );
         hash_entry(
             &mut expected,
-            &format!("gates\0{}\0a.sh", gates_dir.display()),
+            &format!("scripts\0{}\0a.sh", scripts_dir.display()),
             b"a\n",
         );
         hash_entry(
             &mut expected,
-            &format!("gates\0{}\0b.sh", gates_dir.display()),
+            &format!("scripts\0{}\0b.sh", scripts_dir.display()),
             b"b\n",
         );
         let want = sha256_digest_hex(&expected.finalize());
@@ -824,15 +661,12 @@ mod tests {
         assert_eq!(compute_hash(&cfg).unwrap(), want);
     }
 
-    // --- Task 3.3: hash in-repo scripts referenced by run:/steps[].run ---
-    // RED: today compute_hash never looks at a check's `run`/`steps[].run`
-    // strings, so editing an in-repo script a check shells out to (but that
-    // isn't under `.ironlint/gates/`) does not change the hash. Bless the
-    // benign check, rewrite the script, and it runs on the next agent write
-    // with no re-bless. These tests must fail before the fix.
-
     #[test]
-    fn editing_a_referenced_script_changes_hash() {
+    fn editing_a_referenced_outside_script_does_not_change_hash() {
+        // After the gates→scripts rename: a script referenced by `run:` but
+        // located OUTSIDE .ironlint/scripts/ is no longer folded into the
+        // trust hash. It may still be run by a check, but changing it does
+        // not revoke trust — the spec's deliberate simplification.
         let dir = tempfile::tempdir().unwrap();
         let cfg = dir.path().join(".ironlint.yml");
         write(
@@ -844,157 +678,10 @@ mod tests {
         let before = compute_hash(&cfg).unwrap();
         write(&script, "#!/bin/sh\nexit 2\n");
         let after = compute_hash(&cfg).unwrap();
-        assert_ne!(
-            before, after,
-            "editing an in-repo script referenced by `run:` must invalidate the hash"
-        );
-    }
-
-    #[test]
-    fn editing_an_unrelated_file_does_not_change_hash() {
-        // Control: mutating a file that is NOT referenced by any check's
-        // run/steps must leave the hash untouched.
-        let dir = tempfile::tempdir().unwrap();
-        let cfg = dir.path().join(".ironlint.yml");
-        write(
-            &cfg,
-            "checks:\n  g:\n    files: \"*\"\n    run: \"bash scripts/lint.sh\"\n",
-        );
-        write(&dir.path().join("scripts/lint.sh"), "#!/bin/sh\nexit 0\n");
-        write(&dir.path().join("README"), "hello\n");
-        let before = compute_hash(&cfg).unwrap();
-        write(&dir.path().join("README"), "goodbye\n");
-        let after = compute_hash(&cfg).unwrap();
         assert_eq!(
             before, after,
-            "editing an unrelated file must not change the trust hash"
+            "editing an in-repo script OUTSIDE .ironlint/scripts/ no longer revokes trust"
         );
-    }
-
-    #[test]
-    fn referenced_script_in_steps_run_changes_hash() {
-        let dir = tempfile::tempdir().unwrap();
-        let cfg = dir.path().join(".ironlint.yml");
-        write(
-            &cfg,
-            "checks:\n  g:\n    files: \"*\"\n    steps:\n      - run: \"true\"\n      - run: \"bash scripts/lint.sh\"\n",
-        );
-        let script = dir.path().join("scripts/lint.sh");
-        write(&script, "#!/bin/sh\nexit 0\n");
-        let before = compute_hash(&cfg).unwrap();
-        write(&script, "#!/bin/sh\nexit 2\n");
-        let after = compute_hash(&cfg).unwrap();
-        assert_ne!(
-            before, after,
-            "a step's run referencing a script must be scanned too, not just single-step `run:`"
-        );
-    }
-
-    #[test]
-    fn referenced_script_from_inherited_check_uses_primary_root() {
-        // Checks run with cwd = the primary config's directory, even when the
-        // check itself is defined in an extended (inherited) file. So an
-        // inherited check's `run:` must resolve relative to the PRIMARY
-        // root, and editing that script must still revoke trust.
-        let dir = tempfile::tempdir().unwrap();
-        let base = dir.path().join("base.yml");
-        write(
-            &base,
-            "checks:\n  b:\n    files: \"*\"\n    run: \"bash scripts/base.sh\"\n",
-        );
-        let cfg = dir.path().join(".ironlint.yml");
-        write(&cfg, "extends: [\"./base.yml\"]\nchecks: {}\n");
-        write(&dir.path().join("scripts/base.sh"), "#!/bin/sh\nexit 0\n");
-        let before = compute_hash(&cfg).unwrap();
-        write(&dir.path().join("scripts/base.sh"), "#!/bin/sh\nexit 2\n");
-        let after = compute_hash(&cfg).unwrap();
-        assert_ne!(
-            before, after,
-            "an inherited check's referenced script must be hashed relative to the primary root"
-        );
-    }
-
-    #[test]
-    fn referenced_out_of_repo_path_is_not_folded() {
-        // A run: string that happens to name a file OUTSIDE the project root
-        // (e.g. an absolute path to a sibling directory) must not be folded —
-        // only in-repo files are in scope for this hash.
-        let dir = tempfile::tempdir().unwrap();
-        let outside = tempfile::tempdir().unwrap();
-        let outside_file = outside.path().join("evil.sh");
-        write(&outside_file, "#!/bin/sh\nexit 0\n");
-        let cfg = dir.path().join(".ironlint.yml");
-        write(
-            &cfg,
-            &format!(
-                "checks:\n  g:\n    files: \"*\"\n    run: \"bash {}\"\n",
-                outside_file.display()
-            ),
-        );
-        let before = compute_hash(&cfg).unwrap();
-        write(&outside_file, "#!/bin/sh\nexit 2\n");
-        let after = compute_hash(&cfg).unwrap();
-        assert_eq!(
-            before, after,
-            "a script outside the project root must not be folded into the trust hash"
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn referenced_script_symlink_is_skipped_not_followed() {
-        // Regular files only (same guard as Task 2.3's gates walk) — a
-        // symlink-referenced script is a documented residual gap: it is not
-        // covered by this hash, so its target can be swapped without
-        // revoking trust.
-        let dir = tempfile::tempdir().unwrap();
-        let cfg = dir.path().join(".ironlint.yml");
-        write(
-            &cfg,
-            "checks:\n  g:\n    files: \"*\"\n    run: \"bash scripts/lint.sh\"\n",
-        );
-        let real = dir.path().join("real_lint.sh");
-        write(&real, "#!/bin/sh\nexit 0\n");
-        fs::create_dir_all(dir.path().join("scripts")).unwrap();
-        std::os::unix::fs::symlink(&real, dir.path().join("scripts/lint.sh")).unwrap();
-
-        let before = compute_hash(&cfg).unwrap();
-        write(&real, "#!/bin/sh\nexit 2\n");
-        let after = compute_hash(&cfg).unwrap();
-        assert_eq!(
-            before, after,
-            "a symlink-referenced script is skipped (regular files only, not followed) — \
-             this is the documented residual limitation"
-        );
-    }
-
-    #[test]
-    fn editing_a_referenced_script_after_bless_revokes_trust() {
-        // End-to-end re-bless proof: bless a config whose check shells out to
-        // an in-repo script, confirm it's trusted, tamper with the script,
-        // and confirm `ensure_trusted_in` now fails closed until re-bless.
-        let proj = tempfile::tempdir().unwrap();
-        let store = tempfile::tempdir().unwrap();
-        let store_path = store.path().join("trust.json");
-        let cfg = proj.path().join(".ironlint.yml");
-        write(
-            &cfg,
-            "checks:\n  g:\n    files: \"*\"\n    run: \"bash scripts/lint.sh\"\n",
-        );
-        write(&proj.path().join("scripts/lint.sh"), "#!/bin/sh\nexit 0\n");
-
-        bless_in(&cfg, &store_path, "t").unwrap();
-        assert!(ensure_trusted_in(&cfg, &store_path).is_ok());
-
-        write(&proj.path().join("scripts/lint.sh"), "#!/bin/sh\nexit 2\n");
-        assert!(
-            ensure_trusted_in(&cfg, &store_path).is_err(),
-            "rewriting a referenced script after bless must revoke trust until re-bless"
-        );
-
-        // And re-blessing restores trust.
-        bless_in(&cfg, &store_path, "t2").unwrap();
-        assert!(ensure_trusted_in(&cfg, &store_path).is_ok());
     }
 
     #[test]
@@ -1013,8 +700,8 @@ mod tests {
     }
 
     #[test]
-    fn missing_gates_dir_hashes_only_the_config() {
-        // No .ironlint/gates/ at all — must succeed (not error), hashing config alone.
+    fn missing_scripts_dir_hashes_only_the_config() {
+        // No .ironlint/scripts/ at all — must succeed (not error), hashing config alone.
         let dir = tempfile::tempdir().unwrap();
         let cfg = dir.path().join(".ironlint.yml");
         write(
@@ -1026,8 +713,8 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn gates_dir_symlink_loop_is_a_clear_error_not_a_hang() {
-        // A self-referencing symlink inside the gates dir must not be
+    fn scripts_dir_symlink_loop_is_a_clear_error_not_a_hang() {
+        // A self-referencing symlink inside the scripts dir must not be
         // followed. Before the fix, `is_dir()` follows the symlink and the
         // walk recurses through it; the OS eventually caps total symlink
         // resolutions and returns a raw ELOOP, so this terminates promptly
@@ -1037,10 +724,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cfg = dir.path().join(".ironlint.yml");
         write(&cfg, "checks:\n  g:\n    files: \"*\"\n    run: \"true\"\n");
-        let gates = dir.path().join(".ironlint/gates");
-        fs::create_dir_all(&gates).unwrap();
-        write(&gates.join("g.sh"), "#!/bin/sh\nexit 0\n");
-        std::os::unix::fs::symlink(&gates, gates.join("loop")).unwrap();
+        let scripts = dir.path().join(".ironlint/scripts");
+        fs::create_dir_all(&scripts).unwrap();
+        write(&scripts.join("g.sh"), "#!/bin/sh\nexit 0\n");
+        std::os::unix::fs::symlink(&scripts, scripts.join("loop")).unwrap();
 
         let err = compute_hash(&cfg).unwrap_err().to_string();
         assert!(
@@ -1097,50 +784,50 @@ mod tests {
     }
 
     #[test]
-    fn gate_files_recurse_into_subdirectories() {
+    fn scripts_recurse_into_subdirectories() {
         let dir = tempfile::tempdir().unwrap();
         let cfg = dir.path().join(".ironlint.yml");
         write(&cfg, "checks:\n  g:\n    files: \"*\"\n    run: \"true\"\n");
-        write(&dir.path().join(".ironlint/gates/top.sh"), "top\n");
+        write(&dir.path().join(".ironlint/scripts/top.sh"), "top\n");
         write(
-            &dir.path().join(".ironlint/gates/sub/nested.sh"),
+            &dir.path().join(".ironlint/scripts/sub/nested.sh"),
             "nested\n",
         );
         let before = compute_hash(&cfg).unwrap();
         write(
-            &dir.path().join(".ironlint/gates/sub/nested.sh"),
+            &dir.path().join(".ironlint/scripts/sub/nested.sh"),
             "nested changed\n",
         );
         let after = compute_hash(&cfg).unwrap();
         assert_ne!(
             before, after,
-            "editing a nested gate file must change the hash"
+            "editing a nested script file must change the hash"
         );
     }
 
     #[cfg(unix)]
     #[test]
-    fn gates_dir_itself_as_symlink_is_refused() {
+    fn scripts_dir_itself_as_symlink_is_refused() {
         let dir = tempfile::tempdir().unwrap();
         let cfg = dir.path().join(".ironlint.yml");
         write(&cfg, "checks:\n  g:\n    files: \"*\"\n    run: \"true\"\n");
-        let real_gates = dir.path().join("real_gates");
-        fs::create_dir_all(&real_gates).unwrap();
-        write(&real_gates.join("g.sh"), "#!/bin/sh\nexit 0\n");
+        let real_scripts = dir.path().join("real_scripts");
+        fs::create_dir_all(&real_scripts).unwrap();
+        write(&real_scripts.join("g.sh"), "#!/bin/sh\nexit 0\n");
         fs::create_dir_all(dir.path().join(".ironlint")).unwrap();
-        std::os::unix::fs::symlink(&real_gates, dir.path().join(".ironlint/gates")).unwrap();
+        std::os::unix::fs::symlink(&real_scripts, dir.path().join(".ironlint/scripts")).unwrap();
 
         let err = compute_hash(&cfg).unwrap_err().to_string();
         assert!(err.contains("symlink"), "error: {err}");
     }
 
     #[test]
-    fn gates_dir_path_is_a_plain_file_is_an_error() {
+    fn scripts_dir_path_is_a_plain_file_is_an_error() {
         let dir = tempfile::tempdir().unwrap();
         let cfg = dir.path().join(".ironlint.yml");
         write(&cfg, "checks:\n  g:\n    files: \"*\"\n    run: \"true\"\n");
         fs::create_dir_all(dir.path().join(".ironlint")).unwrap();
-        fs::write(dir.path().join(".ironlint/gates"), "not a dir").unwrap();
+        fs::write(dir.path().join(".ironlint/scripts"), "not a dir").unwrap();
         assert!(compute_hash(&cfg).is_err());
     }
 
@@ -1211,33 +898,26 @@ mod tests {
         assert!(read_store(dir.path()).is_err());
     }
 
-    fn cfg_with_gate(dir: &Path) -> PathBuf {
+    fn cfg_with_script(dir: &Path) -> PathBuf {
         let cfg = dir.join(".ironlint.yml");
         write(
             &cfg,
-            "checks:\n  g:\n    files: \"*\"\n    run: \".ironlint/gates/g.sh\"\n",
+            "checks:\n  g:\n    files: \"*\"\n    run: \".ironlint/scripts/g.sh\"\n",
         );
-        write(&dir.join(".ironlint/gates/g.sh"), "#!/bin/sh\nexit 0\n");
+        write(&dir.join(".ironlint/scripts/g.sh"), "#!/bin/sh\nexit 0\n");
         cfg
     }
 
-    // --- Task 5.31: `blessed_summary` enumerates the trust surface ---
-    // RED: `blessed_summary` doesn't exist yet, so this is a compile error
-    // until Deliverable 1 lands. It must faithfully enumerate ALL THREE
-    // surfaces `compute_hash` folds: the config itself (via the returned
-    // hash), every gate file, and every in-repo script referenced by a
-    // check's `run`/`steps[].run` that isn't already under a gates dir.
-
     #[test]
-    fn blessed_summary_lists_hash_gates_and_scripts() {
+    fn blessed_summary_lists_hash_checks_and_scripts() {
         let dir = tempfile::tempdir().unwrap();
         let cfg = dir.path().join(".ironlint.yml");
         write(
             &cfg,
             "checks:\n  g:\n    files: \"*\"\n    run: \"bash scripts/lint.sh\"\n",
         );
-        write(&dir.path().join(".ironlint/gates/a.sh"), "a\n");
-        write(&dir.path().join(".ironlint/gates/b.sh"), "b\n");
+        write(&dir.path().join(".ironlint/scripts/a.sh"), "a\n");
+        write(&dir.path().join(".ironlint/scripts/b.sh"), "b\n");
         write(&dir.path().join("scripts/lint.sh"), "#!/bin/sh\nexit 0\n");
 
         let summary = blessed_summary(&cfg).unwrap();
@@ -1250,24 +930,18 @@ mod tests {
         assert_eq!(
             summary.config_hash,
             compute_hash(&cfg).unwrap(),
-            "blessed_summary must report the SAME digest compute_hash would produce, \
-             not a re-derived one"
+            "blessed_summary must report the SAME digest compute_hash would produce"
         );
-        assert_eq!(
-            summary.gates,
-            vec!["a.sh".to_string(), "b.sh".to_string()],
-            "gates must list every gate file, sorted"
-        );
+        assert_eq!(summary.checks, 1, "checks counts resolved checks");
         assert_eq!(
             summary.scripts,
-            vec!["scripts/lint.sh".to_string()],
-            "scripts must list the in-repo run: script — omitting it would silently \
-             under-report the trust surface"
+            vec!["a.sh".to_string(), "b.sh".to_string()],
+            "scripts lists every file under .ironlint/scripts/, sorted"
         );
     }
 
     #[test]
-    fn blessed_summary_is_empty_with_no_gates_or_scripts() {
+    fn blessed_summary_is_empty_with_no_scripts() {
         let dir = tempfile::tempdir().unwrap();
         let cfg = dir.path().join(".ironlint.yml");
         write(
@@ -1278,13 +952,10 @@ mod tests {
         let summary = blessed_summary(&cfg).unwrap();
 
         assert!(
-            summary.gates.is_empty(),
-            "no gates dir → empty gates list, not an error"
-        );
-        assert!(
             summary.scripts.is_empty(),
-            "no referenced in-repo script → empty scripts list"
+            "no scripts dir → empty scripts list"
         );
+        assert_eq!(summary.checks, 1, "the one inline check still counts");
     }
 
     #[test]
@@ -1292,7 +963,7 @@ mod tests {
         let proj = tempfile::tempdir().unwrap();
         let store = tempfile::tempdir().unwrap();
         let store_path = store.path().join("trust.json");
-        let cfg = cfg_with_gate(proj.path());
+        let cfg = cfg_with_script(proj.path());
         bless_in(&cfg, &store_path, "2026-06-24T00:00:00Z").unwrap();
         assert!(ensure_trusted_in(&cfg, &store_path).is_ok());
     }
@@ -1301,7 +972,7 @@ mod tests {
     fn never_blessed_is_not_trusted() {
         let proj = tempfile::tempdir().unwrap();
         let store = tempfile::tempdir().unwrap();
-        let cfg = cfg_with_gate(proj.path());
+        let cfg = cfg_with_script(proj.path());
         let err = ensure_trusted_in(&cfg, &store.path().join("trust.json"))
             .unwrap_err()
             .to_string();
@@ -1316,15 +987,15 @@ mod tests {
     }
 
     #[test]
-    fn editing_a_gate_after_bless_revokes_trust() {
+    fn editing_a_script_after_bless_revokes_trust() {
         let proj = tempfile::tempdir().unwrap();
         let store = tempfile::tempdir().unwrap();
         let store_path = store.path().join("trust.json");
-        let cfg = cfg_with_gate(proj.path());
+        let cfg = cfg_with_script(proj.path());
         bless_in(&cfg, &store_path, "t").unwrap();
-        // Tamper with the gate script.
+        // Tamper with the script.
         write(
-            &proj.path().join(".ironlint/gates/g.sh"),
+            &proj.path().join(".ironlint/scripts/g.sh"),
             "#!/bin/sh\nexit 2\n",
         );
         assert!(ensure_trusted_in(&cfg, &store_path).is_err());
@@ -1335,7 +1006,7 @@ mod tests {
         let proj = tempfile::tempdir().unwrap();
         let store = tempfile::tempdir().unwrap();
         let store_path = store.path().join("trust.json");
-        let cfg = cfg_with_gate(proj.path());
+        let cfg = cfg_with_script(proj.path());
         bless_in(&cfg, &store_path, "t").unwrap();
         write(&cfg, "checks:\n  g:\n    files: \"*\"\n    run: \"true\"\n");
         assert!(ensure_trusted_in(&cfg, &store_path).is_err());
@@ -1368,7 +1039,7 @@ mod tests {
                 let barrier = std::sync::Arc::clone(&barrier);
                 std::thread::spawn(move || {
                     let proj = tempfile::tempdir().unwrap();
-                    let cfg = cfg_with_gate(proj.path());
+                    let cfg = cfg_with_script(proj.path());
                     barrier.wait();
                     bless_in(&cfg, &store_path, "t").unwrap();
                 })
@@ -1396,7 +1067,7 @@ mod tests {
         let store_dir = tempfile::tempdir().unwrap();
         let store_path = store_dir.path().join("trust.json");
         write(&store_path, "{ not json");
-        let cfg = cfg_with_gate(proj.path());
+        let cfg = cfg_with_script(proj.path());
 
         bless_in(&cfg, &store_path, "t").unwrap();
 
@@ -1416,7 +1087,7 @@ mod tests {
         let store_dir = tempfile::tempdir().unwrap();
         let store_path = store_dir.path().join("trust.json");
         write(&store_path, "{ not json");
-        let cfg = cfg_with_gate(proj.path());
+        let cfg = cfg_with_script(proj.path());
 
         assert!(ensure_trusted_in(&cfg, &store_path).is_err());
     }
@@ -1446,7 +1117,7 @@ mod tests {
 
         // Seed a real, non-empty store first.
         let seed_proj = tempfile::tempdir().unwrap();
-        let seed_cfg = cfg_with_gate(seed_proj.path());
+        let seed_cfg = cfg_with_script(seed_proj.path());
         bless_in(&seed_cfg, &store_path, "t").unwrap();
         let before = fs::read(&store_path).unwrap();
         assert!(!before.is_empty());
@@ -1470,7 +1141,7 @@ mod tests {
         }
 
         let proj = tempfile::tempdir().unwrap();
-        let cfg = cfg_with_gate(proj.path());
+        let cfg = cfg_with_script(proj.path());
         let result = bless_in(&cfg, &store_path, "t2");
 
         // Restore perms so tempdir cleanup can remove the file regardless of
