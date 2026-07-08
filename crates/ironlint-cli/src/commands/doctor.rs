@@ -9,8 +9,8 @@
 //!   2. config  — `.ironlint.yml` exists
 //!   3. parses  — config parses (extends resolved)
 //!   4. check_scripts — each check whose `run` names a single-token path that
-//!      starts with `.ironlint/` exists and is executable
-//!   5. trust — config + `.ironlint/gates/` are blessed in the trust store
+//!      starts with `.ironlint/scripts/` exists and is executable
+//!   5. trust — config + `.ironlint/scripts/` are blessed in the trust store
 //!      (warn, not fail: doctor is read-only; trust is enforced only at the
 //!      `check` layer)
 //!   6. adapters — one row per supported harness that is detected on this
@@ -165,7 +165,7 @@ fn check_config_parses(ctx: &DoctorContext) -> CheckResult {
 }
 
 /// For each check whose `run` is a single token (no spaces) that starts with
-/// `.ironlint/`, check that the path exists and is executable. Inline commands
+/// `.ironlint/scripts/`, check that the path exists and is executable. Inline commands
 /// (e.g. `grep -q TODO && exit 2`) are skipped — detection: `run` contains a
 /// space or doesn't look like a file path.
 fn check_script_paths(ctx: &DoctorContext) -> CheckResult {
@@ -201,7 +201,7 @@ fn check_script_paths(ctx: &DoctorContext) -> CheckResult {
             status: Status::Fail,
             detail: format!("missing/non-executable check script(s): {}", bad.join("; ")),
             remediation: Some(
-                "ensure check scripts exist under .ironlint/gates/ and are executable (chmod +x)"
+                "ensure check scripts exist under .ironlint/scripts/ and are executable (chmod +x)"
                     .into(),
             ),
         }
@@ -216,8 +216,8 @@ fn check_run_path(dir: &Path, check_id: &str, run: &str) -> Option<String> {
     if run.contains(' ') {
         return None;
     }
-    // Only check paths that look like they're under .ironlint/
-    if !run.starts_with(".ironlint/") {
+    // Only check paths that look like they're under .ironlint/scripts/
+    if !run.starts_with(".ironlint/scripts/") {
         return None;
     }
     let script = dir.join(run);
@@ -616,9 +616,17 @@ mod tests {
     #[test]
     fn check_run_path_fails_missing_script() {
         let d = tempdir().unwrap();
-        let result = check_run_path(d.path(), "g", ".ironlint/gates/missing.sh");
+        let result = check_run_path(d.path(), "g", ".ironlint/scripts/missing.sh");
         assert!(result.is_some());
         assert!(result.unwrap().contains("not found"));
+    }
+
+    #[test]
+    fn check_run_path_skips_legacy_gates_path() {
+        // After the rename, doctor only checks scripts under .ironlint/scripts/.
+        // A legacy .ironlint/gates/ path is not the policy surface and is skipped
+        // (returns None) rather than flagged as missing.
+        assert!(check_run_path(Path::new("."), "g", ".ironlint/gates/missing.sh").is_none());
     }
 
     fn adapter_env(tmp: &std::path::Path) -> ironlint_core::adapter::AdapterEnv {
