@@ -2,7 +2,7 @@
 //!
 //! Decides whether a command an agent wants to run would let it free itself
 //! from ironlint's gate — `ironlint trust`, or a Bash write to the policy
-//! surface (`.ironlint.yml`, `.ironlint/gates/`). Pure of I/O and state; the
+//! surface (`.ironlint.yml`, `.ironlint/scripts/`). Pure of I/O and state; the
 //! `ironlint gate-bash` subcommand and the adapter hooks are thin shims
 //! around it. See `docs/superpowers/specs/2026-07-06-bash-gate-self-trust-prevention-design.md`.
 //!
@@ -276,7 +276,7 @@ fn is_ironlint_trust(segment: &str) -> bool {
         .any(|(idx, t)| is_ironlint_binary(t) && trust_after_binary(&tokens, idx))
 }
 
-/// `cd .ironlint && trust` and `cd .ironlint/gates && trust`: a bare `trust`
+/// `cd .ironlint && trust` and `cd .ironlint/scripts && trust`: a bare `trust`
 /// in a later segment after a `cd` into the policy dir (`.ironlint` itself
 /// or anything under `.ironlint/`). A bare `trust` elsewhere is not a trust
 /// invocation. The `cd` target must start the `.ironlint` path component (not
@@ -305,7 +305,7 @@ fn cd_into_policy_then_trust(segs: &[String]) -> bool {
 
 /// True if a path token refers to the policy surface: the literal
 /// `.ironlint.yml` (at any depth — bare or path-prefixed) or anything under
-/// `.ironlint/gates/`. Matched on the path string, not the filesystem.
+/// `.ironlint/scripts/`. Matched on the path string, not the filesystem.
 fn is_policy_path(token: &str) -> bool {
     // `.ironlint.yml` as a SUFFIX (covers the bare token and any path-prefixed
     // form like `./.ironlint.yml` or `sub/.ironlint.yml`), OR `.ironlint.yml`
@@ -320,7 +320,7 @@ fn is_policy_path(token: &str) -> bool {
     // but suffix short-circuits). Don't fold them.
     token.ends_with(".ironlint.yml")
         || token.contains("/.ironlint.yml")
-        || token.contains(".ironlint/gates/")
+        || token.contains(".ironlint/scripts/")
 }
 
 /// True if the normalized segment writes to the policy surface. Detected via:
@@ -588,8 +588,8 @@ mod tests {
     }
 
     #[test]
-    fn blocks_cd_ironlint_gates_then_trust() {
-        assert_blocks("cd .ironlint/gates && trust");
+    fn blocks_cd_ironlint_scripts_then_trust() {
+        assert_blocks("cd .ironlint/scripts && trust");
     }
 
     // --- false-positive guard: 'cd .ironlintfoo' is NOT the policy dir ---
@@ -738,15 +738,15 @@ mod tests {
         assert_allows("perl -pe 's/x/y/' .ironlint.yml");
     }
 
-    // --- same detectors against .ironlint/gates/ ---
+    // --- same detectors against .ironlint/scripts/ ---
     #[test]
-    fn blocks_redirect_to_gate_script() {
-        assert_blocks("echo x > .ironlint/gates/lint.sh");
+    fn blocks_redirect_to_policy_script() {
+        assert_blocks("echo x > .ironlint/scripts/lint.sh");
     }
 
     #[test]
-    fn blocks_sed_inplace_gate_script() {
-        assert_blocks("sed -i 's/x/y/' .ironlint/gates/lint.sh");
+    fn blocks_sed_inplace_policy_script() {
+        assert_blocks("sed -i 's/x/y/' .ironlint/scripts/lint.sh");
     }
 
     // `.ironlint.yml` appearing mid-token but NOT as a suffix (the file is
@@ -761,8 +761,8 @@ mod tests {
 
     // --- cp / mv ONTO a policy path (destination) ---
     #[test]
-    fn blocks_cp_onto_gate_script() {
-        assert_blocks("cp malicious.sh .ironlint/gates/lint.sh");
+    fn blocks_cp_onto_policy_script() {
+        assert_blocks("cp malicious.sh .ironlint/scripts/lint.sh");
     }
 
     #[test]
@@ -787,13 +787,13 @@ mod tests {
     }
 
     #[test]
-    fn allows_ls_ironlint_gates() {
-        assert_allows("ls .ironlint/gates/");
+    fn allows_ls_ironlint_scripts() {
+        assert_allows("ls .ironlint/scripts/");
     }
 
     #[test]
-    fn allows_cat_gate_script() {
-        assert_allows("cat .ironlint/gates/lint.sh");
+    fn allows_cat_policy_script() {
+        assert_allows("cat .ironlint/scripts/lint.sh");
     }
 
     // `tee` to a NON-policy file must allow — pins the `&&` (not `||`) in
@@ -1000,8 +1000,8 @@ mod tests {
     }
 
     #[test]
-    fn blocks_dd_of_gate_script() {
-        assert_blocks("dd of=.ironlint/gates/x.sh");
+    fn blocks_dd_of_policy_script() {
+        assert_blocks("dd of=.ironlint/scripts/x.sh");
     }
 
     // `dd of .ironlint.yml` (SEPARATED form — `of` then the path) pins the
@@ -1095,6 +1095,15 @@ mod tests {
     #[test]
     fn allows_dd_from_ironlint_yml_as_source() {
         assert_allows("dd if=.ironlint.yml of=/tmp/backup");
+    }
+
+    // --- gates → scripts rename ---
+    #[test]
+    fn allows_write_to_legacy_gates_path() {
+        // After the gates→scripts rename, .ironlint/gates/ is no longer the
+        // policy surface — a Bash write there is allowed (it's just a regular
+        // repo directory now). Pin this so the matcher doesn't regress.
+        assert_allows("echo x > .ironlint/gates/lint.sh");
     }
 
     // =====================================================================
