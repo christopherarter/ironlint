@@ -106,7 +106,7 @@ The plugin honours the `ironlint` CLI exit-code contract from `commands/check.rs
 In addition to file edits, this adapter gates `bash` (the agent's shell tool —
 `tool:"bash"`, command in `args.command`). Commands that would let the agent
 free itself — `ironlint trust`, or a Bash write to `.ironlint.yml` /
-`.ironlint/gates/` — are denied (throw, mirroring the exit-2 edit path).
+`.ironlint/scripts/` — are denied (throw, mirroring the exit-2 edit path).
 Ordinary commands are not slowed: a substring pre-filter skips the decision
 entirely for commands that never mention `ironlint` or `.ironlint`. The deny
 decision is shared across every adapter via `ironlint gate-bash`. The branch

@@ -8,7 +8,7 @@ extends: ["./shared/base.yml", "./shared/strict.yml"]
 checks:
   local-only:
     files: "src/**/*.ts"
-    run: ".ironlint/gates/local-only.sh"
+    run: ".ironlint/scripts/local-only.sh"
 ```
 
 `extends:` is a list of parent config paths, relative to the file that declares them. IronLint resolves each parent depth-first (a parent may extend its own parents) and detects cycles. The merged check set is your local checks plus every check inherited from the closure.
@@ -42,7 +42,7 @@ To flip the precedence, reorder the list: `extends: ["./b.yml", "./a.yml"]`. The
 
 ## Trust and `extends:`
 
-Trust isn't a config field and isn't blessed per file. You bless the **root** config you run `ironlint check` against, and its blessed hash covers the entire `extends:` closure — every file it transitively extends, plus every script under `.ironlint/gates/`. One bless covers the chain:
+Trust isn't a config field and isn't blessed per file. You bless the **root** config you run `ironlint check` against, and its blessed hash covers the entire `extends:` closure — every file it transitively extends, plus every script under `.ironlint/scripts/`. One bless covers the chain:
 
 ```bash
 ironlint trust            # blesses .ironlint.yml and everything it extends

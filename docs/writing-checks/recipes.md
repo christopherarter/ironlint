@@ -23,17 +23,17 @@ A linter that reads stdin can check the new bytes before they land. Move it into
 checks:
   biome:
     files: ["src/**/*.ts", "src/**/*.tsx"]
-    run: ".ironlint/gates/biome.sh"
+    run: ".ironlint/scripts/biome.sh"
 ```
 
 ```sh
-# .ironlint/gates/biome.sh
+# .ironlint/scripts/biome.sh
 #!/usr/bin/env sh
 # Lint the proposed content, which IronLint delivers on stdin.
 biome check --stdin-file-path "$IRONLINT_FILE"
 ```
 
-`biome check` exits non-zero when it finds problems; the nonzero exit blocks the edit. Because it reads stdin, it sees the edit the agent is *proposing*, not whatever is currently on disk. Make the script executable: `chmod +x .ironlint/gates/biome.sh`.
+`biome check` exits non-zero when it finds problems; the nonzero exit blocks the edit. Because it reads stdin, it sees the edit the agent is *proposing*, not whatever is currently on disk. Make the script executable: `chmod +x .ironlint/scripts/biome.sh`.
 
 ## Run a file-oriented linter (temp file)
 
@@ -69,11 +69,11 @@ Because a check is just a command that exits nonzero, a model can be the judge:
 checks:
   no-secrets:
     files: "**/*"
-    run: ".ironlint/gates/secret-scan.sh"
+    run: ".ironlint/scripts/secret-scan.sh"
 ```
 
 ```sh
-# .ironlint/gates/secret-scan.sh
+# .ironlint/scripts/secret-scan.sh
 #!/usr/bin/env sh
 content=$(cat)
 verdict=$(printf '%s' "$content" | claude -p "Reply BLOCK if this file contains a hardcoded secret, otherwise PASS.")

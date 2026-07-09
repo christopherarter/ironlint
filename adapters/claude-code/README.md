@@ -57,7 +57,7 @@ are untouched.
 In addition to file edits, this adapter gates `Bash` (the agent's shell tool —
 `tool_name:"Bash"`, command in `tool_input.command`). Commands that would let
 the agent free itself — `ironlint trust`, or a Bash write to `.ironlint.yml` /
-`.ironlint/gates/` — are denied (hook exit 2, reason on stderr). Ordinary
+`.ironlint/scripts/` — are denied (hook exit 2, reason on stderr). Ordinary
 commands are not slowed: a substring pre-filter skips the decision entirely
 for commands that never mention `ironlint` or `.ironlint`. The deny decision
 is shared across every adapter via `ironlint gate-bash`. The branch runs

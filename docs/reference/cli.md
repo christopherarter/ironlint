@@ -32,7 +32,7 @@ ironlint check [--file <path>] [--diff <path>] [--content <string|->]
 
 ## `ironlint trust`
 
-Bless a config in the out-of-repo trust store so `ironlint check` will run it. Computes a SHA-256 over the config, every config it `extends:`, and the files under each `.ironlint/gates/`, and records it at `~/.config/ironlint/trust.json` (keyed by the config's absolute path).
+Bless a config in the out-of-repo trust store so `ironlint check` will run it. Computes a SHA-256 over the config, every config it `extends:`, and the files under each `.ironlint/scripts/`, and records it at `~/.config/ironlint/trust.json` (keyed by the config's absolute path).
 
 ```
 ironlint trust [--config <path>]

@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Intercept Bash tool calls in every supported adapter and deny the ones that would let an agent free itself (`ironlint trust`, Bash writes to `.ironlint.yml` / `.ironlint/gates/`), by adding a pure-Rust matcher crate exposed via a built-in `ironlint` subcommand and wiring a Bash branch into all four adapters.
+**Goal:** Intercept Bash tool calls in every supported adapter and deny the ones that would let an agent free itself (`ironlint trust`, Bash writes to `.ironlint.yml` / `.ironlint/scripts/`), by adding a pure-Rust matcher crate exposed via a built-in `ironlint` subcommand and wiring a Bash branch into all four adapters.
 
 **Architecture:** A new leaf crate `ironlint-bash-gate` holds `decide(command: &str) -> Decision` — pure of I/O and state, with the test file as the spec. The `ironlint` binary exposes it via a built-in subcommand that reads the command on stdin and emits a binary `0` (allow) / `2` (block, reason on stdout) exit code. Each adapter gains a Bash branch that runs a substring pre-filter (`ironlint` or `.ironlint`?), shells out to the subcommand on a hit, and translates the exit through its own block contract (claude-code: exit 2; codex: deny-JSON/exit 0; pi: return `{block,reason}`; opencode: throw). Spawn failure fails closed. The matcher is not a `check`, not trust-gated, and works with no `.ironlint.yml` present.
 
@@ -19,7 +19,7 @@
 - **Cognitive complexity:** ≤15 per function (`clippy.toml`, `#![warn(clippy::cognitive_complexity)]` at each crate root).
 - **Commit `Cargo.lock`:** workspace policy. If `cargo build` drifts the lock after adding the crate, regenerate with `cargo generate-lockfile` and commit alongside.
 - **Spec:** `docs/superpowers/specs/2026-07-06-bash-gate-self-trust-prevention-design.md` (commit `4935c78`). Read it first.
-- **Conventions:** A check is `files` + `run`/`steps` + `on` — but the bash-gate is NOT a check; it's a built-in self-protection rule, so it does not live under `.ironlint/gates/` and is not authored in `.ironlint.yml`. Binary is `ironlint`, not `ironlint-cli`. Test fixtures live in `tests/fixtures/`.
+- **Conventions:** A check is `files` + `run`/`steps` + `on` — but the bash-gate is NOT a check; it's a built-in self-protection rule, so it does not live under `.ironlint/scripts/` and is not authored in `.ironlint.yml`. Binary is `ironlint`, not `ironlint-cli`. Test fixtures live in `tests/fixtures/`.
 
 ## File Structure
 
@@ -97,7 +97,7 @@ Create `crates/ironlint-bash-gate/src/lib.rs`:
 //!
 //! Decides whether a command an agent wants to run would let it free itself
 //! from ironlint's gate — `ironlint trust`, or a Bash write to the policy
-//! surface (`.ironlint.yml`, `.ironlint/gates/`). Pure of I/O and state; the
+//! surface (`.ironlint.yml`, `.ironlint/scripts/`). Pure of I/O and state; the
 //! `ironlint gate-bash` subcommand and the adapter hooks are thin shims
 //! around it. See `docs/superpowers/specs/2026-07-06-bash-gate-self-trust-prevention-design.md`.
 //!
@@ -243,7 +243,7 @@ mod tests {
 
     #[test]
     fn blocks_cd_ironlint_gates_then_trust() {
-        assert_blocks("cd .ironlint/gates && trust");
+        assert_blocks("cd .ironlint/scripts && trust");
     }
 
     // --- false-positive guard: read-only ironlint subcommands MUST allow ---
@@ -369,14 +369,14 @@ fn is_ironlint_trust(normalized: &str) -> bool {
     // contains it — `echo` starts with `echo`, not `ironlint`.
     normalized == "ironlint trust"
         || normalized.starts_with("ironlint trust ")
-        // `cd .ironlint && trust` and `cd .ironlint/gates && trust`: a bare
+        // `cd .ironlint && trust` and `cd .ironlint/scripts && trust`: a bare
         // `trust` after a `cd` into the policy dir. Match the chained form
         // explicitly — a bare `trust` elsewhere is not a trust invocation.
         || normalized.starts_with("cd .ironlint ") && normalized.contains(" trust")
 }
 
 /// True if the command writes to the policy surface (`.ironlint.yml` or
-/// anything under `.ironlint/gates/`). Detected via redirect operators,
+/// anything under `.ironlint/scripts/`). Detected via redirect operators,
 /// `tee`, in-place editors, and `cp`/`mv` with a policy path as destination.
 /// Implemented in Task 3; returns false here so Task 2's tests focus on trust.
 fn is_policy_write(_normalized: &str) -> bool {
@@ -435,7 +435,7 @@ false-positive guard (ironlint trust as a string, not a command) allow."
 
 **Interfaces:**
 - Consumes: `normalize`, `decide` from Task 2.
-- Produces: a `decide` that also blocks Bash writes to `.ironlint.yml` and `.ironlint/gates/` via redirects, `tee`, `sed -i`/`ed`/`perl -i`, and `cp`/`mv` onto a policy path (destination).
+- Produces: a `decide` that also blocks Bash writes to `.ironlint.yml` and `.ironlint/scripts/` via redirects, `tee`, `sed -i`/`ed`/`perl -i`, and `cp`/`mv` onto a policy path (destination).
 
 - [ ] **Step 1: Write the failing tests for policy-write detection**
 
@@ -500,21 +500,21 @@ Add these rows to the test module in `crates/ironlint-bash-gate/src/lib.rs`:
         assert_blocks("ed -s .ironlint.yml");
     }
 
-    // --- same detectors against .ironlint/gates/ ---
+    // --- same detectors against .ironlint/scripts/ ---
     #[test]
     fn blocks_redirect_to_gate_script() {
-        assert_blocks("echo x > .ironlint/gates/lint.sh");
+        assert_blocks("echo x > .ironlint/scripts/lint.sh");
     }
 
     #[test]
     fn blocks_sed_inplace_gate_script() {
-        assert_blocks("sed -i 's/x/y/' .ironlint/gates/lint.sh");
+        assert_blocks("sed -i 's/x/y/' .ironlint/scripts/lint.sh");
     }
 
     // --- cp / mv ONTO a policy path (destination) ---
     #[test]
     fn blocks_cp_onto_gate_script() {
-        assert_blocks("cp malicious.sh .ironlint/gates/lint.sh");
+        assert_blocks("cp malicious.sh .ironlint/scripts/lint.sh");
     }
 
     #[test]
@@ -540,12 +540,12 @@ Add these rows to the test module in `crates/ironlint-bash-gate/src/lib.rs`:
 
     #[test]
     fn allows_ls_ironlint_gates() {
-        assert_allows("ls .ironlint/gates/");
+        assert_allows("ls .ironlint/scripts/");
     }
 
     #[test]
     fn allows_cat_gate_script() {
-        assert_allows("cat .ironlint/gates/lint.sh");
+        assert_allows("cat .ironlint/scripts/lint.sh");
     }
 
     // --- ordinary commands never mention ironlint, so the pre-filter skips
@@ -594,13 +594,13 @@ Replace the stub `is_policy_write` in `crates/ironlint-bash-gate/src/lib.rs`:
 ```rust
 /// True if a path token refers to the policy surface: the literal
 /// `.ironlint.yml` (at any depth — bare or path-prefixed) or anything under
-/// `.ironlint/gates/`. Matched on the path string, not the filesystem.
+/// `.ironlint/scripts/`. Matched on the path string, not the filesystem.
 fn is_policy_path(token: &str) -> bool {
     // `.ironlint.yml` anywhere in the token (bare, ./, or path-prefixed).
-    // `.ironlint/gates/` as a directory prefix.
+    // `.ironlint/scripts/` as a directory prefix.
     token.ends_with(".ironlint.yml")
         || token.contains("/.ironlint.yml")
-        || token.contains(".ironlint/gates/")
+        || token.contains(".ironlint/scripts/")
         || token == ".ironlint.yml"
 }
 
@@ -694,7 +694,7 @@ fn is_policy_write(normalized: &str) -> bool {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `cargo test -p ironlint-bash-gate`
-Expected: PASS — all block cases (redirects, tee, sed -i, perl -i, ed, cp/mv onto policy paths, same against `.ironlint/gates/`) and all allow cases (cp from source, cat piped to grep, ls, the indirection gap, ordinary commands).
+Expected: PASS — all block cases (redirects, tee, sed -i, perl -i, ed, cp/mv onto policy paths, same against `.ironlint/scripts/`) and all allow cases (cp from source, cat piped to grep, ls, the indirection gap, ordinary commands).
 
 - [ ] **Step 5: Mutation-test the matcher (local, ad-hoc per CLAUDE.md)**
 
@@ -717,7 +717,7 @@ git commit -m "feat(bash-gate): block Bash writes to the policy surface
 
 is_policy_write() detects redirects (>, >>, >|, &>, &>>), tee, in-place
 editors (sed -i, ed, perl -i), and cp/mv onto .ironlint.yml or
-.ironlint/gates/. cp/mv with a policy path as the SOURCE (a read)
+.ironlint/scripts/. cp/mv with a policy path as the SOURCE (a read)
 allows — only the destination is checked. Variable-substitution
 indirection remains a documented, pinned known gap (allows)."
 ```
@@ -1068,7 +1068,7 @@ The arm:
 ```bash
   Bash)
     # The bash-gate: deny commands that would let the agent free itself
-    # (ironlint trust, or a Bash write to .ironlint.yml / .ironlint/gates/).
+    # (ironlint trust, or a Bash write to .ironlint.yml / .ironlint/scripts/).
     # Decided by `ironlint gate-bash` — the single source of the deny logic,
     # shared across every adapter. See
     # docs/superpowers/specs/2026-07-06-bash-gate-self-trust-prevention-design.md.
@@ -1598,7 +1598,7 @@ In each of `docs/adapters/claude-code.md`, `docs/adapters/codex.md`, `docs/adapt
 
 In addition to file edits, this adapter gates `Bash` (the agent's shell tool).
 Commands that would let the agent free itself — `ironlint trust`, or a Bash
-write to `.ironlint.yml` / `.ironlint/gates/` — are denied. Ordinary commands
+write to `.ironlint.yml` / `.ironlint/scripts/` — are denied. Ordinary commands
 are not slowed: a substring pre-filter skips the decision entirely for
 commands that never mention `ironlint` or `.ironlint`. The deny decision is
 shared across every adapter via `ironlint gate-bash`.

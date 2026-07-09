@@ -64,7 +64,7 @@ don't map to a per-file check; suggest running them as a pre-push step instead.
 ironlint trust
 ```
 
-This records a sha256 of the config (and any files it `extends:`/`.ironlint/gates/`)
+This records a sha256 of the config (and any files it `extends:`/`.ironlint/scripts/`)
 in the out-of-repo trust store at `~/.config/ironlint/trust.json` — it does **not**
 write into `.ironlint.yml`. Any later edit invalidates the fingerprint, and
 `ironlint check` refuses to run until you re-trust.

@@ -107,7 +107,7 @@ The extension honours the `ironlint` CLI exit-code contract
 
 In addition to file edits, this adapter gates `bash` (the agent's shell tool).
 Commands that would let the agent free itself — `ironlint trust`, or a Bash
-write to `.ironlint.yml` / `.ironlint/gates/` — are denied. Ordinary commands
+write to `.ironlint.yml` / `.ironlint/scripts/` — are denied. Ordinary commands
 are not slowed: a substring pre-filter skips the decision entirely for commands
 that never mention `ironlint` or `.ironlint`. The deny decision is shared across
 every adapter via `ironlint gate-bash`. The branch runs before the

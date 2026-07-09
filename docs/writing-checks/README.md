@@ -73,10 +73,10 @@ Pick the one your tool needs. [Check recipes](recipes.md) shows both.
 checks:
   biome:
     files: ["src/**/*.ts", "src/**/*.tsx"]
-    run: ".ironlint/gates/biome.sh"
+    run: ".ironlint/scripts/biome.sh"
 ```
 
-The shell makes no distinction. Keep a one-liner inline; move anything longer into `.ironlint/gates/` so it's readable and version-controlled. Scripts under `.ironlint/gates/` are covered by `ironlint trust`, so editing one re-triggers a blessing.
+The shell makes no distinction. Keep a one-liner inline; move anything longer into `.ironlint/scripts/` so it's readable and version-controlled. Scripts under `.ironlint/scripts/` are covered by `ironlint trust`, so editing one re-triggers a blessing.
 
 ## See also
 

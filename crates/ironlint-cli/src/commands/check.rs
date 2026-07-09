@@ -93,7 +93,7 @@ pub fn run(
         return Ok(emit_error(format, NO_SHELL_MSG, 1));
     }
     // Trust gate: refuse an unblessed or tampered config/checks before the engine
-    // loads or any check runs. This hashes the config + `.ironlint/gates/` now; a
+    // loads or any check runs. This hashes the config + `.ironlint/scripts/` now; a
     // write between here and check execution is a known, accepted TOCTOU window
     // (the direnv-model limitation — no file locking in 0.4).
     //

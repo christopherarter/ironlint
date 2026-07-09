@@ -25,7 +25,7 @@ trust` via Bash with no gate, blessing the very config that constrains it.
 
 Intercept Bash tool calls in every supported adapter and deny the ones that
 would let an agent free itself: `ironlint trust` (any args), and Bash writes to
-the policy surface (`.ironlint.yml` and anything under `.ironlint/gates/`).
+the policy surface (`.ironlint.yml` and anything under `.ironlint/scripts/`).
 The Write/Edit path to those files stays open — it is already gated by
 ironlint's existing PreToolUse hook — so the change closes the *ungated* Bash
 escape without removing the legitimate, gated edit path.
@@ -136,7 +136,7 @@ Reason: *"ironlint trust must be run by a human, not by an agent — it blesses
 the config that gates the agent."*
 
 **(2) Bash writes to the policy surface** — `.ironlint.yml` and anything under
-`.ironlint/gates/`. The Write/Edit path to these files stays open (already
+`.ironlint/scripts/`. The Write/Edit path to these files stays open (already
 gated); closing the Bash path forces the escape through the gated path.
 Detected via:
 - redirect operators targeting those paths (`>`, `>>`, `>|`, `&>`, `&>>`),
@@ -244,7 +244,7 @@ a false positive on `cargo test` or `git status` is a *guaranteed* broken
 workflow the human hits immediately. The allow-list over-indexes on commands
 that look dangerous but aren't: every read-only ironlint subcommand (`check`,
 `doctor`, `validate`, `explain`, `show-resolved-config`, `init`), `cat
-.ironlint.yml | grep checks`, `grep -r ironlint docs/`, `ls .ironlint/gates/`,
+.ironlint.yml | grep checks`, `grep -r ironlint docs/`, `ls .ironlint/scripts/`,
 a heredoc that *mentions* `.ironlint.yml` without writing to it, and the
 subtle case `echo "run ironlint trust to bless"` — the string `ironlint trust`
 appears in an `echo`, not as a command. The matcher must distinguish "the
@@ -368,12 +368,12 @@ forms we catch.
 - `ironlint trust`, `ironlint trust --config shared/base.yml`, `ironlint trust .`
 - `` `ironlint` trust ``, `$(ironlint) trust`, `'ironlint' trust`,
   `ironlint   trust` (whitespace)
-- `cd .ironlint && trust`, `cd .ironlint/gates && trust`
+- `cd .ironlint && trust`, `cd .ironlint/scripts && trust`
 - Writes to policy surface: `echo x > .ironlint.yml`, `echo x >> .ironlint.yml`,
   `cat > .ironlint.yml`, `tee .ironlint.yml`, `tee -a .ironlint.yml`,
   `sed -i 's/x/y/' .ironlint.yml`, `perl -i -pe '...' .ironlint.yml`,
-  `ed -s .ironlint.yml`, `cp malicious.sh .ironlint/gates/lint.sh`,
-  `mv bad.yml .ironlint.yml`, and the same for `.ironlint/gates/lint.sh`
+  `ed -s .ironlint.yml`, `cp malicious.sh .ironlint/scripts/lint.sh`,
+  `mv bad.yml .ironlint.yml`, and the same for `.ironlint/scripts/lint.sh`
 - All redirect variants: `>`, `>>`, `>|`, `&>`, `&>>`
 
 **Allow cases — the false-positive guard (must `Allow`):** the harder
@@ -382,7 +382,7 @@ constraint. Commands that look dangerous but aren't.
   `ironlint validate`, `ironlint explain`, `ironlint show-resolved-config`,
   `ironlint init`
 - `cat .ironlint.yml | grep checks`, `grep -r ironlint docs/`,
-  `ls .ironlint/gates/`, `cat .ironlint/gates/lint.sh`
+  `ls .ironlint/scripts/`, `cat .ironlint/scripts/lint.sh`
 - `cp .ironlint.yml /tmp/backup` — policy path as the **source**, not the
   destination (a read, not a write). Pins the `cp` source-vs-destination
   distinction.

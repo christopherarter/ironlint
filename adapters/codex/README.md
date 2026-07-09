@@ -90,7 +90,7 @@ If you raise `execution.timeout_secs` above the default, re-run `ironlint init
 In addition to file edits, this adapter gates `Bash` (codex's shell tool —
 `tool_name:"Bash"`, command in `tool_input.command`). Commands that would let
 the agent free itself — `ironlint trust`, or a Bash write to `.ironlint.yml` /
-`.ironlint/gates/` — are denied (via the deny-JSON/exit-0 contract above).
+`.ironlint/scripts/` — are denied (via the deny-JSON/exit-0 contract above).
 Ordinary commands are not slowed: a substring pre-filter skips the decision
 entirely for commands that never mention `ironlint` or `.ironlint`. The deny
 decision is shared across every adapter via `ironlint gate-bash`. The branch

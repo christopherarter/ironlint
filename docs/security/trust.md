@@ -63,7 +63,7 @@ Any change to a covered file invalidates the hash. That's the point: a config, o
 Re-run `ironlint trust` whenever you change anything it covers (see [What trust covers](#what-trust-covers)):
 
 - the config file, or any file it `extends:`
-- any script under a covered `.ironlint/gates/`
+- any script under a covered `.ironlint/scripts/`
 
 The workflow is: edit checks → review → `ironlint trust` → commit. If you pull a change to `.ironlint.yml` (or a base it extends) from a teammate, review their diff before blessing it on your machine.
 
@@ -74,13 +74,13 @@ The trust store lives outside the repo, so it isn't committed and isn't shared �
 The blessed hash folds, in a fixed, deterministic order:
 
 1. **Every config file in the `extends:` closure** — the config you check, plus every file it transitively extends.
-2. **Every file under each of their `.ironlint/gates/` directories.**
+2. **Every file under each of their `.ironlint/scripts/` directories.**
 
 So with `extends:` you bless the **root** config you run `check` against, and a single `ironlint trust` covers the whole chain. Editing a parent — or a parent's check script — invalidates the root's hash and forces a re-review. (You only bless a parent separately if you also `check` it directly as a root of its own.)
 
 ### What it doesn't cover
 
-- **Check scripts outside `.ironlint/gates/`.** A check whose `run:` shells out to a file elsewhere in the repo — `run: "bash scripts/lint.sh"` or `run: "python tools/scan.py"` — is covered only for the `run:` *string* (which lives in the config). The contents of `scripts/lint.sh` are **not** hashed, so editing that file can neuter the check without invalidating trust. Keep check logic under `.ironlint/gates/` (e.g. `run: ".ironlint/gates/lint.sh"`) to bring it inside the boundary. This is the same threat class as a tampered config, reached through a file the hash doesn't reach.
+- **Check scripts outside `.ironlint/scripts/`.** A check whose `run:` shells out to a file elsewhere in the repo — `run: "bash scripts/lint.sh"` or `run: "python tools/scan.py"` — is covered only for the `run:` *string* (which lives in the config). The contents of `scripts/lint.sh` are **not** hashed, so editing that file can neuter the check without invalidating trust. Keep check logic under `.ironlint/scripts/` (e.g. `run: ".ironlint/scripts/lint.sh"`) to bring it inside the boundary. This is the same threat class as a tampered config, reached through a file the hash doesn't reach.
 - **Interpreters and tools on `$PATH`.** Trust vouches for your check scripts, not for the `python`, `grep`, or `node` they invoke.
 - **Writes during the run.** The hash is computed when `check` starts; a write between that point and a check actually executing isn't caught. This TOCTOU window is a known limitation of the direnv-style model — there's no file locking in 0.3.
 
