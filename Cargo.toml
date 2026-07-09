@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/ironlint-core", "crates/ironlint-cli", "crates/ironlint-bash-gate"]
 
 [workspace.package]
-version = "0.9.2"
+version = "0.10.0"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/ironlint/ironlint"

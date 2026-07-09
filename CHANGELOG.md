@@ -4,6 +4,51 @@ Notable changes to IronLint, newest first. In-flight work lives in `plans/`.
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-07-09 — Rename `.ironlint/gates/` → `.ironlint/scripts/`
+
+The policy-script vocabulary now matches user intuition: **checks** are
+configured in `.ironlint.yml`, **scripts** live under `.ironlint/scripts/`,
+and both are covered by `ironlint trust`. The word "gates" was overloaded —
+the old `gates:` config key, the bash-gate feature, *and* the policy
+directory — so the directory is renamed and the overlapping "referenced
+scripts anywhere in the repo" category is removed. This is a **breaking
+change**: existing projects must move scripts to `.ironlint/scripts/` and
+re-run `ironlint trust`.
+
+### Breaking
+
+- **`.ironlint/gates/` is retired.** Move scripts to `.ironlint/scripts/` and
+  re-run `ironlint trust`. There is no migration path and no backward-compat
+  shim — no install base exists.
+- **Referenced scripts outside `.ironlint/scripts/` are no longer hashed.** A
+  script referenced by a check's `run:`/`steps[].run` but located elsewhere in
+  the repo is no longer folded into the trust hash, so editing it does not
+  revoke trust. This is a deliberate simplification: if a script is part of
+  the policy surface, it belongs in `.ironlint/scripts/`. It also makes the
+  trust hash surface equal to the bash-gate enforcement surface (both =
+  `.ironlint/scripts/`) — the bash-gate cannot defend an arbitrary out-of-dir
+  script from agent tampering, so the hash must not pretend to cover it.
+
+### Changed
+
+- **`ironlint trust` summary** now renders `checks: N` and `scripts: N` (with
+  per-script names), replacing the old `gates:` list. The scripts block is
+  always shown, even at zero.
+- **`ironlint doctor`** checks scripts under `.ironlint/scripts/` for
+  existence and executability (was `.ironlint/gates/`).
+- **`ironlint gate-bash`** blocks Bash writes to `.ironlint/scripts/` (was
+  `.ironlint/gates/`); the legacy path is now allowed.
+- **Adapter hooks** (claude-code, codex, pi, opencode) short-circuit edits to
+  `.ironlint/scripts/` path-anchored to the project root — matching
+  `src/.ironlint/scripts/` is correctly *gated*, not short-circuited (a
+  basename match would be a bug).
+
+### Fixed
+
+- Stale "gates" terminology swept across docs, adapter READMEs, and test
+  files. A pinning test (`out_of_dir_referenced_script_is_absent_from_summary`)
+  now guards the dropped referenced-scripts fold against silent re-addition.
+
 ## [0.9.2] — 2026-07-07 — Bash gate: close `sh -c` and bare `VAR=val` bypasses
 
 Two adjacent bash-gate bypasses found during v0.9.1 release review are now
