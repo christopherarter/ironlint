@@ -1,4 +1,4 @@
-//! CLI integration tests for `ironlint explain <file>` (gates model).
+//! CLI integration tests for `ironlint explain <file>` (checks model).
 //!
 //! Output format (from explain.rs):
 //!   <gate-id>  <match|skip>  files=<comma-joined globs>  run=<run>

@@ -1,4 +1,4 @@
-//! CLI integration tests for `ironlint doctor` (gates model).
+//! CLI integration tests for `ironlint doctor` (scripts model).
 //!
 //! Each test isolates the adapter environment by pointing `HOME` and
 //! `XDG_CONFIG_HOME` at tempdirs, so the per-harness adapter checks observe a

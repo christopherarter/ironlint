@@ -18,7 +18,7 @@ fn read_cfg(dir: &Path) -> String {
 }
 
 #[test]
-fn init_scaffolds_gates_config_not_rules() {
+fn init_scaffolds_checks_config_not_rules() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("Cargo.toml"), "[package]\nname = \"foo\"\n").unwrap();
     run_init(dir.path());
@@ -29,11 +29,11 @@ fn init_scaffolds_gates_config_not_rules() {
     );
     assert!(
         !cfg.contains("schema_version"),
-        "gates model must not emit schema_version:\n{cfg}"
+        "checks model must not emit schema_version:\n{cfg}"
     );
     assert!(
         !cfg.contains("rules:"),
-        "gates model must not emit rules: key:\n{cfg}"
+        "checks model must not emit rules: key:\n{cfg}"
     );
 }
 

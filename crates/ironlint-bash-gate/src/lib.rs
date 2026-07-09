@@ -311,7 +311,7 @@ fn is_policy_path(token: &str) -> bool {
     // form like `./.ironlint.yml` or `sub/.ironlint.yml`), OR `.ironlint.yml`
     // appearing with a leading slash mid-token (covered by suffix already, so
     // this arm is only reached when suffix is false — kept distinct so a
-    // mutation flipping one operator is observable), OR a gates dir prefix.
+    // mutation flipping one operator is observable), OR a scripts dir prefix.
     //
     // The arms are intentionally non-redundant for the test corpus: the bare
     // `.ironlint.yml` exercises only the suffix arm; `x/.ironlint.yml.bak`
