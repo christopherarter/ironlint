@@ -1,4 +1,4 @@
-import { test, expect, beforeAll, afterAll } from "bun:test"
+import { test, describe, it, expect, beforeAll, afterAll } from "bun:test"
 import {
   mkdtempSync,
   writeFileSync,
@@ -10,7 +10,7 @@ import {
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { $ } from "bun"
-import IronLintPlugin from "../src/index.ts"
+import IronLintPlugin, { isPolicyFile } from "../src/index.ts"
 
 // End-to-end test of the OpenCode adapter plugin.
 // Drives the plugin hooks directly with synthetic OpenCode-shaped input,
@@ -18,6 +18,20 @@ import IronLintPlugin from "../src/index.ts"
 //
 // Requirements:
 //   - `ironlint` binary on PATH (CI prepends target/release before running).
+
+describe("isPolicyFile (gates→scripts)", () => {
+  const root = "/proj"
+  it("matches config by basename and .ironlint/scripts/ anchored to root", () => {
+    expect(isPolicyFile("/proj/.ironlint.yml", root)).toBe(true)
+    expect(isPolicyFile("/proj/.ironlint/scripts/lint.sh", root)).toBe(true)
+  })
+  it("rejects scripts/ outside the project root", () => {
+    expect(isPolicyFile("/proj/src/.ironlint/scripts/foo.sh", root)).toBe(false)
+  })
+  it("rejects the legacy .ironlint/gates/ path", () => {
+    expect(isPolicyFile("/proj/.ironlint/gates/lint.sh", root)).toBe(false)
+  })
+})
 
 let project: string
 

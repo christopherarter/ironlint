@@ -1,6 +1,6 @@
-import { test, after } from "node:test"
+import { test, describe, it, after } from "node:test"
 import assert from "node:assert/strict"
-import { normalizeEdits, blockReason } from "../src/index.ts"
+import { normalizeEdits, blockReason, isPolicyFile } from "../src/index.ts"
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, chmodSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, delimiter } from "node:path"
@@ -72,6 +72,30 @@ test("blockReason: a non-string message is filtered out, not coerced", () => {
   // Guards the `typeof m === "string"` predicate: a malformed verdict must not
   // surface `42` (or `"undefined"`) as the reason — it falls back instead.
   assert.equal(blockReason(JSON.stringify({ blocks: [{ message: 42 }] })), "policy violation")
+})
+
+// --- isPolicyFile (gates→scripts) ----------------------------------------
+
+describe("isPolicyFile (gates→scripts)", () => {
+  const root = "/proj"
+
+  it("matches the config file by basename", () => {
+    assert.equal(isPolicyFile("/proj/.ironlint.yml", root), true)
+    assert.equal(isPolicyFile(".ironlint.yml", root), true)
+  })
+
+  it("matches files under .ironlint/scripts/ anchored to project root", () => {
+    assert.equal(isPolicyFile("/proj/.ironlint/scripts/lint.sh", root), true)
+    assert.equal(isPolicyFile("/proj/.ironlint/scripts/sub/x.sh", root), true)
+  })
+
+  it("does NOT match a .ironlint/scripts/ path outside the project root", () => {
+    assert.equal(isPolicyFile("/proj/src/.ironlint/scripts/foo.sh", root), false)
+  })
+
+  it("does NOT match a legacy .ironlint/gates/ path (renamed away)", () => {
+    assert.equal(isPolicyFile("/proj/.ironlint/gates/lint.sh", root), false)
+  })
 })
 
 // --- computeProposedContent -----------------------------------------------

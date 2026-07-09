@@ -1,6 +1,6 @@
 import type { Plugin } from "@opencode-ai/plugin"
 import { existsSync, readFileSync } from "node:fs"
-import { basename, join } from "node:path"
+import { basename, isAbsolute, join, sep } from "node:path"
 
 // OpenCode tools we gate. `apply_patch` is intentionally not gated at 0.1d
 // (P2-14, deferred) — the opencode plugin SDK does not currently surface
@@ -20,8 +20,12 @@ const GATED_TOOLS = new Set(["edit", "write", "bash"])
 // surfaces a confusing "internal error" to the user.
 const POLICY_FILES = new Set([".ironlint.yml", ".bully.yml"])
 
-function isPolicyFile(filePath: string): boolean {
-  return POLICY_FILES.has(basename(filePath))
+/** R3: config by basename + `.ironlint/scripts/` path-anchored to `projectRoot`. */
+export function isPolicyFile(filePath: string, projectRoot: string): boolean {
+  if (POLICY_FILES.has(basename(filePath))) return true
+  const abs = isAbsolute(filePath) ? filePath : join(projectRoot, filePath)
+  const scriptsDir = join(projectRoot, ".ironlint", "scripts") + sep
+  return abs === scriptsDir.slice(0, -1) || abs.startsWith(scriptsDir)
 }
 
 // Opencode's tool args use `find` / `replace` / `replaceAll` for the edit
@@ -77,7 +81,7 @@ export const IronLintPlugin: Plugin = async ({ directory, worktree }) => {
       // exactly when an agent is most motivated to run `ironlint trust`.
       // Decides whether the command would let the agent free itself
       // (`ironlint trust`, or a Bash write to `.ironlint.yml` /
-      // `.ironlint/gates/`). The deny logic lives in `ironlint gate-bash` —
+      // `.ironlint/scripts/`). The deny logic lives in `ironlint gate-bash` —
       // the single source shared across every adapter. Block contract =
       // throw (mirrors the existing exit-2 write/edit path). Spawn via
       // `Bun.spawn` (async, like the check path — a sync spawn blocks
@@ -127,7 +131,7 @@ export const IronLintPlugin: Plugin = async ({ directory, worktree }) => {
       const filePath = args.filePath
       if (!filePath) return
       // R3: skip self-checks of the policy file itself.
-      if (isPolicyFile(filePath)) return
+      if (isPolicyFile(filePath, projectRoot)) return
 
       const proposed = computeProposedContent(filePath, args)
       if (proposed === null) return // can't simulate — skip the gate
