@@ -8,6 +8,7 @@
 
 mod onboard;
 mod render;
+mod select;
 
 use anyhow::{anyhow, Result};
 use std::path::Path;

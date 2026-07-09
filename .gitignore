@@ -8,6 +8,8 @@
 .ironlint/
 # Local Claude Code agent state (worktrees, settings).
 .claude/
+# Superpowers scratch workspace (SDD artifacts, task reports, ephemeral plans).
+.superpowers/
 # Machine-local coding-agent install state and tool caches — created by
 # `ironlint init` (adapter wiring) or local tools, never repo content.
 .pi/

@@ -223,3 +223,87 @@ fn uninstall_renders_removal_plan() {
         "uninstall removes the hook"
     );
 }
+
+#[test]
+fn yes_bypasses_toggle_and_installs_detected() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("home");
+    let project = tmp.path().join("proj");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::create_dir_all(home.join(".codex")).unwrap();
+
+    let out = ironlint(&home, &project)
+        .args(["init", "--hook-only", "--yes"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let s = String::from_utf8(out).unwrap();
+    assert!(
+        !s.contains("Select harnesses"),
+        "--yes must bypass the multi-select UI:\n{s}"
+    );
+    assert!(
+        home.join(".config/ironlint/adapters/codex/hook.sh")
+            .exists(),
+        "codex hook should be installed when detected"
+    );
+}
+
+#[test]
+fn explicit_harness_with_yes_skips_toggle_and_installs() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("home");
+    let project = tmp.path().join("proj");
+    std::fs::create_dir_all(&project).unwrap();
+
+    let out = ironlint(&home, &project)
+        .args(["init", "--hook-only", "--harness", "codex", "--yes"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let s = String::from_utf8(out).unwrap();
+    assert!(
+        !s.contains("Select harnesses"),
+        "explicit --harness must skip the multi-select UI:\n{s}"
+    );
+    assert!(
+        home.join(".config/ironlint/adapters/codex/hook.sh")
+            .exists(),
+        "codex hook should be installed"
+    );
+}
+
+#[test]
+fn dry_run_does_not_enter_toggle() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("home");
+    let project = tmp.path().join("proj");
+    std::fs::create_dir_all(&project).unwrap();
+
+    let out = ironlint(&home, &project)
+        .args(["init", "--hook-only", "--harness", "codex", "--dry-run"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let s = String::from_utf8(out).unwrap();
+    assert!(
+        !s.contains("Select harnesses"),
+        "dry-run must not enter the multi-select UI:\n{s}"
+    );
+    assert!(
+        !home
+            .join(".config/ironlint/adapters/codex/hook.sh")
+            .exists(),
+        "dry-run must not install anything"
+    );
+    assert!(
+        !project.join(".codex/hooks.json").exists(),
+        "dry-run writes nothing"
+    );
+}
