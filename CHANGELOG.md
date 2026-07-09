@@ -4,6 +4,48 @@ Notable changes to IronLint, newest first. In-flight work lives in `plans/`.
 
 ## [Unreleased]
 
+## [0.10.1] — 2026-07-09 — `ironlint init` interactive harness multi-select
+
+The bare `ironlint init` auto-detect flow is no longer all-or-nothing. The
+single `Proceed? [Y/n]` confirm on the TTY path is replaced with an
+interactive multi-select: detected harnesses are pre-checked, and the user can
+check or uncheck any of the four supported harnesses before confirming. When
+zero harnesses are detected, the bare TTY flow is no longer a dead-end — all
+four are shown unchecked and the user can opt in directly, instead of
+abandoning the flow for `--harness all`.
+
+### Added
+
+- **Interactive harness multi-select** (`commands/init/select.rs`). On a TTY
+  with no explicit `--harness`, `init` renders an alternate-screen picker:
+  `Up`/`k` and `Down`/`j` move the cursor, `Space` toggles, `Enter` confirms,
+  `Esc`/`q`/`Ctrl-C` aborts. A live footer reads `N of 4 selected`. Detected
+  harnesses are checked by default; undetected ones are shown but unchecked.
+  A `TerminalGuard` restores raw mode and the prior screen on `Drop` (early
+  return, panic unwind, and normal completion).
+- **Zero-detections is no longer a dead-end on a TTY.** Bare `init` with no
+  detected harnesses now shows all four unchecked instead of printing a hint
+  and exiting; the user can opt in without `--harness`. The non-TTY hint is
+  preserved verbatim.
+
+### Changed
+
+- **`confirm_gate`** now takes `&mut Vec<(String, Source)>` and returns a
+  `Proceed` enum, so the toggle can rewrite the selection at confirm time;
+  `run_hook_phase` rebuilds the install plans from the (possibly mutated) set
+  before `apply`. `Source::Detected` is preserved for originally detected
+  harnesses still checked; user-checked undetected harnesses become
+  `Source::Requested`, so `render_plan`'s tags flow through unchanged.
+- **Empty selection or abort** prints `no harnesses selected; nothing to do`
+  and exits `0` with nothing installed — the interactive analog of the
+  "none detected" rule. Abort is the user bailing, not an error.
+
+### Unchanged
+
+- `--yes`, explicit `--harness <name|all>`, `--dry-run`, `--uninstall`,
+  `--global`, and the non-TTY/scripted paths are unchanged. `--uninstall`
+  reuses the same toggle with detected harnesses pre-checked.
+
 ## [0.10.0] — 2026-07-09 — Rename `.ironlint/gates/` → `.ironlint/scripts/`
 
 The policy-script vocabulary now matches user intuition: **checks** are
