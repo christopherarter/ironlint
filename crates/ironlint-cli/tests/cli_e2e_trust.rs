@@ -29,9 +29,11 @@ fn trust_writes_a_store_entry() {
 }
 
 /// Task 5.31: `ironlint trust` prints a summary of exactly what it blessed —
-/// the config hash (first 16 hex chars), every gate file, and every in-repo
-/// script referenced by a check's `run:`/`steps[].run` — so the operator can
-/// eyeball trust coverage instead of taking it on faith.
+/// the config hash (first 16 hex chars) and every script file under
+/// `.ironlint/scripts/` — so the operator can eyeball trust coverage instead
+/// of taking it on faith. Scripts referenced by `run:`/`steps[].run` but
+/// located outside `.ironlint/scripts/` are NOT summarized (and NOT hashed);
+/// see `out_of_dir_referenced_script_is_not_hashed`.
 #[test]
 fn trust_prints_blessed_summary() {
     let proj = tempfile::tempdir().unwrap();
@@ -39,13 +41,10 @@ fn trust_prints_blessed_summary() {
     let cfg = proj.path().join(".ironlint.yml");
     fs::write(
         &cfg,
-        "checks:\n  g:\n    files: \"*.rs\"\n    run: \"bash scripts/lint.sh\"\n",
+        "checks:\n  g:\n    files: \"*.rs\"\n    run: \".ironlint/scripts/lint.sh\"\n",
     )
     .unwrap();
-    let gates = proj.path().join(".ironlint/gates");
-    fs::create_dir_all(&gates).unwrap();
-    fs::write(gates.join("g.sh"), "#!/bin/sh\nexit 0\n").unwrap();
-    let scripts = proj.path().join("scripts");
+    let scripts = proj.path().join(".ironlint/scripts");
     fs::create_dir_all(&scripts).unwrap();
     fs::write(scripts.join("lint.sh"), "#!/bin/sh\nexit 0\n").unwrap();
 
@@ -58,18 +57,16 @@ fn trust_prints_blessed_summary() {
         .success()
         .stdout(
             predicates::str::contains("config sha256:")
-                .and(predicates::str::contains("gates: 1"))
-                .and(predicates::str::contains("g.sh"))
+                .and(predicates::str::contains("checks: 1"))
                 .and(predicates::str::contains("scripts: 1"))
-                .and(predicates::str::contains("scripts/lint.sh")),
+                .and(predicates::str::contains("lint.sh")),
         );
 }
 
-/// Sibling guard: with no gates dir and no referenced scripts, the `scripts:`
-/// block is omitted entirely (not printed as `scripts: 0`) but `gates: 0` is
-/// still printed.
+/// Sibling guard: with no scripts dir and no referenced scripts, the summary
+/// still prints `scripts: 0` (the scripts block is always shown).
 #[test]
-fn trust_summary_omits_scripts_block_when_empty() {
+fn trust_summary_prints_zero_scripts_when_empty() {
     let proj = tempfile::tempdir().unwrap();
     let xdg = tempfile::tempdir().unwrap();
     let cfg = proj.path().join(".ironlint.yml");
@@ -87,7 +84,7 @@ fn trust_summary_omits_scripts_block_when_empty() {
         .assert()
         .success()
         .stdout(
-            predicates::str::contains("gates: 0").and(predicates::str::contains("scripts:").not()),
+            predicates::str::contains("checks: 1").and(predicates::str::contains("scripts: 0")),
         );
 }
 
@@ -229,12 +226,12 @@ fn editing_check_after_bless_blocks_check() {
     let cfg = proj.path().join(".ironlint.yml");
     fs::write(
         &cfg,
-        "checks:\n  g:\n    files: \"*.rs\"\n    run: \".ironlint/gates/g.sh\"\n",
+        "checks:\n  g:\n    files: \"*.rs\"\n    run: \".ironlint/scripts/g.sh\"\n",
     )
     .unwrap();
-    let gates = proj.path().join(".ironlint/gates");
-    fs::create_dir_all(&gates).unwrap();
-    fs::write(gates.join("g.sh"), "#!/bin/sh\nexit 0\n").unwrap();
+    let scripts = proj.path().join(".ironlint/scripts");
+    fs::create_dir_all(&scripts).unwrap();
+    fs::write(scripts.join("g.sh"), "#!/bin/sh\nexit 0\n").unwrap();
     let target = proj.path().join("a.rs");
     fs::write(&target, "x\n").unwrap();
 
@@ -246,7 +243,7 @@ fn editing_check_after_bless_blocks_check() {
         .assert()
         .success();
 
-    fs::write(gates.join("g.sh"), "#!/bin/sh\nexit 2\n").unwrap(); // tamper
+    fs::write(scripts.join("g.sh"), "#!/bin/sh\nexit 2\n").unwrap(); // tamper
 
     Command::cargo_bin("ironlint")
         .unwrap()
@@ -259,4 +256,46 @@ fn editing_check_after_bless_blocks_check() {
         .failure()
         .code(4)
         .stderr(predicates::str::contains("not trusted"));
+}
+
+/// Pinning test for the deliberate simplification in the gates→scripts rename
+/// (spec line 40): a script referenced by `run:`/`steps[].run` but located
+/// OUTSIDE `.ironlint/scripts/` is no longer part of the trust surface, so it
+/// must NOT appear in the blessed summary. (The hash-level guarantee — that
+/// editing such a script does not revoke trust — is pinned at the unit level
+/// by `editing_a_referenced_outside_script_does_not_change_hash` in
+/// ironlint-core; this test pins the user-visible CLI summary, which that
+/// unit test cannot reach.) This keeps the hash surface equal to the
+/// bash-gate enforcement surface (both = `.ironlint/scripts/`); the bash-gate
+/// cannot defend an arbitrary out-of-dir script from agent tampering, so the
+/// summary must not imply the hash covers it either. If this test fails,
+/// someone re-added the referenced-scripts fold — a silent security-model
+/// regression.
+#[test]
+fn out_of_dir_referenced_script_is_absent_from_summary() {
+    let proj = tempfile::tempdir().unwrap();
+    let xdg = tempfile::tempdir().unwrap();
+    let cfg = proj.path().join(".ironlint.yml");
+    // The check references a script at the repo root — OUTSIDE .ironlint/scripts/.
+    fs::write(
+        &cfg,
+        "checks:\n  g:\n    files: \"*.rs\"\n    run: \"./lint.sh\"\n",
+    )
+    .unwrap();
+    fs::write(proj.path().join("lint.sh"), "#!/bin/sh\nexit 0\n").unwrap();
+
+    // The summary must report scripts: 0 and must NOT list the out-of-dir
+    // script — only files under .ironlint/scripts/ are summarized.
+    Command::cargo_bin("ironlint")
+        .unwrap()
+        .env("XDG_CONFIG_HOME", xdg.path())
+        .args(["trust", "--config"])
+        .arg(&cfg)
+        .assert()
+        .success()
+        .stdout(
+            predicates::str::contains("checks: 1")
+                .and(predicates::str::contains("scripts: 0"))
+                .and(predicates::str::contains("lint.sh").not()),
+        );
 }

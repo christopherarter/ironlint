@@ -42,17 +42,11 @@ fn render_summary(summary: &BlessedSummary) -> String {
 
     let mut lines = vec![
         format!("  config sha256: {}", &hex[..short_len]),
-        format!("  gates: {}", summary.gates.len()),
+        format!("  checks: {}", summary.checks),
+        format!("  scripts: {}", summary.scripts.len()),
     ];
-    for gate in &summary.gates {
-        lines.push(format!("    - {gate}"));
-    }
-
-    if !summary.scripts.is_empty() {
-        lines.push(format!("  scripts: {}", summary.scripts.len()));
-        for script in &summary.scripts {
-            lines.push(format!("    - {script}"));
-        }
+    for script in &summary.scripts {
+        lines.push(format!("    - {script}"));
     }
 
     lines.join("\n")
@@ -63,19 +57,19 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    fn summary(gates: Vec<&str>, scripts: Vec<&str>) -> BlessedSummary {
+    fn summary(checks: usize, scripts: Vec<&str>) -> BlessedSummary {
         BlessedSummary {
             config_path: PathBuf::from("/abs/.ironlint.yml"),
             config_hash: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcd"
                 .to_string(),
-            gates: gates.into_iter().map(String::from).collect(),
+            checks,
             scripts: scripts.into_iter().map(String::from).collect(),
         }
     }
 
     #[test]
     fn render_summary_truncates_hash_to_16_hex_chars() {
-        let out = render_summary(&summary(vec![], vec![]));
+        let out = render_summary(&summary(0, vec![]));
         assert!(
             out.contains("config sha256: 0123456789abcdef\n"),
             "hash must be truncated to the first 16 hex chars: {out}"
@@ -87,28 +81,33 @@ mod tests {
     }
 
     #[test]
-    fn render_summary_lists_gates_and_omits_empty_scripts_block() {
-        let out = render_summary(&summary(vec!["a.sh", "b.sh"], vec![]));
-        assert!(out.contains("gates: 2"));
-        assert!(out.contains("    - a.sh"));
-        assert!(out.contains("    - b.sh"));
+    fn render_summary_prints_checks_and_scripts() {
+        let out = render_summary(&summary(6, vec!["lint.sh", "no-todo.sh"]));
+        assert!(out.contains("checks: 6"), "must print checks count: {out}");
         assert!(
-            !out.contains("scripts:"),
-            "scripts block must be omitted entirely when there are none: {out}"
+            out.contains("scripts: 2"),
+            "must print scripts count: {out}"
+        );
+        assert!(out.contains("    - lint.sh"));
+        assert!(out.contains("    - no-todo.sh"));
+    }
+
+    #[test]
+    fn render_summary_prints_scripts_block_even_when_empty() {
+        // The scripts block is the policy-directory listing — always present,
+        // even when empty, so the operator sees "scripts: 0" explicitly rather
+        // than wondering whether the surface was omitted.
+        let out = render_summary(&summary(2, vec![]));
+        assert!(out.contains("checks: 2"));
+        assert!(
+            out.contains("scripts: 0"),
+            "scripts: 0 is printed, not omitted: {out}"
         );
     }
 
     #[test]
-    fn render_summary_prints_scripts_block_when_nonempty() {
-        let out = render_summary(&summary(vec![], vec!["scripts/lint.sh"]));
-        assert!(out.contains("gates: 0"));
-        assert!(out.contains("scripts: 1"));
-        assert!(out.contains("    - scripts/lint.sh"));
-    }
-
-    #[test]
     fn render_summary_guards_against_a_short_hash() {
-        let mut s = summary(vec![], vec![]);
+        let mut s = summary(0, vec![]);
         s.config_hash = "sha256:abcd".to_string();
         let out = render_summary(&s);
         assert!(

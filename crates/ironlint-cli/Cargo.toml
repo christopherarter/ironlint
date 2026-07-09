@@ -11,6 +11,9 @@ path = "src/main.rs"
 
 [dependencies]
 ironlint-core = { path = "../ironlint-core" }
+# Bash self-trust prevention (`ironlint gate-bash`): pure classifier the
+# adapters' Bash branches shell out to. No I/O deps of its own.
+ironlint-bash-gate = { path = "../ironlint-bash-gate" }
 clap.workspace = true
 anyhow.workspace = true
 serde.workspace = true

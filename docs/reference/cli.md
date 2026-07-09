@@ -32,7 +32,7 @@ ironlint check [--file <path>] [--diff <path>] [--content <string|->]
 
 ## `ironlint trust`
 
-Bless a config in the out-of-repo trust store so `ironlint check` will run it. Computes a SHA-256 over the config, every config it `extends:`, and the files under each `.ironlint/gates/`, and records it at `~/.config/ironlint/trust.json` (keyed by the config's absolute path).
+Bless a config in the out-of-repo trust store so `ironlint check` will run it. Computes a SHA-256 over the config, every config it `extends:`, and the files under each `.ironlint/scripts/`, and records it at `~/.config/ironlint/trust.json` (keyed by the config's absolute path).
 
 ```
 ironlint trust [--config <path>]
@@ -175,6 +175,22 @@ Two views, toggled with `Tab` / `→` / `←`:
 `q` / `Esc` quits. Requires an interactive terminal; in a non-TTY it exits `1`
 with a hint. Read-only: it runs no checks, writes no telemetry, and does not
 enforce trust.
+
+## `ironlint gate-bash`
+
+Reads a Bash command on stdin and decides whether it may run. Exit `0` = allow
+(empty stdout); exit `2` = block (reason on stdout). Used internally by every
+adapter's Bash branch; you don't call it by hand.
+
+Not a `check`: no config load, no trust gate, no per-check spawn. The
+bash-gate must run even when `.ironlint.yml` is missing or untrusted — that
+is exactly when the agent is most motivated to run `ironlint trust`. Any
+exit other than `0` or `2` (spawn failure, signal death) is treated by the
+adapters as fail-closed.
+
+See `docs/superpowers/specs/2026-07-06-bash-gate-self-trust-prevention-design.md`
+for the threat model and the documented known gap (variable-substitution
+indirection).
 
 ## Read-only commands
 

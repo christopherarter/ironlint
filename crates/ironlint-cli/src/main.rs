@@ -83,6 +83,7 @@ fn main() -> Result<()> {
         Command::Schema => commands::schema::run()?,
         Command::Update => commands::update::run()?,
         Command::Watch { dir } => commands::watch::run(&dir)?,
+        Command::GateBash => commands::gate_bash::run()?,
     };
     std::process::exit(code);
 }

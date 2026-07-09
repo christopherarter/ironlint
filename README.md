@@ -1,11 +1,15 @@
 <p align="center">
-  <img src="iron-lint.png" alt="IronLint" width="500" />
+  <img src="iron-lint.png" alt="IronLint" width="250" />
+</p>
+
+<p align="center">
+  <img src="ironlint-demo.gif" alt="IronLint demo" />
 </p>
 
 <h1 align="center">IronLint: Checks Your Coding Agent Can't Skip</h1>
 
 <p align="center">
-  <strong>Every edit your agent makes runs your checks first. Any nonzero exit blocks the write. The check owns the verdict — no engines, no severities, no DSL.</strong>
+  <strong>Every edit your agent makes runs your checks first. Any nonzero exit blocks the write. Fully local, built with Rust.</strong>
 </p>
 
 <p align="center">
@@ -28,7 +32,27 @@
 
 ---
 
-IronLint is local CI for AI coding agents. GitHub Actions runs your checks in the cloud after you push; IronLint runs the same kind of checks locally, on every edit your agent makes, **before the code lands — and it can refuse.** A check is a file glob plus a shell command. IronLint hands that command your proposed content on stdin and reads one thing back: the exit code. Any nonzero exit (1–125) blocks the write. No engines, no severities, no output parsing — the check owns the decision.
+IronLint is local linting tool for agentic coding harnesses. GitHub Actions runs your checks in the cloud after you push; IronLint runs the same kind of checks locally, on every edit your agent makes, **before the code lands on disk, and it can refuse.** A check is a file glob plus a shell command. IronLint hands that command your proposed content on stdin and reads one thing back: the exit code. Any nonzero exit (1–125) blocks the write. No engines, no severities, no output parsing.
+
+
+One YAML file at `.ironlint.yml` in your repo root. A map of checks; each names what to match, where it applies, and the command that decides.
+
+```yaml
+# .ironlint.yml
+checks:
+  no-console:
+    files: "**/*.ts"
+    run: "! grep -n 'console.log'"    # proposed content arrives on stdin
+
+  lint-and-format:
+    files: "src/**/*.py"
+    on: [write, pre-commit]           # write: per file; pre-commit: once, with $IRONLINT_FILES
+    steps:
+      - name: ruff
+        run: "ruff check --quiet --stdin-filename \"$IRONLINT_FILE\" -"
+      - name: no-todo
+        run: "! grep -n 'TODO' $IRONLINT_FILES"
+```
 
 New here? Start with [Getting started](docs/getting-started.md).
 
@@ -71,29 +95,6 @@ ironlint init --global             # user-level settings, not the project
 ```
 
 It also installs an `ironlint-config` authoring skill so the agent knows how to write checks; run `ironlint schema` to read the format yourself. `ironlint doctor` verifies the wiring (one row per agent); `ironlint init --uninstall --harness <name>` removes it.
-
-## Configuration
-
-One YAML file at `.ironlint.yml` in your repo root. A map of checks; each names what to match, where it applies, and the command that decides.
-
-```yaml
-# .ironlint.yml
-checks:
-  no-console:
-    files: "**/*.ts"
-    run: "! grep -n 'console.log'"    # proposed content arrives on stdin
-
-  lint-and-format:
-    files: "src/**/*.py"
-    on: [write, pre-commit]           # write: per file; pre-commit: once, with $IRONLINT_FILES
-    steps:
-      - name: ruff
-        run: "ruff check --quiet --stdin-filename \"$IRONLINT_FILE\" -"
-      - name: no-todo
-        run: "! grep -n 'TODO' $IRONLINT_FILES"
-```
-
-A check blocks by exiting nonzero (1–125) and owns its own message. There are no engines, no `severity`, no output-parsing modes.
 
 Sharing checks across repos:
 

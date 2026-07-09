@@ -62,6 +62,16 @@ fn notebook_edit_payload(path: &std::path::Path, new_source_json: &str, edit_mod
     )
 }
 
+/// A Bash PreToolUse event. `command` is the raw shell command the agent
+/// wants to run — the field the bash-gate classifies via `ironlint gate-bash`.
+fn bash_payload(command: &str) -> String {
+    serde_json::json!({
+        "tool_name": "Bash",
+        "tool_input": { "command": command },
+    })
+    .to_string()
+}
+
 #[test]
 fn write_allow_on_exit_0() {
     if !common::hook_tools_available() {
@@ -431,4 +441,148 @@ fn edit_on_non_utf8_file_blocks_with_clean_message() {
         .stderr(predicates::str::contains("UTF-8"))
         .stderr(predicates::str::contains("Traceback").not())
         .stderr(predicates::str::contains("UnicodeDecodeError").not());
+}
+
+/// After the gates→scripts rename, writes to files under .ironlint/scripts/
+/// short-circuit the gate exactly like .ironlint.yml edits — a mid-edit
+/// policy script's on-disk bytes won't match the trusted hash, so checking
+/// it would surface a misleading "internal error". The short-circuit must
+/// be PATH-ANCHORED so src/.ironlint/scripts/foo.sh (not the policy surface)
+/// is NOT matched.
+#[test]
+fn write_to_scripts_dir_short_circuits_without_check() {
+    if !common::hook_tools_available() {
+        eprintln!("skipping: jq/python3 not available on this machine");
+        return;
+    }
+    let fx = HookFixture::new(HOOK);
+    let capture = fx.file("captured_stdin.txt");
+    fx.stub_capturing(0, "", &capture);
+    // Canonicalize so the absolute path in the event matches the hook's
+    // PROJECT_ROOT (on macOS $(pwd) resolves /var/folders -> /private/var/folders).
+    let project = std::fs::canonicalize(fx.project.path()).unwrap();
+    let file = project.join(".ironlint/scripts/lint.sh");
+    fx.run("PreToolUse", &write_payload(&file), &[])
+        .success()
+        .code(0);
+    assert!(
+        !capture.exists(),
+        "hook must short-circuit — ironlint check was invoked (capture file exists)"
+    );
+}
+
+/// Path-anchor sanity check: a file at src/.ironlint/scripts/foo.sh is NOT
+/// the project's policy surface, so it must be gated normally (the stub
+/// capturing path proves ironlint WAS invoked).
+#[test]
+fn write_to_nested_scripts_dir_is_gated() {
+    if !common::hook_tools_available() {
+        eprintln!("skipping: jq/python3 not available on this machine");
+        return;
+    }
+    let fx = HookFixture::new(HOOK);
+    let capture = fx.file("captured_stdin.txt");
+    fx.stub_capturing(0, "", &capture);
+    let project = std::fs::canonicalize(fx.project.path()).unwrap();
+    let file = project.join("src/.ironlint/scripts/lint.sh");
+    fx.run("PreToolUse", &write_payload(&file), &[])
+        .success()
+        .code(0);
+    assert!(
+        capture.exists(),
+        "nested src/.ironlint/scripts/foo.sh must NOT short-circuit — it is not the policy surface"
+    );
+}
+
+// --- Bash branch (bash-gate self-trust prevention) ---------------------------
+//
+// The `Bash)` arm runs BEFORE FILE extraction (a Bash event has no
+// file_path; the empty-FILE early-exit would silently allow it). A substring
+// pre-filter (ironlint | .ironlint) skips the spawn for ordinary commands;
+// on a hit, the hook pipes `tool_input.command` to `ironlint gate-bash` and
+// translates exit 0 → allow, exit 2 → block, anything else → fail-closed.
+
+/// `ls` never mentions ironlint → the pre-filter skips the spawn entirely. The
+/// stub is a TRAP: it exits 2, so if the hook wrongly spawned, this would
+/// block. Allow (exit 0) proves the pre-filter short-circuit.
+#[test]
+fn bash_allows_benign_command() {
+    if !common::hook_tools_available() {
+        eprintln!("skipping: jq/python3 not available");
+        return;
+    }
+    let fx = HookFixture::new(HOOK);
+    fx.stub(2, "stub should not be called");
+    let _ = fx.file("foo.py"); // ensure the project exists
+    fx.run("PreToolUse", &bash_payload("ls"), &[])
+        .success()
+        .code(0);
+}
+
+/// `ironlint trust` hits the pre-filter and the stubbed gate-bash exits 2 with
+/// the reason → the hook must deny (exit 2) and surface the reason on stderr.
+#[test]
+fn bash_blocks_ironlint_trust() {
+    if !common::hook_tools_available() {
+        eprintln!("skipping: jq/python3 not available");
+        return;
+    }
+    let fx = HookFixture::new(HOOK);
+    fx.stub(2, "ironlint trust must be run by a human");
+    fx.run("PreToolUse", &bash_payload("ironlint trust"), &[])
+        .failure()
+        .code(2)
+        .stderr(predicates::str::contains(
+            "ironlint trust must be run by a human",
+        ));
+}
+
+/// A Bash redirect onto `.ironlint.yml` hits the pre-filter (`.ironlint`) and
+/// the stubbed gate-bash exits 2 → block (exit 2).
+#[test]
+fn bash_blocks_redirect_to_ironlint_yml() {
+    if !common::hook_tools_available() {
+        eprintln!("skipping: jq/python3 not available");
+        return;
+    }
+    let fx = HookFixture::new(HOOK);
+    fx.stub(2, "policy files must be edited through the Write/Edit tool");
+    fx.run("PreToolUse", &bash_payload("echo x > .ironlint.yml"), &[])
+        .failure()
+        .code(2);
+}
+
+/// If `ironlint` is not on PATH (no stub, not installed), the spawn fails. The
+/// hook must fail CLOSED (exit 2) — a broken deny check is never a silent allow.
+#[test]
+fn bash_fails_closed_when_ironlint_missing() {
+    if !common::hook_tools_available() {
+        eprintln!("skipping: jq/python3 not available");
+        return;
+    }
+    let fx = HookFixture::new(HOOK);
+    // No stub → ironlint not on PATH → spawn fails.
+    fx.run("PreToolUse", &bash_payload("ironlint trust"), &[])
+        .failure()
+        .code(2);
+}
+
+/// End-to-end against the REAL `ironlint gate-bash` (not the stub): proves the
+/// hook actually pipes `tool_input.command` to the real subcommand and the real
+/// matcher blocks `ironlint trust`. The stub tests above prove the hook's
+/// exit-code translation; this one proves the integration wiring.
+#[test]
+fn bash_blocks_ironlint_trust_with_real_binary() {
+    if !common::hook_tools_available() {
+        eprintln!("skipping: jq/python3 not available");
+        return;
+    }
+    let ironlint = assert_cmd::cargo::cargo_bin("ironlint");
+    let fx = common::RealBinFixture::new(HOOK, &ironlint);
+    fx.run("PreToolUse", &bash_payload("ironlint trust"), &[])
+        .failure()
+        .code(2)
+        .stderr(predicates::str::contains(
+            "ironlint trust must be run by a human",
+        ));
 }

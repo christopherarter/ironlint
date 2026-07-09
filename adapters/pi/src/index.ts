@@ -4,7 +4,7 @@
 
 import { spawnSync } from "node:child_process"
 import { existsSync, readFileSync } from "node:fs"
-import { basename, join } from "node:path"
+import { basename, isAbsolute, join, sep } from "node:path"
 
 /** The shape of the input payload pi passes for `write` / `edit` tool calls. */
 export type PiToolInput = {
@@ -18,6 +18,8 @@ export type PiToolInput = {
   // edit tool: legacy single-edit form, normalized by pi into edits[].
   oldText?: string
   newText?: string
+  // bash tool: the raw shell command the agent wants to run.
+  command?: string
 }
 
 type Edit = { oldText: string; newText: string }
@@ -97,18 +99,28 @@ export function computeProposedContent(
   return null
 }
 
-// pi tools we gate. `bash` is intentionally not gated (shell redirections
-// like `cat > foo` are too brittle to parse — universal adapter gap).
-const GATED_TOOLS = new Set(["write", "edit"])
+// pi tools we gate. `bash` is gated by the bash-gate branch below, which
+// shells out to `ironlint gate-bash` (the shared Rust matcher) — closing the
+// "shell redirections are too brittle to parse" gap that previously kept bash
+// ungated. See
+// docs/superpowers/specs/2026-07-06-bash-gate-self-trust-prevention-design.md.
+const GATED_TOOLS = new Set(["write", "edit", "bash"])
 
-// R3: filenames ironlint treats as policy files. Edits to these short-circuit
-// the gate — checking a mid-edit policy file fails the trust gate (sha
-// mismatch) and surfaces a confusing internal error.
+// R3: the policy surface. The config file (`.ironlint.yml` / `.bully.yml`,
+// matched by basename so it works for relative and absolute paths) AND every
+// file under `.ironlint/scripts/` (path-anchored to the project root so a
+// stray `src/.ironlint/scripts/foo.sh` is NOT matched). Edits to these
+// short-circuit the gate — checking a mid-edit policy file/script fails the
+// trust gate (sha mismatch) and surfaces a confusing internal error.
 const POLICY_FILES = new Set([".ironlint.yml", ".bully.yml"])
 
-/** R3: basename match covers both relative and absolute paths. */
-export function isPolicyFile(filePath: string): boolean {
-  return POLICY_FILES.has(basename(filePath))
+/** R3: basename match for the config file + path-anchored match for the
+ *  `.ironlint/scripts/` directory. `projectRoot` anchors the scripts check. */
+export function isPolicyFile(filePath: string, projectRoot: string): boolean {
+  if (POLICY_FILES.has(basename(filePath))) return true
+  const abs = isAbsolute(filePath) ? filePath : join(projectRoot, filePath)
+  const scriptsDir = join(projectRoot, ".ironlint", "scripts") + sep
+  return abs === scriptsDir.slice(0, -1) || abs.startsWith(scriptsDir)
 }
 
 /** pi uses `path`; `file_path` is tolerated as an alias. */
@@ -203,15 +215,42 @@ export default function ironlintExtension(pi: PiExtensionAPI): void {
   const configPath = join(projectRoot, ".ironlint.yml")
 
   pi.on("tool_call", (event: ToolCallEvent) => {
-    // Late existence check: the extension may load before `ironlint init`.
-    // Re-checking here means mid-session init starts gating with no restart.
-    if (!existsSync(configPath)) return
     const toolName = event?.toolName
     if (!toolName || !GATED_TOOLS.has(toolName)) return
     const input = event?.input ?? {}
+
+    // Bash branch: the bash-gate. Runs BEFORE the config-existence check —
+    // the bash-gate must fire even with no .ironlint.yml, since that's exactly
+    // when an agent is most motivated to run `ironlint trust`. Decides whether
+    // the command would let the agent free itself (`ironlint trust`, or a Bash
+    // write to `.ironlint.yml` / `.ironlint/scripts/`). The deny logic lives in
+    // `ironlint gate-bash` — the single source shared across every adapter.
+    if (toolName === "bash") {
+      const command = typeof input.command === "string" ? input.command : ""
+      // Substring pre-filter: ordinary commands (ls, git, cargo) never mention
+      // ironlint or .ironlint, so skip the spawn entirely — they pay nothing.
+      if (!command.includes("ironlint") && !command.includes(".ironlint")) return
+      const res = runIronLint(["gate-bash"], command)
+      if (res.exitCode === 0) return // allow
+      if (res.exitCode === 2) {
+        return { block: true, reason: res.stdout || "ironlint blocked this bash command" }
+      }
+      // Spawn failure (exitCode -1, signal death) / unexpected exit → fail
+      // CLOSED. The deny check is the thing being protected; a broken deny
+      // check is never a silent allow. Do NOT reuse failOpenOrClosed — that's
+      // the opposite posture (the file-gate fail-opens on internal errors).
+      return {
+        block: true,
+        reason: `ironlint: bash-gate failed (exit ${res.exitCode}) — fail-closed`,
+      }
+    }
+
+    // Late existence check: the extension may load before `ironlint init`.
+    // Re-checking here means mid-session init starts gating with no restart.
+    if (!existsSync(configPath)) return
     const filePath = getPath(input)
     if (!filePath) return
-    if (isPolicyFile(filePath)) return // R3 self-edit short-circuit
+    if (isPolicyFile(filePath, projectRoot)) return // R3 self-edit short-circuit
 
     const proposed = computeProposedContent(toolName, filePath, input)
     if (proposed === null) return // can't faithfully simulate — skip the gate

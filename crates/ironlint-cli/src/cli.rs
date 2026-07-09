@@ -70,7 +70,7 @@ pub enum Command {
         #[arg(long, default_value_t = false)]
         require_match: bool,
     },
-    /// Bless this config + its `.ironlint/gates/` scripts in the out-of-repo trust store.
+    /// Bless this config + its `.ironlint/scripts/` scripts in the out-of-repo trust store.
     Trust {
         #[arg(long, default_value = ".ironlint.yml")]
         config: PathBuf,
@@ -162,6 +162,10 @@ pub enum Command {
         #[arg(long, default_value = ".")]
         dir: PathBuf,
     },
+    /// Decide whether a Bash command may run. Reads the command on stdin.
+    /// Exit 0 = allow (empty stdout); exit 2 = block (reason on stdout).
+    /// Not a check, not trust-gated; works with no .ironlint.yml present.
+    GateBash,
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]

@@ -66,7 +66,7 @@ flowchart LR
 - **Policy lives with the code.** The `.ironlint.yml` travels with the repo, so every agent runs the same checks.
 - **Adapters are thin.** Claude Code, OpenCode, Codex, pi, and future adapters capture host edit events and consume IronLint's verdict over a stable ABI. Codex is the one adapter that doesn't block via exit code: its `PreToolUse` hook gates `apply_patch` calls and turns a block into a `permissionDecision:"deny"` JSON object on stdout, writing its hook registration to `~/.codex/hooks.json` (or the project-scoped `.codex/hooks.json`). No policy logic lives in the adapter.
 - **One execution model.** IronLint matches the edited file to checks and runs each check's `run` command, reading only the exit code. There are no engines and no severities — a check blocks on any nonzero exit (1–125) and owns its own message.
-- **Trust comes before power.** A check runs shell, so IronLint refuses to run a config whose bytes — and its `.ironlint/gates/` scripts — aren't blessed in the out-of-repo trust store.
+- **Trust comes before power.** A check runs shell, so IronLint refuses to run a config whose bytes — and its `.ironlint/scripts/` scripts — aren't blessed in the out-of-repo trust store.
 - **The verdict is machine-readable.** `pass`, `block`, and `internal_error` map to stable exit codes that agents and CI act on. A per-edit check blocks immediately, so the agent retries before the change lands.
 - **The system improves over time.** Telemetry records what ran, what blocked, and how long it took, so you can see which checks are noisy, valuable, or dead.
 

@@ -1,4 +1,4 @@
-//! CLI integration tests for `ironlint doctor` (gates model).
+//! CLI integration tests for `ironlint doctor` (scripts model).
 //!
 //! Each test isolates the adapter environment by pointing `HOME` and
 //! `XDG_CONFIG_HOME` at tempdirs, so the per-harness adapter checks observe a
@@ -300,7 +300,11 @@ fn doctor_json_output_is_valid_for_clean_gates_config() {
     // Clean machine → the seven always-present core rows (no adapter rows,
     // since nothing is detected/installed): binary, config, parses,
     // check_scripts, shell, trust (warn: unblessed), hooks (warn: none wired).
-    assert_eq!(checks.len(), 7, "gates model doctor has 7 core checks: {v}");
+    assert_eq!(
+        checks.len(),
+        7,
+        "scripts model doctor has 7 core checks: {v}"
+    );
     // Each check has name, status, detail.
     for c in checks {
         assert!(c.get("name").is_some());

@@ -38,6 +38,43 @@ pub fn repo_path(rel: &str) -> PathBuf {
         .join(rel)
 }
 
+/// Build a controlled minimal `PATH` for a hook-contract test: `stub_dir`
+/// first, then only the directories that hold the system tools the hook shells
+/// out to (`bash`, `jq`, `python3`, `cat`, `mktemp`, `printf`, `rm`, `sed`).
+///
+/// Directories are resolved from the ambient `PATH`, deduped, and **any dir that
+/// also contains an `ironlint` binary is skipped** — so the stub is the sole
+/// source of `ironlint`. This is what makes "no stub → ironlint not on PATH"
+/// truthful: prepending to the ambient `PATH` (the old approach) let a real
+/// `ironlint` on the contributor's machine (e.g. `~/.cargo/bin/ironlint`)
+/// leak through and turn a missing-binary test into a real-binary test.
+fn isolated_path(stub_dir: &Path) -> String {
+    let tools = [
+        "bash", "jq", "python3", "cat", "mktemp", "printf", "rm", "sed",
+    ];
+    let mut dirs: Vec<PathBuf> = vec![stub_dir.to_path_buf()];
+    let ambient = std::env::var("PATH").unwrap_or_default();
+    for dir in ambient.split(':').map(PathBuf::from) {
+        if dirs.contains(&dir) {
+            continue;
+        }
+        // Skip any dir that carries a real `ironlint` — the stub must be the
+        // only `ironlint` on the test's PATH.
+        if dir.join("ironlint").exists() {
+            continue;
+        }
+        // Only add the dir if it actually holds one of the tools the hook needs;
+        // this keeps the PATH minimal and deterministic.
+        if tools.iter().any(|t| dir.join(t).exists()) {
+            dirs.push(dir);
+        }
+    }
+    dirs.iter()
+        .map(|d| d.display().to_string())
+        .collect::<Vec<_>>()
+        .join(":")
+}
+
 /// Write a stub `ironlint` executable into `dir` that drains stdin, ignores
 /// whatever CLI args the hook passes (`check --file … --content - --config …
 /// --format json`), writes `stdout` to stdout verbatim, and exits `code`.
@@ -154,6 +191,82 @@ impl HookFixture {
 
     /// Spawn `bash <hook_script> <hook_arg>` against this fixture's isolated
     /// project/PATH/HOME/XDG_CONFIG_HOME, with `stdin` written then closed.
+    ///
+    /// PATH is a **controlled minimal** set: the stub dir first, then only the
+    /// system dirs that actually hold the binaries the hook shells out to
+    /// (`bash`, `jq`, `python3`, `cat`, `mktemp`, `printf`, `rm`, `sed`). It is
+    /// deliberately NOT `stub_dir:$PATH` — prepending to the ambient PATH leaks
+    /// any real `ironlint` on the contributor's machine (e.g. `~/.cargo/bin`)
+    /// through to the hook, so the "no stub → ironlint not on PATH" tests
+    /// (`bash_fails_closed_when_ironlint_missing`) silently ran the real
+    /// `gate-bash` instead of simulating a missing binary. Resolving each tool's
+    /// directory from the ambient PATH (and never adding an `ironlint`-bearing
+    /// dir) keeps the stub as the sole source of `ironlint`.
+    pub fn run(
+        &self,
+        hook_arg: &str,
+        stdin: &str,
+        extra_env: &[(&str, &str)],
+    ) -> assert_cmd::assert::Assert {
+        let path = isolated_path(self.stub_dir.path());
+        let mut cmd = Command::new("bash");
+        cmd.arg(&self.hook_script)
+            .arg(hook_arg)
+            .current_dir(self.project.path())
+            .env("PATH", path)
+            .env("HOME", self.home.path())
+            .env("XDG_CONFIG_HOME", self.xdg.path())
+            .env_remove("IRONLINT_FAIL_CLOSED_ON_INTERNAL");
+        for (k, v) in extra_env {
+            cmd.env(k, v);
+        }
+        cmd.write_stdin(stdin).assert()
+    }
+}
+
+/// A fixture that puts the REAL `ironlint` binary (built by `cargo test`) on
+/// PATH instead of a stub — for end-to-end tests that must exercise the actual
+/// subcommand the hook shells out to (e.g. `ironlint gate-bash`). Same isolated
+/// project/HOME/XDG_CONFIG_HOME guarantees as [`HookFixture`]; the only
+/// difference is `ironlint` resolves to `bin_dir` (the cargo-built binary's
+/// parent) rather than a stub.
+#[cfg(unix)]
+pub struct RealBinFixture {
+    pub project: TempDir,
+    bin_dir: PathBuf,
+    home: TempDir,
+    xdg: TempDir,
+    hook_script: PathBuf,
+}
+
+#[cfg(unix)]
+impl RealBinFixture {
+    /// `hook_script` is the repo-root-relative path to the adapter's hook;
+    /// `ironlint_bin` is the path returned by `assert_cmd::cargo::cargo_bin`.
+    #[must_use]
+    pub fn new(hook_script: &str, ironlint_bin: &Path) -> Self {
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(
+            project.path().join(".ironlint.yml"),
+            "checks:\n  g:\n    files: \"*.py\"\n    run: \"exit 0\"\n",
+        )
+        .unwrap();
+        Self {
+            project,
+            bin_dir: ironlint_bin.parent().unwrap().to_path_buf(),
+            home: tempfile::tempdir().unwrap(),
+            xdg: tempfile::tempdir().unwrap(),
+            hook_script: repo_path(hook_script),
+        }
+    }
+
+    /// Absolute path to `name` inside the project dir.
+    #[must_use]
+    pub fn file(&self, name: &str) -> PathBuf {
+        self.project.path().join(name)
+    }
+
+    /// Spawn `bash <hook_script> <hook_arg>` with the real `ironlint` on PATH.
     pub fn run(
         &self,
         hook_arg: &str,
@@ -162,7 +275,7 @@ impl HookFixture {
     ) -> assert_cmd::assert::Assert {
         let path = format!(
             "{}:{}",
-            self.stub_dir.path().display(),
+            self.bin_dir.display(),
             std::env::var("PATH").unwrap_or_default()
         );
         let mut cmd = Command::new("bash");

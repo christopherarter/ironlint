@@ -85,6 +85,21 @@ If you raise `execution.timeout_secs` above the default, re-run `ironlint init
 --harness codex` so the regenerated `hooks.json` entry keeps enough headroom
 (or hand-edit `timeout` in `hooks.json` to at least `4 × timeout_secs`).
 
+## Bash gate
+
+In addition to file edits, this adapter gates `Bash` (codex's shell tool —
+`tool_name:"Bash"`, command in `tool_input.command`). Commands that would let
+the agent free itself — `ironlint trust`, or a Bash write to `.ironlint.yml` /
+`.ironlint/scripts/` — are denied (via the deny-JSON/exit-0 contract above).
+Ordinary commands are not slowed: a substring pre-filter skips the decision
+entirely for commands that never mention `ironlint` or `.ironlint`. The deny
+decision is shared across every adapter via `ironlint gate-bash`. The branch
+runs before the config-existence check, so it fires even in a project with no
+`.ironlint.yml`. See
+`docs/superpowers/specs/2026-07-06-bash-gate-self-trust-prevention-design.md`
+for the threat model and the documented known gap (variable-substitution
+indirection).
+
 ## Guardrail, not a hard boundary
 
 Codex's own documentation describes `PreToolUse` as something a model "can
@@ -92,9 +107,10 @@ often" route around through another supported tool path — shell interception
 via `unified_exec` is incomplete, so a determined model can reach the
 filesystem through a path this hook never sees. That's a property of Codex's
 hook design, not a gap in this adapter: the gate covers everything Codex
-routes through `apply_patch` (what `Edit`/`Write`-shaped file edits use), but
-it is a weaker enforcement boundary than the claude-code adapter gives you.
-Treat it as a strong guardrail, not a guarantee.
+routes through `apply_patch` (what `Edit`/`Write`-shaped file edits use) and
+the `Bash` tool the bash-gate intercepts, but it is a weaker enforcement
+boundary than the claude-code adapter gives you. Treat it as a strong
+guardrail, not a guarantee.
 
 ## Manual fallback
 

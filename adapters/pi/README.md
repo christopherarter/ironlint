@@ -103,9 +103,22 @@ The extension honours the `ironlint` CLI exit-code contract
 | `3` (internal error) | Fail-open (log + allow) by default; set `IRONLINT_FAIL_CLOSED_ON_INTERNAL=1` to fail closed (block). |
 | `1` / other (config error, incl. untrusted or modified config) | Log to stderr, allow. |
 
+## Bash gate
+
+In addition to file edits, this adapter gates `bash` (the agent's shell tool).
+Commands that would let the agent free itself — `ironlint trust`, or a Bash
+write to `.ironlint.yml` / `.ironlint/scripts/` — are denied. Ordinary commands
+are not slowed: a substring pre-filter skips the decision entirely for commands
+that never mention `ironlint` or `.ironlint`. The deny decision is shared across
+every adapter via `ironlint gate-bash`. The branch runs before the
+config-existence check, so it fires even in a project with no `.ironlint.yml` —
+exactly when the agent is most motivated to self-trust. See
+`docs/superpowers/specs/2026-07-06-bash-gate-self-trust-prevention-design.md`
+for the threat model and the documented known gap (variable-substitution
+indirection).
+
 ## Known gaps (v1)
 
-- **`bash`-tool shell-out** (`cat > foo`, redirections) bypasses the check — universal across all adapters; arbitrary commands are too brittle to parse.
 - **`edit` fuzzy-match fallback** can't be faithfully simulated, so those edits skip the check (fail-open on simulate-failure). Exact + unique `oldText` edits check normally.
 - **Checks that read the file from disk** (via `$IRONLINT_FILE`) see the *pre-edit* content; only the proposed post-edit content piped on **stdin** reflects the pending change. `ironlint-disable` directives carried in that proposed content are honoured.
 - **pi subagents** are not specially handled (deferred).

@@ -4,6 +4,177 @@ Notable changes to IronLint, newest first. In-flight work lives in `plans/`.
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-07-09 — Rename `.ironlint/gates/` → `.ironlint/scripts/`
+
+The policy-script vocabulary now matches user intuition: **checks** are
+configured in `.ironlint.yml`, **scripts** live under `.ironlint/scripts/`,
+and both are covered by `ironlint trust`. The word "gates" was overloaded —
+the old `gates:` config key, the bash-gate feature, *and* the policy
+directory — so the directory is renamed and the overlapping "referenced
+scripts anywhere in the repo" category is removed. This is a **breaking
+change**: existing projects must move scripts to `.ironlint/scripts/` and
+re-run `ironlint trust`.
+
+### Breaking
+
+- **`.ironlint/gates/` is retired.** Move scripts to `.ironlint/scripts/` and
+  re-run `ironlint trust`. There is no migration path and no backward-compat
+  shim — no install base exists.
+- **Referenced scripts outside `.ironlint/scripts/` are no longer hashed.** A
+  script referenced by a check's `run:`/`steps[].run` but located elsewhere in
+  the repo is no longer folded into the trust hash, so editing it does not
+  revoke trust. This is a deliberate simplification: if a script is part of
+  the policy surface, it belongs in `.ironlint/scripts/`. It also makes the
+  trust hash surface equal to the bash-gate enforcement surface (both =
+  `.ironlint/scripts/`) — the bash-gate cannot defend an arbitrary out-of-dir
+  script from agent tampering, so the hash must not pretend to cover it.
+
+### Changed
+
+- **`ironlint trust` summary** now renders `checks: N` and `scripts: N` (with
+  per-script names), replacing the old `gates:` list. The scripts block is
+  always shown, even at zero.
+- **`ironlint doctor`** checks scripts under `.ironlint/scripts/` for
+  existence and executability (was `.ironlint/gates/`).
+- **`ironlint gate-bash`** blocks Bash writes to `.ironlint/scripts/` (was
+  `.ironlint/gates/`); the legacy path is now allowed.
+- **Adapter hooks** (claude-code, codex, pi, opencode) short-circuit edits to
+  `.ironlint/scripts/` path-anchored to the project root — matching
+  `src/.ironlint/scripts/` is correctly *gated*, not short-circuited (a
+  basename match would be a bug).
+
+### Fixed
+
+- Stale "gates" terminology swept across docs, adapter READMEs, and test
+  files. A pinning test (`out_of_dir_referenced_script_is_absent_from_summary`)
+  now guards the dropped referenced-scripts fold against silent re-addition.
+
+## [0.9.2] — 2026-07-07 — Bash gate: close `sh -c` and bare `VAR=val` bypasses
+
+Two adjacent bash-gate bypasses found during v0.9.1 release review are now
+closed. Both let a lazy non-reasoning model run `ironlint trust` through its
+Bash tool despite the matcher. A code review of the v0.9.2 fixes surfaced a
+third symmetric form — `dash -c` (and `ash`/`zsh`/`ksh -c`) — which is the
+same `-c <command-string>` shape as `sh -c`; the descent now recognizes all
+six common shells rather than just `sh`/`bash`.
+
+### Fixed
+
+- **`sh -c 'ironlint trust'` / `bash -c "ironlint trust"`** (and `dash`/`ash`/
+  `zsh`/`ksh -c`) — the matcher's `normalize` step strips quotes from the whole
+  string, so the gate was analyzing a *different* command than the shell
+  executes (it saw `sh -c ironlint trust`, where sh runs only `ironlint` and
+  `trust` becomes `$0`). `strip_wrappers` now recognizes the common
+  `-c <command-string>` shells (`sh`, `bash`, `dash` — which IS `/bin/sh` on
+  Debian/Ubuntu, `ash` — the BusyBox sh in Alpine/containers, `zsh`, `ksh`)
+  and, when followed by `-c`, descends into the command-string argument tokens
+  and re-checks them (mirroring how `eval`/`exec` unwrap to their argument).
+  Without `-c` (`sh script.sh`) the wrapper does not descend — that's the
+  documented script-file indirection gap (adversarial tier, out of scope).
+  **HIGH realism for a lazy model.**
+- **Bare `VAR=val ironlint trust`** (env-var prefix without `env`) — the
+  `env VAR=val ironlint trust` form was already caught, but the semantically
+  equivalent bare prefix (`IRONLINT_ROOT=/x ironlint trust`) was not. The
+  wrapper fall-through now recognizes a leading `VAR=val` assignment via a new
+  shared `is_assignment` helper (a strict shell-identifier check — letters/
+  digits/underscore, not digit-leading — so a leading `--config=x.yml` flag is
+  NOT over-skipped) and strips it one token at a time, so multiple leading
+  assignments (`FOO=bar BAZ=qux ironlint trust`) all strip. **MEDIUM-HIGH
+  realism.**
+- Added sibling-token regression pins for `and`/newline/comma forms
+  (`ironlint check and ironlint trust`, etc.) — caught today by the
+  every-binary scan but previously unpinned. Added `is_assignment` predicate
+  pins (underscore-leading blocks; digit-leading allows) that kill two new
+  mutation survivors.
+
+### Changed
+
+- `skip_assignments` now uses the strict `is_assignment` helper instead of a
+  bare `.contains('=')` — the stricter check is consistent with the new
+  bare-prefix arm and does not regress the existing `env VAR=val` tests.
+
+### Known gaps
+
+- **`VAR+=val ironlint trust`** (append-assignment prefix) — **not blocked in
+  0.9.2.** `+=` is a valid bash append-assignment exported to the command's
+  env, semantically identical to `VAR=val` for running `ironlint trust`, but
+  `is_assignment`'s strict shell-identifier check rejects the `+` in the name
+  part. **LOWER realism** — `+=` is a specific append idiom, not the obvious
+  set form a lazy model reaches for first. Documented as a conscious decision
+  rather than an accident; expanding the assignment grammar is scope creep for
+  a marginal form. See
+  `docs/superpowers/specs/2026-07-06-bash-gate-self-trust-prevention-design.md`.
+
+## [0.9.1] — 2026-07-07 — Bash gate: self-trust prevention
+
+Every adapter now gates the agent's Bash tool, closing the escape hatch where an
+agent could free itself from ironlint by running `ironlint trust` or writing the
+policy surface (`.ironlint.yml`, `.ironlint/gates/`) through Bash redirections.
+
+### Added
+
+- **`ironlint gate-bash`** — a pure-Rust Bash-command classifier (new
+  `ironlint-bash-gate` crate). It is not a `check` and not trust-gated; it runs
+  even with no `.ironlint.yml` present — exactly when an agent is most motivated
+  to self-trust. Exit contract: `0` = allow (empty stdout), `2` = block (reason
+  on stdout); any other exit (spawn failure, signal) is treated as fail-closed
+  by the adapters.
+- **Bash branches in all four adapters** (claude-code, codex, pi, opencode).
+  Each adapter's Bash branch shells out to `ironlint gate-bash` with the command
+  on stdin, *before* the config-existence check, so the gate fires in
+  config-less projects too.
+- **Blocked commands** (the matcher denies these):
+  - `ironlint trust` — including de-obfuscated forms: prefix wrappers
+    (`nohup`, `env`, `exec`, `eval`, `timeout`), full/relative paths
+    (`/usr/local/bin/ironlint trust`, `./ironlint trust`), global flags before
+    the subcommand (`ironlint -v trust`), chained commands (`ironlint check ||
+    ironlint trust`, `&&`/`;`/`|`), `or`-confusion (`ironlint check or
+    ironlint trust` — `or` is not a shell operator so sh runs `ironlint trust`
+    anyway; the matcher checks every `ironlint` binary in the segment, catching
+    the second invocation), and subshell/brace grouping
+    (`(ironlint trust)`, `{ ironlint trust; }`).
+  - **Bash writes to the policy surface** — redirects (`echo x>.ironlint.yml`,
+    `>>`, the `>|` clobber), `tee`, `sed -i`, `ed`, `cp`/`mv`/`install`/`rsync`
+    onto `.ironlint.yml` or `.ironlint/gates/`, `dd of=`, and `sponge`. The
+    Write/Edit path to those files stays open (it is already gated); this closes
+    the *ungated* Bash escape.
+
+### Known gaps
+
+- **Variable-substitution indirection** — `iron$(echo lint) trust`,
+  `IRON=ironlint; $IRON trust`, `base64 -d | sh`, or invoking through a script
+  file (`bash scripts/x.sh` where `x.sh` runs `ironlint trust`) is **not
+  blocked**. Catching it requires real shell evaluation, which crosses into the
+  adversarial tier this gate explicitly scopes out. The threat tier is "lazy
+  non-reasoning models"; the honest contract is pinning both what it catches and
+  what it doesn't. See
+  `docs/superpowers/specs/2026-07-06-bash-gate-self-trust-prevention-design.md`.
+- **`sh -c 'ironlint trust'` / `bash -c 'ironlint trust'`** — **not blocked in
+  0.9.1.** The matcher's `normalize` step strips quotes from the whole string,
+  so the gate analyzes a *different* command than the shell executes (it sees
+  `sh -c ironlint trust`, where sh runs only `ironlint`, instead of the quoted
+  form where sh runs `ironlint trust`). The literal string `ironlint trust` is
+  present in the command but the wrapper-descent into `sh -c`/`bash -c`'s command
+  argument is not yet implemented. **HIGH realism for a lazy model.** Closed in
+  0.9.2.
+- **Bare `VAR=val ironlint trust`** (env-var prefix without `env`) — **not
+  blocked in 0.9.1.** The `env VAR=val ironlint trust` form IS caught (the `env`
+  wrapper is recognized and `VAR=val` assignments skipped), but the semantically
+  equivalent bare prefix (`IRONLINT_ROOT=/x ironlint trust`) is not. **MEDIUM-HIGH
+  realism.** Closed in 0.9.2.
+
+### Changed
+
+- **`.ironlint.yml` self-check coverage expanded** from 3 macro-ban checks to 6:
+  the `todo!`/`unimplemented!`/`dbg!` bans consolidated into one `steps`-based
+  check, plus a banned-jargon-in-markdown check, `rustfmt-on-write`,
+  `no-trailing-whitespace`, `final-newline`, and `rust-pre-commit`
+  (`on: [pre-commit]`: clippy + unit tests). The trust hash changed and was
+  re-blessed.
+- **`.gitignore`** now excludes machine-local agent install state and tool
+  caches (`.pi/`, `.opencode/`, `.agents/`, `.codegraph/`, `.understand-anything/`)
+  created by `ironlint init` or local tools.
+
 ## [0.8.2] — 2026-07-05 — Watch live-tail motion
 
 ### Added

@@ -38,7 +38,7 @@ IronLint runs the commands in your config, so it refuses to run a config it hasn
 ironlint trust
 ```
 
-This records a hash of the config and its `.ironlint/gates/` scripts in `~/.config/ironlint/trust.json`. Any later edit to either invalidates the hash, and `ironlint check` refuses to run until you re-bless. See [The trust store](security/trust.md) for why.
+This records a hash of the config and its `.ironlint/scripts/` scripts in `~/.config/ironlint/trust.json`. Any later edit to either invalidates the hash, and `ironlint check` refuses to run until you re-bless. See [The trust store](security/trust.md) for why.
 
 ## Run a check
 

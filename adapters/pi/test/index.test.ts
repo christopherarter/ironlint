@@ -1,6 +1,6 @@
-import { test, after } from "node:test"
+import { test, describe, it, after } from "node:test"
 import assert from "node:assert/strict"
-import { normalizeEdits, blockReason } from "../src/index.ts"
+import { normalizeEdits, blockReason, isPolicyFile } from "../src/index.ts"
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, chmodSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, delimiter } from "node:path"
@@ -72,6 +72,30 @@ test("blockReason: a non-string message is filtered out, not coerced", () => {
   // Guards the `typeof m === "string"` predicate: a malformed verdict must not
   // surface `42` (or `"undefined"`) as the reason — it falls back instead.
   assert.equal(blockReason(JSON.stringify({ blocks: [{ message: 42 }] })), "policy violation")
+})
+
+// --- isPolicyFile (gates→scripts) ----------------------------------------
+
+describe("isPolicyFile (gates→scripts)", () => {
+  const root = "/proj"
+
+  it("matches the config file by basename", () => {
+    assert.equal(isPolicyFile("/proj/.ironlint.yml", root), true)
+    assert.equal(isPolicyFile(".ironlint.yml", root), true)
+  })
+
+  it("matches files under .ironlint/scripts/ anchored to project root", () => {
+    assert.equal(isPolicyFile("/proj/.ironlint/scripts/lint.sh", root), true)
+    assert.equal(isPolicyFile("/proj/.ironlint/scripts/sub/x.sh", root), true)
+  })
+
+  it("does NOT match a .ironlint/scripts/ path outside the project root", () => {
+    assert.equal(isPolicyFile("/proj/src/.ironlint/scripts/foo.sh", root), false)
+  })
+
+  it("does NOT match a legacy .ironlint/gates/ path (renamed away)", () => {
+    assert.equal(isPolicyFile("/proj/.ironlint/gates/lint.sh", root), false)
+  })
 })
 
 // --- computeProposedContent -----------------------------------------------
@@ -349,7 +373,7 @@ test("tool_call: edit with unmatched oldText skips the gate (no false block)", (
   }
 })
 
-test("tool_call: non-gated tools (read, bash) are ignored", () => {
+test("tool_call: non-gated tools (read) are ignored", () => {
   const dir = makeProject()
   try {
     const handlers = loadExtension(dir)
@@ -357,12 +381,99 @@ test("tool_call: non-gated tools (read, bash) are ignored", () => {
       handlers.tool_call!({ toolName: "read", input: { path: "anything" } }, {}),
       undefined,
     )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// --- tool_call: bash branch (bash-gate self-trust prevention) ---------------
+// `bash` is now gated by the bash-gate branch, which shells out to
+// `ironlint gate-bash` (the shared Rust matcher). It runs BEFORE the
+// config-existence check — the bash-gate must fire even with no .ironlint.yml,
+// since that's exactly when an agent is most motivated to run `ironlint trust`.
+// Block contract: return { block: true, reason } (same as the write/edit path).
+
+test("tool_call: bash 'ironlint trust' blocks", () => {
+  const dir = makeProject()
+  try {
+    const handlers = loadExtension(dir)
+    const result = handlers.tool_call!(
+      { toolName: "bash", input: { command: "ironlint trust" } },
+      {},
+    ) as { block?: boolean; reason?: string } | undefined
+    assert.equal(result?.block, true)
+    assert.match(result?.reason ?? "", /ironlint trust must be run by a human/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("tool_call: bash redirect to .ironlint.yml blocks", () => {
+  const dir = makeProject()
+  try {
+    const handlers = loadExtension(dir)
+    const result = handlers.tool_call!(
+      { toolName: "bash", input: { command: "echo x > .ironlint.yml" } },
+      {},
+    ) as { block?: boolean; reason?: string } | undefined
+    assert.equal(result?.block, true)
+    assert.match(result?.reason ?? "", /policy files must be edited/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("tool_call: bash 'ls' allows (pre-filter skip)", () => {
+  const dir = makeProject()
+  try {
+    const handlers = loadExtension(dir)
+    // 'ls' never mentions ironlint → pre-filter skips the spawn entirely.
     assert.equal(
-      handlers.tool_call!({ toolName: "bash", input: {} }, {}),
+      handlers.tool_call!({ toolName: "bash", input: { command: "ls" } }, {}),
       undefined,
     )
   } finally {
     rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("tool_call: bash 'ironlint trust' blocks even with no .ironlint.yml", () => {
+  // The bash-gate must fire regardless of config presence — a config-less
+  // project is exactly when the agent is most motivated to self-trust.
+  const dir = mkdtempSync(join(tmpdir(), "ironlint-pi-noconfig-bash-"))
+  try {
+    const handlers = loadExtension(dir)
+    const result = handlers.tool_call!(
+      { toolName: "bash", input: { command: "ironlint trust" } },
+      {},
+    ) as { block?: boolean; reason?: string } | undefined
+    assert.equal(result?.block, true)
+    assert.match(result?.reason ?? "", /ironlint trust must be run by a human/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("tool_call: bash fails closed when ironlint is missing", () => {
+  // No ironlint on PATH → spawn fails. The bash-gate must fail CLOSED (block),
+  // not allow — a broken deny check is never a silent allow.
+  const dir = mkdtempSync(join(tmpdir(), "ironlint-pi-nobin-"))
+  const bin = mkdtempSync(join(tmpdir(), "ironlint-pi-emptybin-"))
+  const origPath = process.env["PATH"] ?? ""
+  try {
+    // PATH with no ironlint binary anywhere.
+    process.env["PATH"] = bin + delimiter + origPath.replace(/[^:]+ironlint[^:]*/g, "")
+    const handlers = loadExtension(dir)
+    const result = handlers.tool_call!(
+      { toolName: "bash", input: { command: "ironlint trust" } },
+      {},
+    ) as { block?: boolean; reason?: string } | undefined
+    assert.equal(result?.block, true)
+    assert.match(result?.reason ?? "", /fail-closed/)
+  } finally {
+    process.env["PATH"] = origPath
+    rmSync(dir, { recursive: true, force: true })
+    rmSync(bin, { recursive: true, force: true })
   }
 })
 

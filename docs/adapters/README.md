@@ -18,6 +18,7 @@ An adapter wires IronLint into a coding agent so policy runs automatically on ev
 The exact hook names and coverage differ, but the contract is the same across agents:
 
 1. **On each edit or proposed edit** — collapse the host's hook payload into IronLint's ABI and run `ironlint check` against the file. On exit `2`, gating hooks reject the edit so the agent retries.
+2. **On each Bash/shell command** — the agent's shell tool is gated too (`Bash` for claude-code/codex, `bash` for pi/opencode). Commands that would let the agent free itself — `ironlint trust`, or a Bash write to `.ironlint.yml` / `.ironlint/scripts/` — are denied via `ironlint gate-bash`, a separate built-in that is not a `check` and not trust-gated (it fires even with no `.ironlint.yml`). See the per-adapter "Bash gate" sections and `docs/superpowers/specs/2026-07-06-bash-gate-self-trust-prevention-design.md`.
 
 Every adapter normalizes its host into the same ABI, so one check command runs unchanged everywhere:
 

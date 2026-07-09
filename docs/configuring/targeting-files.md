@@ -11,7 +11,7 @@ checks:
 
   ts-style:
     files: ["src/**/*.ts", "app/**/*.ts"]  # or a list
-    run: ".ironlint/gates/style.sh"
+    run: ".ironlint/scripts/style.sh"
 ```
 
 `files` is a single glob or a list of globs. A check runs against a file when *any* of its globs matches. A file matched by no check is checked against nothing and passes.

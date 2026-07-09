@@ -8,12 +8,57 @@
 # blocking checks. The old in-YAML `trust:` block is gone — trust now lives in
 # the out-of-repo store (`ironlint trust`).
 checks:
-  no-todo-in-src:
+  no-debug-macros-in-src:
+    name: no debug macros in src
     files: crates/*/src/**/*.rs
-    run: '! grep -nE "todo!\("'
-  no-unimplemented-in-src:
-    files: crates/*/src/**/*.rs
-    run: '! grep -nE "unimplemented!\("'
-  no-dbg-in-src:
-    files: crates/*/src/**/*.rs
-    run: '! grep -nE "dbg!\("'
+    steps:
+      - name: no todo!()
+        run: '! grep -nE "todo!\("'
+      - name: no unimplemented!()
+        run: '! grep -nE "unimplemented!\("'
+      - name: no dbg!()
+        run: '! grep -nE "dbg!\("'
+  no-load-bearing:
+    name: no load-bearing jargon
+    files: "*.md"
+    run: |
+      matches=$(grep -inE 'load[- ]?bearing' -) && {
+        echo "Banned term: 'load-bearing'/'load bearing'/'loadbearing' is not allowed in markdown files."
+        echo "$matches"
+        exit 1
+      }
+      exit 0
+
+  rustfmt-on-write:
+    name: rustfmt check
+    files: "**/*.rs"
+    run: |
+      diff=$(rustfmt --check --color=never 2>&1)
+      if [ -n "$diff" ]; then
+        echo "$diff"
+        exit 1
+      fi
+
+  no-trailing-whitespace:
+    name: no trailing whitespace
+    files: ["**/*.rs", "**/*.yml", "**/*.sh", "**/*.toml", "**/*.json"]
+    run: '! grep -nE "[[:space:]]$"'
+
+  final-newline:
+    name: file ends with newline
+    files: ["**/*.rs", "**/*.md", "**/*.yml", "**/*.sh", "**/*.toml", "**/*.json"]
+    run: |
+      [ -z "$(tail -c1 /dev/stdin)" ] || {
+        echo "file does not end with a newline" >&2
+        exit 1
+      }
+
+  rust-pre-commit:
+    name: rust quality gate
+    files: "**/*.rs"
+    on: [pre-commit]
+    steps:
+      - name: clippy
+        run: "cargo clippy --all-targets -- -D warnings"
+      - name: unit tests
+        run: "cargo test --lib --bin ironlint"

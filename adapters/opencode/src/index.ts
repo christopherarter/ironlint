@@ -1,6 +1,6 @@
 import type { Plugin } from "@opencode-ai/plugin"
 import { existsSync, readFileSync } from "node:fs"
-import { basename, join } from "node:path"
+import { basename, isAbsolute, join, sep } from "node:path"
 
 // OpenCode tools we gate. `apply_patch` is intentionally not gated at 0.1d
 // (P2-14, deferred) — the opencode plugin SDK does not currently surface
@@ -9,7 +9,10 @@ import { basename, join } from "node:path"
 // boundaries, reissue `ironlint check --file` per file). See
 // docs/adapters/opencode.md → "What it does NOT do" for the known-gap
 // note. Tracked until the apply_patch tool is wired through the adapter.
-const GATED_TOOLS = new Set(["edit", "write"])
+// `bash` is gated by the bash-gate branch below, which shells out to
+// `ironlint gate-bash` (the shared Rust matcher) — see
+// docs/superpowers/specs/2026-07-06-bash-gate-self-trust-prevention-design.md.
+const GATED_TOOLS = new Set(["edit", "write", "bash"])
 
 // R3: filenames ironlint recognizes as policy files. Edits to these files
 // must short-circuit both adapter hooks — running `ironlint check` against
@@ -17,8 +20,12 @@ const GATED_TOOLS = new Set(["edit", "write"])
 // surfaces a confusing "internal error" to the user.
 const POLICY_FILES = new Set([".ironlint.yml", ".bully.yml"])
 
-function isPolicyFile(filePath: string): boolean {
-  return POLICY_FILES.has(basename(filePath))
+/** R3: config by basename + `.ironlint/scripts/` path-anchored to `projectRoot`. */
+export function isPolicyFile(filePath: string, projectRoot: string): boolean {
+  if (POLICY_FILES.has(basename(filePath))) return true
+  const abs = isAbsolute(filePath) ? filePath : join(projectRoot, filePath)
+  const scriptsDir = join(projectRoot, ".ironlint", "scripts") + sep
+  return abs === scriptsDir.slice(0, -1) || abs.startsWith(scriptsDir)
 }
 
 // Opencode's tool args use `find` / `replace` / `replaceAll` for the edit
@@ -67,17 +74,64 @@ export const IronLintPlugin: Plugin = async ({ directory, worktree }) => {
 
   return {
     "tool.execute.before": async (input, output) => {
+      if (!GATED_TOOLS.has(input.tool)) return
+
+      // Bash branch: the bash-gate. Runs BEFORE the config-existence check —
+      // the bash-gate must fire even with no .ironlint.yml, since that's
+      // exactly when an agent is most motivated to run `ironlint trust`.
+      // Decides whether the command would let the agent free itself
+      // (`ironlint trust`, or a Bash write to `.ironlint.yml` /
+      // `.ironlint/scripts/`). The deny logic lives in `ironlint gate-bash` —
+      // the single source shared across every adapter. Block contract =
+      // throw (mirrors the existing exit-2 write/edit path). Spawn via
+      // `Bun.spawn` (async, like the check path — a sync spawn blocks
+      // opencode's event loop for the full duration).
+      if (input.tool === "bash") {
+        const args = (output.args ?? {}) as { command?: string }
+        const command = typeof args.command === "string" ? args.command : ""
+        // Substring pre-filter: ordinary commands (ls, git, cargo) never
+        // mention ironlint or .ironlint, so skip the spawn entirely.
+        if (!command.includes("ironlint") && !command.includes(".ironlint")) return
+        let gateExit: number | null = null
+        let gateStdout = ""
+        try {
+          const proc = Bun.spawn(["ironlint", "gate-bash"], {
+            stdin: new TextEncoder().encode(command),
+            stdout: "pipe",
+            stderr: "pipe",
+            env: process.env,
+          })
+          ;[gateStdout, , gateExit] = await Promise.all([
+            new Response(proc.stdout).text(),
+            new Response(proc.stderr).text(),
+            proc.exited,
+          ])
+        } catch {
+          // Spawn failure (missing binary → ENOENT): fail CLOSED.
+          throw new Error("ironlint: bash-gate failed — fail-closed")
+        }
+        if (gateExit === null || gateExit >= 128) {
+          // Signal death → fail closed.
+          throw new Error("ironlint: bash-gate killed by signal — fail-closed")
+        }
+        if (gateExit === 0) return // allow
+        if (gateExit === 2) {
+          throw new Error(gateStdout || "ironlint blocked this bash command")
+        }
+        // Any other exit → fail closed.
+        throw new Error(`ironlint: bash-gate unexpected exit ${gateExit} — fail-closed`)
+      }
+
       // Late existence check: opencode may load this plugin once at startup,
       // before the project is initialized as an ironlint project. Re-check on
       // every invocation so that `ironlint init` mid-session starts gating.
       if (!existsSync(configPath)) return
-      if (!GATED_TOOLS.has(input.tool)) return
 
       const args = (output.args ?? {}) as FileToolArgs
       const filePath = args.filePath
       if (!filePath) return
       // R3: skip self-checks of the policy file itself.
-      if (isPolicyFile(filePath)) return
+      if (isPolicyFile(filePath, projectRoot)) return
 
       const proposed = computeProposedContent(filePath, args)
       if (proposed === null) return // can't simulate — skip the gate

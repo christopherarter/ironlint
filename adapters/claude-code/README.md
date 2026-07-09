@@ -52,6 +52,21 @@ This removes the hook entry, the materialized artifact, and the sidecar from
 `~/.config/ironlint/adapters/claude-code/`. Your `.ironlint.yml` and trust store
 are untouched.
 
+## Bash gate
+
+In addition to file edits, this adapter gates `Bash` (the agent's shell tool —
+`tool_name:"Bash"`, command in `tool_input.command`). Commands that would let
+the agent free itself — `ironlint trust`, or a Bash write to `.ironlint.yml` /
+`.ironlint/scripts/` — are denied (hook exit 2, reason on stderr). Ordinary
+commands are not slowed: a substring pre-filter skips the decision entirely
+for commands that never mention `ironlint` or `.ironlint`. The deny decision
+is shared across every adapter via `ironlint gate-bash`. The branch runs
+before the config-existence check, so it fires even in a project with no
+`.ironlint.yml` — exactly when the agent is most motivated to self-trust. See
+`docs/superpowers/specs/2026-07-06-bash-gate-self-trust-prevention-design.md`
+for the threat model and the documented known gap (variable-substitution
+indirection).
+
 ## Manual fallback
 
 Use these steps if the `ironlint` binary is not available:

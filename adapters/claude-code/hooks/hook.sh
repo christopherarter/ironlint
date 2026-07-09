@@ -73,6 +73,42 @@ if ! echo "${EVENT}" | jq empty >/dev/null 2>&1; then
 fi
 
 TOOL_NAME=$(echo "${EVENT}" | jq -r '.tool_name // empty')
+
+# Bash branch: the bash-gate. Runs BEFORE FILE extraction — a Bash event has
+# no `file_path`, so the empty-FILE early-exit below would silently allow it
+# (and every self-trust command with it). Decides whether the command the
+# agent wants to run would let it free itself from ironlint's gate
+# (`ironlint trust`, or a Bash write to `.ironlint.yml` / `.ironlint/scripts/`).
+# The deny logic lives in `ironlint gate-bash` — the single source shared
+# across every adapter. See
+# docs/superpowers/specs/2026-07-06-bash-gate-self-trust-prevention-design.md.
+if [[ "${TOOL_NAME}" == "Bash" ]]; then
+  COMMAND=$(echo "${EVENT}" | jq -r '.tool_input.command // empty')
+  # Substring pre-filter: ordinary commands (ls, git, cargo) never mention
+  # ironlint or .ironlint, so skip the spawn entirely — they pay nothing.
+  if [[ "${COMMAND}" != *ironlint* && "${COMMAND}" != *.ironlint* ]]; then
+    exit 0
+  fi
+  # `ironlint gate-bash` exits 0 = allow, 2 = block (reason on stdout), else
+  # broken. Under `set -e` the command substitution would die on a nonzero
+  # exit before we read $?, so capture via the `|| ec=$?` idiom (the same one
+  # run_ironlint uses). Fail CLOSED on any unexpected exit — the deny check is
+  # the thing being protected, so a broken deny check is never a silent allow.
+  GATE_EC=0
+  GATE_REASON=$(printf '%s' "${COMMAND}" | ironlint gate-bash 2>/dev/null) || GATE_EC=$?
+  case "${GATE_EC}" in
+    0) exit 0 ;;
+    2)
+      echo "${GATE_REASON}" >&2
+      exit 2
+      ;;
+    *)
+      echo "ironlint: bash-gate failed (exit ${GATE_EC}) — blocking (fail-closed)" >&2
+      exit 2
+      ;;
+  esac
+fi
+
 # NotebookEdit names the target `notebook_path` rather than `file_path`; include
 # it so `$FILE` (and the `.ironlint.yml` skip + the gate's `--file`) work for it.
 FILE=$(echo "${EVENT}" | jq -r '.tool_input.file_path // .tool_input.path // .tool_input.notebook_path // empty')
@@ -81,13 +117,22 @@ if [[ -z "${FILE}" ]]; then
   exit 0
 fi
 
-# Short-circuit on edits to the policy file itself: the on-disk hash won't
-# match the trusted store while the user is mid-edit, so any `ironlint`
-# invocation would fail the trust gate and surface a misleading "internal
-# error" to the user. Match by basename so the skip works for both relative
-# and absolute paths Claude Code may send.
+# Short-circuit on edits to the policy surface: the on-disk hash won't match
+# the trusted store while the user is mid-edit, so any `ironlint` invocation
+# would fail the trust gate and surface a misleading "internal error". The
+# policy surface is the config file (anywhere, matched by basename) AND the
+# .ironlint/scripts/ directory (path-anchored to PROJECT_ROOT so a stray
+# src/.ironlint/scripts/foo.sh is NOT matched).
 BASENAME="${FILE##*/}"
 if [[ "${BASENAME}" == ".ironlint.yml" ]]; then
+  exit 0
+fi
+# Normalize to an absolute path for the prefix check (FILE may be relative).
+case "${FILE}" in
+  /*) abs_file="${FILE}" ;;
+  *)  abs_file="${PROJECT_ROOT}/${FILE}" ;;
+esac
+if [[ "${abs_file}" == "${PROJECT_ROOT}/.ironlint/scripts/"* ]]; then
   exit 0
 fi
 

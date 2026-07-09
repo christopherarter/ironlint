@@ -1,0 +1,8 @@
+[package]
+name = "ironlint-bash-gate"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Pure logic — no dependencies. Adding one requires a spec-level reason.
