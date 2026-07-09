@@ -29,9 +29,10 @@ fn trust_writes_a_store_entry() {
 }
 
 /// Task 5.31: `ironlint trust` prints a summary of exactly what it blessed —
-/// the config hash (first 16 hex chars), every gate file, and every in-repo
-/// script referenced by a check's `run:`/`steps[].run` — so the operator can
-/// eyeball trust coverage instead of taking it on faith.
+/// the config hash (first 16 hex chars), every script file under
+/// `.ironlint/scripts/`, and every in-repo script referenced by a check's
+/// `run:`/`steps[].run` — so the operator can eyeball trust coverage instead
+/// of taking it on faith.
 #[test]
 fn trust_prints_blessed_summary() {
     let proj = tempfile::tempdir().unwrap();
@@ -39,13 +40,10 @@ fn trust_prints_blessed_summary() {
     let cfg = proj.path().join(".ironlint.yml");
     fs::write(
         &cfg,
-        "checks:\n  g:\n    files: \"*.rs\"\n    run: \"bash scripts/lint.sh\"\n",
+        "checks:\n  g:\n    files: \"*.rs\"\n    run: \".ironlint/scripts/lint.sh\"\n",
     )
     .unwrap();
-    let gates = proj.path().join(".ironlint/gates");
-    fs::create_dir_all(&gates).unwrap();
-    fs::write(gates.join("g.sh"), "#!/bin/sh\nexit 0\n").unwrap();
-    let scripts = proj.path().join("scripts");
+    let scripts = proj.path().join(".ironlint/scripts");
     fs::create_dir_all(&scripts).unwrap();
     fs::write(scripts.join("lint.sh"), "#!/bin/sh\nexit 0\n").unwrap();
 
@@ -58,18 +56,16 @@ fn trust_prints_blessed_summary() {
         .success()
         .stdout(
             predicates::str::contains("config sha256:")
-                .and(predicates::str::contains("gates: 1"))
-                .and(predicates::str::contains("g.sh"))
+                .and(predicates::str::contains("checks: 1"))
                 .and(predicates::str::contains("scripts: 1"))
-                .and(predicates::str::contains("scripts/lint.sh")),
+                .and(predicates::str::contains("lint.sh")),
         );
 }
 
-/// Sibling guard: with no gates dir and no referenced scripts, the `scripts:`
-/// block is omitted entirely (not printed as `scripts: 0`) but `gates: 0` is
-/// still printed.
+/// Sibling guard: with no scripts dir and no referenced scripts, the summary
+/// still prints `scripts: 0` (the scripts block is always shown).
 #[test]
-fn trust_summary_omits_scripts_block_when_empty() {
+fn trust_summary_prints_zero_scripts_when_empty() {
     let proj = tempfile::tempdir().unwrap();
     let xdg = tempfile::tempdir().unwrap();
     let cfg = proj.path().join(".ironlint.yml");
@@ -87,7 +83,7 @@ fn trust_summary_omits_scripts_block_when_empty() {
         .assert()
         .success()
         .stdout(
-            predicates::str::contains("gates: 0").and(predicates::str::contains("scripts:").not()),
+            predicates::str::contains("checks: 1").and(predicates::str::contains("scripts: 0")),
         );
 }
 
@@ -229,12 +225,12 @@ fn editing_check_after_bless_blocks_check() {
     let cfg = proj.path().join(".ironlint.yml");
     fs::write(
         &cfg,
-        "checks:\n  g:\n    files: \"*.rs\"\n    run: \".ironlint/gates/g.sh\"\n",
+        "checks:\n  g:\n    files: \"*.rs\"\n    run: \".ironlint/scripts/g.sh\"\n",
     )
     .unwrap();
-    let gates = proj.path().join(".ironlint/gates");
-    fs::create_dir_all(&gates).unwrap();
-    fs::write(gates.join("g.sh"), "#!/bin/sh\nexit 0\n").unwrap();
+    let scripts = proj.path().join(".ironlint/scripts");
+    fs::create_dir_all(&scripts).unwrap();
+    fs::write(scripts.join("g.sh"), "#!/bin/sh\nexit 0\n").unwrap();
     let target = proj.path().join("a.rs");
     fs::write(&target, "x\n").unwrap();
 
@@ -246,7 +242,7 @@ fn editing_check_after_bless_blocks_check() {
         .assert()
         .success();
 
-    fs::write(gates.join("g.sh"), "#!/bin/sh\nexit 2\n").unwrap(); // tamper
+    fs::write(scripts.join("g.sh"), "#!/bin/sh\nexit 2\n").unwrap(); // tamper
 
     Command::cargo_bin("ironlint")
         .unwrap()
