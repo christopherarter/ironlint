@@ -18,7 +18,15 @@ const HOOK: &str = "adapters/codex/hooks/hook.sh";
 /// A one-file Add-File apply_patch payload touching `foo.py` (in `.ironlint.yml`
 /// scope). `cwd` is the temp project so the hook resolves the config + root.
 fn add_payload(cwd: &std::path::Path) -> String {
-    let patch = "*** Begin Patch\n*** Add File: foo.py\n+print('hi')\n*** End Patch\n";
+    add_payload_for(cwd, "foo.py")
+}
+
+/// A one-file Add-File apply_patch payload touching `path` (relative to cwd).
+fn add_payload_for(cwd: &std::path::Path, path: &str) -> String {
+    let patch = format!(
+        "*** Begin Patch\n*** Add File: {}\n+print('hi')\n*** End Patch\n",
+        path
+    );
     serde_json::json!({
         "tool_name": "apply_patch",
         "cwd": cwd.display().to_string(),
@@ -267,6 +275,65 @@ fn non_apply_patch_tool_is_allowed() {
         .success()
         .code(0)
         .stdout(predicates::str::is_empty());
+}
+
+/// After the gates→scripts rename, apply_patch additions under
+/// .ironlint/scripts/ short-circuit the gate exactly like .ironlint.yml edits —
+/// a mid-edit policy script's on-disk bytes won't match the trusted hash, so
+/// checking it would surface a misleading "internal error". The short-circuit
+/// must be PATH-ANCHORED so src/.ironlint/scripts/foo.sh (not the policy
+/// surface) is NOT matched.
+#[test]
+fn add_to_scripts_dir_short_circuits_without_check() {
+    if !common::hook_tools_available() {
+        eprintln!("skipping: jq/python3 not available");
+        return;
+    }
+    let fx = HookFixture::new(HOOK);
+    let capture = fx.file("captured_stdin.txt");
+    fx.stub_capturing(0, "", &capture);
+    // Canonicalize so the event cwd matches the hook's PROJECT_ROOT (on macOS
+    // $(pwd) resolves /var/folders -> /private/var/folders).
+    let project = std::fs::canonicalize(fx.project.path()).unwrap();
+    fx.run(
+        "pre-tool-use",
+        &add_payload_for(&project, ".ironlint/scripts/lint.sh"),
+        &[],
+    )
+    .success()
+    .code(0)
+    .stdout(predicates::str::is_empty());
+    assert!(
+        !capture.exists(),
+        "hook must short-circuit — ironlint check was invoked (capture file exists)"
+    );
+}
+
+/// Path-anchor sanity check: a file at src/.ironlint/scripts/foo.sh is NOT
+/// the project's policy surface, so it must be gated normally (the stub
+/// capturing path proves ironlint WAS invoked).
+#[test]
+fn add_to_nested_scripts_dir_is_gated() {
+    if !common::hook_tools_available() {
+        eprintln!("skipping: jq/python3 not available");
+        return;
+    }
+    let fx = HookFixture::new(HOOK);
+    let capture = fx.file("captured_stdin.txt");
+    fx.stub_capturing(0, "", &capture);
+    let project = std::fs::canonicalize(fx.project.path()).unwrap();
+    fx.run(
+        "pre-tool-use",
+        &add_payload_for(&project, "src/.ironlint/scripts/lint.sh"),
+        &[],
+    )
+    .success()
+    .code(0)
+    .stdout(predicates::str::is_empty());
+    assert!(
+        capture.exists(),
+        "nested src/.ironlint/scripts/foo.sh must NOT short-circuit — it is not the policy surface"
+    );
 }
 
 // --- Bash branch (bash-gate self-trust prevention) ---------------------------

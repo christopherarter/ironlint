@@ -443,6 +443,57 @@ fn edit_on_non_utf8_file_blocks_with_clean_message() {
         .stderr(predicates::str::contains("UnicodeDecodeError").not());
 }
 
+/// After the gates→scripts rename, writes to files under .ironlint/scripts/
+/// short-circuit the gate exactly like .ironlint.yml edits — a mid-edit
+/// policy script's on-disk bytes won't match the trusted hash, so checking
+/// it would surface a misleading "internal error". The short-circuit must
+/// be PATH-ANCHORED so src/.ironlint/scripts/foo.sh (not the policy surface)
+/// is NOT matched.
+#[test]
+fn write_to_scripts_dir_short_circuits_without_check() {
+    if !common::hook_tools_available() {
+        eprintln!("skipping: jq/python3 not available on this machine");
+        return;
+    }
+    let fx = HookFixture::new(HOOK);
+    let capture = fx.file("captured_stdin.txt");
+    fx.stub_capturing(0, "", &capture);
+    // Canonicalize so the absolute path in the event matches the hook's
+    // PROJECT_ROOT (on macOS $(pwd) resolves /var/folders -> /private/var/folders).
+    let project = std::fs::canonicalize(fx.project.path()).unwrap();
+    let file = project.join(".ironlint/scripts/lint.sh");
+    fx.run("PreToolUse", &write_payload(&file), &[])
+        .success()
+        .code(0);
+    assert!(
+        !capture.exists(),
+        "hook must short-circuit — ironlint check was invoked (capture file exists)"
+    );
+}
+
+/// Path-anchor sanity check: a file at src/.ironlint/scripts/foo.sh is NOT
+/// the project's policy surface, so it must be gated normally (the stub
+/// capturing path proves ironlint WAS invoked).
+#[test]
+fn write_to_nested_scripts_dir_is_gated() {
+    if !common::hook_tools_available() {
+        eprintln!("skipping: jq/python3 not available on this machine");
+        return;
+    }
+    let fx = HookFixture::new(HOOK);
+    let capture = fx.file("captured_stdin.txt");
+    fx.stub_capturing(0, "", &capture);
+    let project = std::fs::canonicalize(fx.project.path()).unwrap();
+    let file = project.join("src/.ironlint/scripts/lint.sh");
+    fx.run("PreToolUse", &write_payload(&file), &[])
+        .success()
+        .code(0);
+    assert!(
+        capture.exists(),
+        "nested src/.ironlint/scripts/foo.sh must NOT short-circuit — it is not the policy surface"
+    );
+}
+
 // --- Bash branch (bash-gate self-trust prevention) ---------------------------
 //
 // The `Bash)` arm runs BEFORE FILE extraction (a Bash event has no

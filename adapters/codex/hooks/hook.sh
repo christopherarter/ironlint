@@ -69,7 +69,7 @@ TOOL_NAME=$(printf '%s' "${EVENT}" | jq -r '.tool_name // empty')
 # which would otherwise allow every non-apply_patch tool (and every self-trust
 # command with it). Decides whether the command the agent wants to run would
 # let it free itself from ironlint's gate (`ironlint trust`, or a Bash write
-# to `.ironlint.yml` / `.ironlint/gates/`). The deny logic lives in
+# to `.ironlint.yml` / `.ironlint/scripts/`). The deny logic lives in
 # `ironlint gate-bash` — the single source shared across every adapter. See
 # docs/superpowers/specs/2026-07-06-bash-gate-self-trust-prevention-design.md.
 # Block contract = deny-JSON/exit-0 (codex never blocks via exit code), so the
@@ -258,12 +258,17 @@ while IFS=$'\t' read -r ABSPATH CONTENTFILE; do
   if [[ -z "${ABSPATH}" ]]; then
     continue
   fi
-  # Skip edits to the policy file itself: its on-disk sha won't match trust
-  # mid-edit, so any check would fail the trust gate misleadingly.
+  # Skip edits to the policy surface: its on-disk sha won't match trust
+  # mid-edit, so any check would fail the trust gate misleadingly. The config
+  # file is matched by basename; .ironlint/scripts/ is anchored to PROJECT_ROOT
+  # so a stray src/.ironlint/scripts/foo.sh is NOT matched.
   BASENAME="${ABSPATH##*/}"
   if [[ "${BASENAME}" == ".ironlint.yml" || "${BASENAME}" == ".bully.yml" ]]; then
     continue
   fi
+  case "${ABSPATH}" in
+    "${PROJECT_ROOT}/.ironlint/scripts/"*) continue ;;
+  esac
   EC=0
   ironlint check --file "${ABSPATH}" --content - --config "${CONFIG}" --format json \
     > "${WORKDIR}/verdict" 2>/dev/null < "${CONTENTFILE}" || EC=$?
