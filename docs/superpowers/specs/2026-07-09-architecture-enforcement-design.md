@@ -11,8 +11,9 @@ layers (glob sets) and directional rules between them ("`presentation` may impor
 `domain` and `data`; `data` may import nothing"), and ironlint builds a
 dependency graph from the codebase's imports and blocks any write/commit that
 introduces a forbidden edge. It is **language-agnostic** in mechanism and
-**per-language** in import resolution — v1 ships TypeScript/JavaScript, Rust,
-Python, Go, and PHP.
+**per-language** in import resolution — v1 ships TypeScript and JavaScript;
+Rust, Python, Go, and PHP are additive follow-on implementations behind the
+extractor/resolver traits.
 
 The engine is an **`ironlint arch` subcommand** — a standalone capability that
 does the graph work and exits on ironlint's existing contract (`0` Pass / `2`
@@ -108,9 +109,8 @@ Not ast-grep. Rationale:
   ast-grep doesn't have. Bringing it in would add a dependency for the one layer
   where it's overkill, while we build the other two ourselves anyway.
 
-Workspace deps: `tree-sitter`, `tree-sitter-typescript`, `tree-sitter-javascript`,
-`tree-sitter-rust`, `tree-sitter-python`, `tree-sitter-go`, `tree-sitter-php`.
-Each grammar is a crate; loading is lazy per detected language.
+Workspace deps: `tree-sitter`, `tree-sitter-typescript`, `tree-sitter-javascript`.
+Additional grammars are additive follow-ons. Loading is lazy per detected language.
 
 **Trait:**
 
@@ -163,15 +163,15 @@ trait Resolver {
 }
 ```
 
-**Per-language resolver scope (v1):**
+**Per-language resolver scope (interface contract; v1 ships TS/JS only):**
 
-| Language | Resolver concerns | Complexity |
-|---|---|---|
-| TypeScript / JavaScript | `tsconfig`/`jsconfig` `paths` aliases (`@/*`), extension inference (`.ts`/`.tsx`/`.js`/`.jsx`/`.d.ts`/`/index.*`), barrel `index.*` resolution, `package.json` `exports`/`main`. | **Hardest.** Ships first — validates the trait design against the worst case. |
-| Rust | `crate::`/`super::`/`self::`/`crate::*`, external crates (resolve via `Cargo.toml` `[dependencies]` — external = dropped edge), `mod` declarations. | Medium. You know it cold; validates a second impl. |
-| Python | Relative `.`/`..` imports, `sys.path`/package dirs, namespace packages, `__init__.py` presence. | Medium. |
-| Go | Module path → directory mapping via `go.mod` (`module github.com/x/y` → repo root), internal packages. | Lower. Convention-driven. |
-| PHP | PSR-4 autoloader mapping via `composer.json`, namespace → directory. | Medium. |
+| Language | Resolver concerns | Complexity | v1? |
+|---|---|---|---|
+| TypeScript / JavaScript | `tsconfig`/`jsconfig` `paths` aliases (`@/*`), extension inference (`.ts`/`.tsx`/`.js`/`.jsx`/`.d.ts`/`/index.*`), barrel `index.*` resolution, `package.json` `exports`/`main`. | **Hardest.** Validates the trait design against the worst case. | Yes |
+| Rust | `crate::`/`super::`/`self::`/`crate::*`, external crates (resolve via `Cargo.toml` `[dependencies]` — external = dropped edge), `mod` declarations. | Medium. | Follow-on |
+| Python | Relative `.`/`..` imports, `sys.path`/package dirs, namespace packages, `__init__.py` presence. | Medium. | Follow-on |
+| Go | Module path → directory mapping via `go.mod` (`module github.com/x/y` → repo root), internal packages. | Lower. Convention-driven. | Follow-on |
+| PHP | PSR-4 autoloader mapping via `composer.json`, namespace → directory. | Medium. | Follow-on |
 
 **Resolution is best-effort and conservative.** An import that can't be
 resolved to a project file is **dropped** (not a violation). A false drop is
@@ -301,14 +301,13 @@ ironlint arch graph  [--layers <file>] [--root <dir>] [--dot|--json]
 ironlint arch why <path> [--layers <file>] [--root <dir>]
 ```
 
-- **`arch check`** — the verdict path. Builds (or updates) the graph, evaluates
+- **`arch check`** — the verdict path. Builds the graph fresh, evaluates
   rules, exits `0` (Pass) / `2` (Block, violations on stdout) / `3`
-  (InternalError: parse failure, missing layers file, cache corruption). Maps
+  (InternalError: parse failure, missing layers file). Maps
   onto ironlint's exit contract exactly — no new exit codes.
-  - `--event write --file <path>`: incremental mode. Evaluate only the proposed
-    file's outgoing edges against the cached graph. The proposed file's content
-    is read from stdin (the check ABI already feeds proposed content on stdin
-    for `write`).
+  - `--event write --file <path>`: per-file mode. Extract imports from the
+    proposed file on stdin, resolve against the graph built from disk, evaluate
+    only the proposed file's outgoing edges.
   - `--event pre-commit` (no `--file`): whole-graph mode. Evaluate all edges,
     both directions.
 - **`arch graph`** — emits the resolved dependency graph. `--dot` for Graphviz
@@ -325,56 +324,20 @@ ironlint arch why <path> [--layers <file>] [--root <dir>]
 |---|---|---|
 | `0` | Pass | no violations |
 | `2` | Block | ≥1 layer violation (violations on stdout, one per line) |
-| `3` | InternalError | parse failure, missing/corrupt layers file, cache corruption, tree-sitter grammar load failure |
+| `3` | InternalError | parse failure, missing layers file, tree-sitter grammar load failure |
 
 `arch graph` and `arch why` exit `0` on success / `3` on internal error (never
 `2` — they're read-only inspection, not verdicts).
 
 ## The graph cache (per-write correctness)
 
-Per-write day one makes the graph cache **essential**. Get it wrong and you
-get either false passes (stale graph) or unacceptable latency (re-parse the
-whole repo every write).
+### The cache contract
 
-### The hard correctness case
-
-A multi-file agent edit: the agent writes file A (adds an export), then writes
-file B (imports from A). If the cache holds A's *pre-edit* content when
-evaluating B, the resolver might fail to resolve B's import (false Block) or
-resolve it to a stale path (false Pass). So the cache key must be
-**content-derived, per-file**, and the engine must re-read a file when its
-content changes — including changes made by *this* ironlint process in a prior
-write event within the same session.
-
-### Cache model: content-addressed node cache
-
-```rust
-struct NodeCache {
-    /// file path → (content_hash, layer, resolved_imports)
-    entries: HashMap<PathBuf, CachedNode>,
-}
-
-struct CachedNode {
-    hash: u64,                     // content hash (xxhash, fast)
-    layer: Option<LayerId>,
-    edges: Vec<Edge>,              // resolved outgoing imports
-}
-```
-
-**On a `write` event for proposed file F:**
-
-1. Read F's proposed content from stdin. Hash it. Extract imports (Layer 1).
-2. For each import, resolve (Layer 2) against the **cached** graph. For any
-   target whose cached `hash` differs from its current on-disk content, re-parse
-   and re-resolve that node before evaluating. (Detects prior-write edits within
-   the session.)
-3. Evaluate F's outgoing edges (Layer 3). Report violations.
-4. **Do not** insert F into the cache — F isn't on disk yet. F is cached only at
-   pre-commit (when it has landed).
-
-**On a `pre-commit` event:** rebuild the cache from disk (or validate the
-existing cache against current mtimes/hashes and update only changed nodes),
-then evaluate the whole graph both directions.
+v1 builds a fresh graph for each `ironlint arch check` invocation. This is
+correct because each prior permitted write has landed on disk before the next
+tool call. Persistent or cross-process caching is deferred: a lowered check
+runs `ironlint arch` in a fresh subprocess, so an in-memory cache cannot span
+writes without a new daemon or a trusted on-disk cache design.
 
 ### What per-write can and cannot check (the honest split)
 
@@ -390,23 +353,6 @@ This split is **intrinsic** to the proposed-file-not-on-disk reality, not a
 limitation to fix. The design bakes it in: per-write = outgoing; pre-commit =
 whole graph. Both fire; the user gets early outgoing detection at write-time
 and full bidirectional coverage at commit.
-
-### Cache invalidation
-
-- **Content-hash mismatch** → re-parse that node. (Catches edits within the
-  session and external edits between runs.)
-- **Missing file** (cached node's path no longer exists) → drop the node.
-- **Cache store:** in-memory only for v1 (per-process). No on-disk cache file —
-  the cache lives for the duration of one `ironlint` invocation. A long-running
-  `ironlint watch` session holds it across writes; a one-shot `ironlint check`
-  rebuilds each run. On-disk persistence is a fast-follow if rebuild cost bites.
-
-### Failure mode: cache corruption
-
-If the cache is internally inconsistent (e.g. a node's hash was computed against
-content that's since changed in a way the hash didn't catch — shouldn't happen,
-but defensively), the engine **fails closed**: treats it as InternalError
-(exit 3), never a silent pass. A broken cache is never a pass.
 
 ## Trust
 
@@ -457,11 +403,17 @@ All free, because the capability lowers to a check:
 
 - Declarative `architecture:` block (layers + rules + ignore).
 - `ironlint arch check|graph|why` subcommand.
-- tree-sitter import extraction for **TypeScript, JavaScript, Rust, Python, Go,
-  PHP** (five languages; six grammars — TS and JS use separate tree-sitter
-  grammars but share one resolver).
-- Per-language resolvers for the same five.
-- Content-addressed in-memory graph cache.
+- tree-sitter import extraction for **TypeScript and JavaScript**.
+  Rust, Python, Go, and PHP remain additive follow-on implementations behind
+  the extractor/resolver traits.
+- **Fresh graph per `ironlint arch check` invocation.** v1 does not maintain
+  an in-memory cache across invocations. Each `arch check` builds the graph
+  from disk — correct because each prior permitted write has landed on disk
+  before the next tool call. Persistent or cross-process caching is deferred:
+  a lowered check runs `ironlint arch` in a fresh subprocess, so an in-memory
+  cache cannot span writes without a new daemon or a trusted on-disk cache
+  design.
+- Content-addressed in-memory graph cache **within a single `watch` invocation**.
 - Per-write (outgoing) + pre-commit/sweep (whole-graph) enforcement.
 - Trust via existing config-hash (no new machinery).
 - `extends` whole-block replace.
@@ -493,12 +445,10 @@ All free, because the capability lowers to a check:
 1. **TypeScript / JavaScript** — highest value (where agents write most code),
   hardest resolver (validates the trait design against the worst case). Ships
   first.
-2. **Rust** — second impl, validates the resolver trait with a different module
-  system. You know it cold.
-3. **Python, Go, PHP** — additive, in that order.
 
-Each language is a self-contained addition behind the `ImportExtractor` +
-`Resolver` traits. The graph and evaluator don't change per language.
+Rust, Python, Go, PHP are follow-on implementations behind the
+`ImportExtractor` + `Resolver` traits. Each is a self-contained addition;
+the graph and evaluator don't change per language.
 
 ## Testing strategy
 
@@ -524,11 +474,9 @@ Each language is a self-contained addition behind the `ImportExtractor` +
    `$IRONLINT_TMPFILE` and avoids arg-length limits on large configs. Confirmed
    approach, but the tempfile lifecycle (write before check, clean after) needs
    the same `TmpFileGuard` pattern as `maybe_materialize_tmpfile`.
-2. **Watch-mode cache lifetime.** `ironlint watch` is long-running; the cache
-   persists across writes. Need to confirm the watch command's process model
-   holds the cache (vs. spawning per-check subprocesses that lose it). If
-   per-check is a fresh subprocess, the cache rebuilds every write — acceptable
-   for v1, but flags the on-disk-persistence fast-follow.
+2. **Resolved:** v1 builds a fresh graph per `arch check` invocation; the
+   watch-mode cache lifetime question no longer applies — each lowered check
+   runs `ironlint arch` in a fresh subprocess, rebuilding from disk.
 3. **Unlayered-file policy.** Confirmed: unlayered files can be imported freely
   (only importer rules fire). But should an unlayered file *importing from a
   layered file* be allowed? Current design: yes (unlayered importer = no rules).
