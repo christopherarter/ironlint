@@ -17,6 +17,7 @@ pub trait Resolver: Send + Sync {
 /// Shared helper: given a base path, try the common TS/JS extensions and
 /// `/index.*` barrel forms. Returns the first existing file.
 pub fn try_extensions(base: &Path) -> Option<PathBuf> {
+    let base = normalize_path(base);
     let suffixes: [&str; 16] = [
         "",
         ".ts",
@@ -37,7 +38,7 @@ pub fn try_extensions(base: &Path) -> Option<PathBuf> {
     ];
     for suffix in suffixes {
         let candidate = if suffix.is_empty() {
-            base.to_path_buf()
+            base.clone()
         } else if let Some(stripped) = suffix.strip_prefix('/') {
             base.join(stripped)
         } else {
@@ -48,4 +49,29 @@ pub fn try_extensions(base: &Path) -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// Remove `.` and `..` segments from a path without touching the filesystem.
+///
+/// This keeps the result inside the original logical tree, unlike
+/// `canonicalize` which resolves symlinks and may cross filesystem boundaries.
+#[allow(clippy::path_buf_push_overwrite)]
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for comp in path.components() {
+        match comp {
+            std::path::Component::Prefix(p) => out.push(p.as_os_str()),
+            std::path::Component::RootDir => out.push("/"),
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                if let Some(parent) = out.parent() {
+                    out = parent.to_path_buf();
+                } else {
+                    out.push("..");
+                }
+            }
+            std::path::Component::Normal(p) => out.push(p),
+        }
+    }
+    out
 }

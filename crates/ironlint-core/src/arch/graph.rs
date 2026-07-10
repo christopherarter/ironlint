@@ -10,6 +10,7 @@
 use crate::arch::config::ArchConfig;
 use globset::{Glob, GlobSetBuilder};
 use std::collections::HashMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Index into `ArchConfig.layers`. `None` = unlayered.
@@ -44,15 +45,34 @@ pub struct DepGraph {
 }
 
 impl DepGraph {
-    /// Build an empty dependency graph rooted at `root`.
-    ///
-    /// Edges are populated by later pipeline stages; classification is performed
-    /// on demand using the supplied `ArchConfig`.
-    pub fn build(root: impl Into<PathBuf>, _config: &ArchConfig) -> Self {
-        Self {
+    /// Build a dependency graph by walking `root`, extracting imports from every
+    /// supported source file, resolving them to absolute targets, and classifying
+    /// each file into its architecture layer.
+    pub fn build(root: &Path, config: &ArchConfig) -> anyhow::Result<Self> {
+        let mut graph = Self {
             nodes: HashMap::new(),
-            root: root.into(),
+            root: root.to_path_buf(),
+        };
+        for entry in walk_files(root, &config.ignore)? {
+            let Some((extractor, resolver)) = crate::arch::languages::for_path(&entry) else {
+                continue; // unsupported language — not a node
+            };
+            let source = fs::read(&entry)?;
+            let imports = extractor.extract(&source);
+            let edges: Vec<Edge> = imports
+                .into_iter()
+                .filter_map(|i| {
+                    resolver.resolve(&i.spec, &entry, root).map(|target| Edge {
+                        target,
+                        spec: i.spec,
+                        line: i.line,
+                    })
+                })
+                .collect();
+            let layer = graph.classify(config, &entry);
+            graph.nodes.insert(entry, Node { layer, edges });
         }
+        Ok(graph)
     }
 
     /// Classify a file into a layer: first matching layer's globs win
@@ -86,6 +106,44 @@ fn glob_matches(glob: &str, path: &str) -> bool {
         Ok(set) => set.is_match(path),
         Err(_) => false,
     }
+}
+
+/// Recursively walk `root`, returning absolute paths to every regular file.
+///
+/// Skips `.git` and `node_modules` directories entirely, plus any file whose
+/// relative path matches one of the `ignore` globs (standard `globset`
+/// semantics). Results are sorted for deterministic output.
+fn walk_files(root: &Path, ignore: &[String]) -> anyhow::Result<Vec<PathBuf>> {
+    let mut builder = GlobSetBuilder::new();
+    for glob in ignore {
+        builder.add(Glob::new(glob)?);
+    }
+    let ignore_set = builder.build()?;
+
+    let mut files = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in fs::read_dir(&dir)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            if name == ".git" || name == "node_modules" {
+                continue;
+            }
+            let path = entry.path();
+            let rel = path.strip_prefix(root).unwrap_or(&path);
+            if ignore_set.is_match(rel) {
+                continue;
+            }
+            let file_type = entry.file_type()?;
+            if file_type.is_dir() {
+                stack.push(path);
+            } else if file_type.is_file() {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    Ok(files)
 }
 
 #[cfg(test)]
