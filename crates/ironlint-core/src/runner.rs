@@ -427,13 +427,27 @@ fn check_references_tmpfile(check: &Check) -> bool {
         .any(|s| s.run.contains("IRONLINT_TMPFILE"))
 }
 
+/// True iff any of the check's steps reference the `$IRONLINT_ARCH_LAYERS`
+/// token.
+fn check_references_arch_layers(check: &Check) -> bool {
+    check
+        .effective_steps()
+        .iter()
+        .any(|s| s.run.contains("IRONLINT_ARCH_LAYERS"))
+}
+
 /// The naming prefix ironlint gives every `$IRONLINT_TMPFILE` it
 /// materializes (see `unique_tmp_name`) — the only pattern
 /// `sweep_stale_tmpfiles` is allowed to remove.
 const TMPFILE_PREFIX: &str = "ironlint-tmp-";
 
-/// A collision-resistant temp-file name mirroring `ext` (no `rng` dependency).
-fn unique_tmp_name(ext: Option<&str>) -> String {
+/// The naming prefix for the `$IRONLINT_ARCH_LAYERS` materialized file.
+/// These live in the system temp directory, not the project tree, so they are
+/// outside `sweep_stale_tmpfiles`' scope; `TmpFileGuard::drop` handles cleanup.
+const ARCH_LAYERS_PREFIX: &str = "ironlint-arch-";
+
+/// A collision-resistant temp-file name with `prefix` and optional `ext`.
+fn unique_name(prefix: &str, ext: Option<&str>) -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::UNIX_EPOCH;
     static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -444,9 +458,14 @@ fn unique_tmp_name(ext: Option<&str>) -> String {
         .map(|d| d.subsec_nanos())
         .unwrap_or(0);
     match ext {
-        Some(e) => format!("{TMPFILE_PREFIX}{pid}-{n}-{nanos}.{e}"),
-        None => format!("{TMPFILE_PREFIX}{pid}-{n}-{nanos}"),
+        Some(e) => format!("{prefix}{pid}-{n}-{nanos}.{e}"),
+        None => format!("{prefix}{pid}-{n}-{nanos}"),
     }
+}
+
+/// A collision-resistant temp-file name mirroring `ext` (no `rng` dependency).
+fn unique_tmp_name(ext: Option<&str>) -> String {
+    unique_name(TMPFILE_PREFIX, ext)
 }
 
 /// Default age threshold for `sweep_stale_tmpfiles`, used both at engine
@@ -808,6 +827,27 @@ impl IronLintEngine {
         Ok(Some(TmpFileGuard { path }))
     }
 
+    /// Materialize `$IRONLINT_ARCH_LAYERS` for any check that references it.
+    /// Unlike `$IRONLINT_TMPFILE`, the layers file is available at both
+    /// lifecycles (write and pre-commit) and is derived from the stashed config
+    /// YAML, not the proposed file content. Lives in the system temp directory
+    /// so it never mixes with project source.
+    fn maybe_materialize_arch_layers(
+        &self,
+        check: &Check,
+    ) -> std::io::Result<Option<TmpFileGuard>> {
+        if !check_references_arch_layers(check) {
+            return Ok(None);
+        }
+        let Some(yaml) = self.config.arch_layers_yaml.as_ref() else {
+            return Ok(None);
+        };
+        let name = unique_name(ARCH_LAYERS_PREFIX, Some("yml"));
+        let path = std::env::temp_dir().join(name);
+        materialize_tmpfile(&path, yaml)?;
+        Ok(Some(TmpFileGuard { path }))
+    }
+
     /// Build the human-readable `GateError.detail` string for an internal error:
     /// names the (truncated) run command and, for timeouts, the effective
     /// timeout that fired. One line.
@@ -893,6 +933,17 @@ impl IronLintEngine {
                 }
             }
         };
+        let arch = match self.maybe_materialize_arch_layers(check) {
+            Ok(a) => a,
+            Err(e) => {
+                return CheckStatus::Error {
+                    step: Some("<arch-layers>".to_string()),
+                    reason: format!("arch_layers_write_failed:{e}"),
+                    detail: None,
+                    elapsed: 0,
+                }
+            }
+        };
         let abs_buf = abs.to_path_buf();
         let env = GateEnv {
             file: Some(abs),
@@ -900,9 +951,10 @@ impl IronLintEngine {
             root: &self.config_dir,
             event: &self.options.event,
             tmpfile: tmp.as_ref().map(|g| g.path.as_path()),
+            arch_layers: arch.as_ref().map(|g| g.path.as_path()),
         };
         self.run_steps(check, &env, Some(content.as_bytes()))
-        // `tmp` drops here → temp file removed.
+        // `tmp` and `arch` drop here → temp files removed.
     }
 
     /// Run the loaded checks against `input` and return the verdict.
@@ -952,14 +1004,29 @@ impl IronLintEngine {
                 continue;
             }
             // Run the check once over the matched set; stdin is closed (None).
+            let arch = match self.maybe_materialize_arch_layers(check) {
+                Ok(a) => a,
+                Err(e) => {
+                    let status = CheckStatus::Error {
+                        step: Some("<arch-layers>".to_string()),
+                        reason: format!("arch_layers_write_failed:{e}"),
+                        detail: None,
+                        elapsed: 0,
+                    };
+                    collected.absorb(check_id, None, status, false);
+                    continue;
+                }
+            };
             let env = GateEnv {
                 file: None,
                 files: &matched,
                 root: &self.config_dir,
                 event: &self.options.event,
                 tmpfile: None,
+                arch_layers: arch.as_ref().map(|g| g.path.as_path()),
             };
             let status = self.run_steps(check, &env, None);
+            // `arch` drops here → temp file removed.
             collected.absorb(check_id, None, status, false);
         }
 
