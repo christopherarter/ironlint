@@ -8,7 +8,7 @@
 //! layer globs such as `src/components/**` are path-anchored by design.
 
 use crate::arch::config::ArchConfig;
-use globset::{Glob, GlobSetBuilder};
+use globset::{Glob, GlobSet, GlobSetBuilder};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -108,17 +108,26 @@ fn glob_matches(glob: &str, path: &str) -> bool {
     }
 }
 
+/// Build a `GlobSet` from the architecture `ignore` globs using standard
+/// `globset` full-path semantics.
+///
+/// Shared between the whole-graph sweep and the per-write path so both apply
+/// `architecture.ignore` identically.
+pub(crate) fn build_ignore_set(ignore: &[String]) -> anyhow::Result<GlobSet> {
+    let mut builder = GlobSetBuilder::new();
+    for glob in ignore {
+        builder.add(Glob::new(glob)?);
+    }
+    Ok(builder.build()?)
+}
+
 /// Recursively walk `root`, returning absolute paths to every regular file.
 ///
 /// Skips `.git` and `node_modules` directories entirely, plus any file whose
 /// relative path matches one of the `ignore` globs (standard `globset`
 /// semantics). Results are sorted for deterministic output.
 fn walk_files(root: &Path, ignore: &[String]) -> anyhow::Result<Vec<PathBuf>> {
-    let mut builder = GlobSetBuilder::new();
-    for glob in ignore {
-        builder.add(Glob::new(glob)?);
-    }
-    let ignore_set = builder.build()?;
+    let ignore_set = build_ignore_set(ignore)?;
 
     let mut files = Vec::new();
     let mut stack = vec![root.to_path_buf()];
@@ -190,5 +199,42 @@ mod tests {
         };
         let c = cfg();
         assert_eq!(g.classify(&c, Path::new("/repo/README.md")), None);
+    }
+
+    fn make_components_repo(root: &Path) -> anyhow::Result<()> {
+        fs::create_dir_all(root.join("src/components"))?;
+        fs::write(root.join("src/components/App.test.ts"), "")?;
+        fs::write(root.join("src/components/App.tsx"), "")?;
+        Ok(())
+    }
+
+    #[test]
+    fn build_ignore_set_uses_full_path_semantics() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let root = dir.path();
+        make_components_repo(root)?;
+
+        let ignore = build_ignore_set(&["**/*.test.ts".into()])?;
+        assert!(ignore.is_match(Path::new("src/components/App.test.ts")));
+        assert!(!ignore.is_match(Path::new("src/components/App.tsx")));
+        Ok(())
+    }
+
+    #[test]
+    fn walk_files_skips_ignored_paths() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let root = dir.path();
+        make_components_repo(root)?;
+
+        let files = walk_files(root, &["**/*.test.ts".into()])?;
+        assert!(
+            files.iter().any(|p| p.ends_with("App.tsx")),
+            "non-ignored file is included"
+        );
+        assert!(
+            !files.iter().any(|p| p.ends_with("App.test.ts")),
+            "ignored file is excluded"
+        );
+        Ok(())
     }
 }

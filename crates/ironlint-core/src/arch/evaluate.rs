@@ -6,7 +6,7 @@
 //! (permissive by default). Unlayered targets are allowed.
 
 use crate::arch::config::ArchConfig;
-use crate::arch::graph::{DepGraph, LayerId};
+use crate::arch::graph::{build_ignore_set, DepGraph, LayerId};
 use std::path::{Path, PathBuf};
 
 /// A single architecture-rule violation: an edge whose import is forbidden by
@@ -73,6 +73,13 @@ pub fn evaluate_outgoing(
     graph: &DepGraph,
     config: &ArchConfig,
 ) -> anyhow::Result<Vec<Violation>> {
+    let ignore_set = build_ignore_set(&config.ignore)?;
+    let rel = proposed_path
+        .strip_prefix(&graph.root)
+        .unwrap_or(proposed_path);
+    if ignore_set.is_match(rel) {
+        return Ok(vec![]);
+    }
     let Some((extractor, resolver)) = crate::arch::languages::for_path(proposed_path) else {
         return Ok(vec![]);
     };
