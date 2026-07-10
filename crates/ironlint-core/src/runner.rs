@@ -623,7 +623,8 @@ impl IronLintEngine {
 
         // Trust verification is gone in 0.3 (returns in a later plan as the
         // out-of-repo direnv store). `resolve` walks `extends:` without it.
-        let config = crate::config::parse_file_with_extends(config_path)?;
+        let mut config = crate::config::parse_file_with_extends(config_path)?;
+        crate::arch::lowering::lower_architecture(&mut config)?;
 
         // Validate every check's file globs by constructing the matcher up
         // front, and cache it so `check_matches_path` never rebuilds a GlobSet.

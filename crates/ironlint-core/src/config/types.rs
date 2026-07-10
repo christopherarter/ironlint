@@ -17,6 +17,11 @@ pub struct Config {
     /// `__arch__` check (see `arch::lowering`). None = no architecture rules.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub architecture: Option<crate::arch::config::ArchConfig>,
+    /// Transient: serialized architecture layers YAML, stashed so the runner
+    /// can materialize `$IRONLINT_ARCH_LAYERS` for the synthetic `__arch__`
+    /// check. Never serialized/deserialized.
+    #[serde(skip)]
+    pub arch_layers_yaml: Option<String>,
     pub checks: BTreeMap<String, Check>,
 }
 
