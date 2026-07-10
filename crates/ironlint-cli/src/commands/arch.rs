@@ -108,6 +108,17 @@ fn run_check(
 }
 
 fn map_check_outcome(outcome: ArchOutcome) -> i32 {
+    // Exit codes: 0 Pass / 2 Block / 3 InternalError. Standalone
+    // `ironlint arch check` (graph/why diagnostics) honors all three.
+    //
+    // When lowered into the `__arch__` check and run through the pipeline,
+    // the check ABI classifies exit 1–125 as Block — so this InternalError
+    // (exit 3) surfaces as a Block (exit 2) from `ironlint check`, NOT an
+    // InternalError. That is conservative (over-blocks, never under-blocks;
+    // no silent pass) and is the only sound choice short of breaking either
+    // the check ABI or the "arch is an ordinary check" invariant. A broken
+    // arch check (e.g. graph build failure) blocks the write rather than
+    // letting it through.
     match outcome {
         ArchOutcome::Pass => 0,
         ArchOutcome::Block { violations } => {
