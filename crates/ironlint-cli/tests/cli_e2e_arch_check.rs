@@ -50,7 +50,7 @@ fn arch_check_blocks_forbidden_import_through_ironlint_check() {
     cmd.write_stdin("import { db } from '../data/db';\nexport { db };\n")
         .assert()
         .code(2)
-        .stdout(contains("presentation"));
+        .stderr(contains("presentation"));
 }
 
 #[test]
@@ -95,7 +95,7 @@ fn arch_check_blocks_on_disk_forbidden_import() {
         .args(["check", "--config", ".ironlint.yml"])
         .assert()
         .code(2)
-        .stdout(contains("presentation"));
+        .stderr(contains("presentation"));
 }
 
 #[test]

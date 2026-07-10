@@ -418,18 +418,8 @@ pub(crate) fn emit(v: &Verdict, format: OutputFormat) -> Result<()> {
         }
         OutputFormat::Human => {
             for b in &v.blocks {
-                // Architecture-enforcement violations are surfaced on stdout so
-                // that agent-facing output from `ironlint arch check` (which
-                // prints violations on stdout per the architecture spec) stays
-                // visible when the check is lowered into the pipeline. All other
-                // block messages remain on stderr.
-                if b.check == "__arch__" {
-                    println!("block: [{}] {}", b.check, b.file.as_deref().unwrap_or(""));
-                    println!("  {}", b.message);
-                } else {
-                    eprintln!("block: [{}] {}", b.check, b.file.as_deref().unwrap_or(""));
-                    eprintln!("  {}", b.message);
-                }
+                eprintln!("block: [{}] {}", b.check, b.file.as_deref().unwrap_or(""));
+                eprintln!("  {}", b.message);
             }
             for e in &v.errors {
                 eprintln!(
