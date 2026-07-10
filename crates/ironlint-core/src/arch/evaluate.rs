@@ -255,4 +255,36 @@ mod tests {
         };
         assert!(evaluate(&graph, &config).is_empty());
     }
+
+    #[test]
+    fn skip_edge_when_target_not_in_graph() {
+        let graph = DepGraph {
+            nodes: HashMap::from_iter([(
+                PathBuf::from("/a"),
+                Node {
+                    layer: Some(0),
+                    edges: vec![Edge {
+                        target: PathBuf::from("/b"), // /b is NOT in graph.nodes
+                        spec: "'./b'".into(),
+                        line: 1,
+                    }],
+                },
+            )]),
+            root: PathBuf::from("/"),
+        };
+        let config = ArchConfig {
+            layers: vec![crate::arch::config::LayerDecl {
+                name: "presentation".into(),
+                globs: vec![],
+            }],
+            rules: vec![RuleDecl {
+                from: "presentation".into(),
+                may_import: vec![],
+            }],
+            ignore: vec![],
+        };
+        // The edge targets /b which has no node in the graph,
+        // so the continue branch is taken and no violation is emitted.
+        assert!(evaluate(&graph, &config).is_empty());
+    }
 }

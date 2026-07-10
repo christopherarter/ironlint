@@ -15,3 +15,18 @@ pub fn for_path(path: &Path) -> Option<(Box<dyn ImportExtractor>, Box<dyn Resolv
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn for_path_no_extension() {
+        assert!(for_path(Path::new("foo")).is_none());
+    }
+
+    #[test]
+    fn for_path_unsupported_extension() {
+        assert!(for_path(Path::new("foo.rs")).is_none());
+    }
+}
