@@ -1,1 +1,258 @@
-//! (populated in later tasks)
+//! Policy evaluator: walks the whole dependency graph and reports layer-rule
+//! violations.
+//!
+//! For each edge, if the importer's layer has a rule whose `may_import` excludes
+//! the target's layer, a `Violation` is emitted. Unlayered importers are skipped
+//! (permissive by default). Unlayered targets are allowed.
+
+use crate::arch::config::ArchConfig;
+use crate::arch::graph::{DepGraph, LayerId};
+use std::path::PathBuf;
+
+/// A single architecture-rule violation: an edge whose import is forbidden by
+/// the importer's layer rule.
+#[derive(Debug, Clone)]
+pub struct Violation {
+    pub importer: PathBuf,
+    pub target: PathBuf,
+    pub importer_layer: LayerId,
+    pub target_layer: LayerId,
+    pub spec: String,
+    pub line: usize,
+    pub rule_from: String,
+}
+
+/// Evaluate the whole graph against layer rules.
+///
+/// For each edge, if the importer's layer has a rule whose `may_import`
+/// excludes the target's layer, a violation is emitted. Unlayered
+/// importers (no rule) are treated as permissive. Unlayered targets
+/// are always allowed.
+pub fn evaluate(graph: &DepGraph, config: &ArchConfig) -> Vec<Violation> {
+    let mut out = Vec::new();
+    for (importer, node) in &graph.nodes {
+        let Some(importer_layer) = node.layer else {
+            continue;
+        };
+        let layer_name = &config.layers[importer_layer].name;
+        let Some(rule) = config.rules.iter().find(|r| r.from == *layer_name) else {
+            continue; // no rule for this layer → permissive
+        };
+        for edge in &node.edges {
+            let Some(target_node) = graph.nodes.get(&edge.target) else {
+                continue;
+            };
+            let Some(target_layer) = target_node.layer else {
+                continue;
+            };
+            let target_name = &config.layers[target_layer].name;
+            if !rule.may_import.iter().any(|m| m == target_name) {
+                out.push(Violation {
+                    importer: importer.clone(),
+                    target: edge.target.clone(),
+                    importer_layer,
+                    target_layer,
+                    spec: edge.spec.clone(),
+                    line: edge.line,
+                    rule_from: layer_name.clone(),
+                });
+            }
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::arch::config::RuleDecl;
+    use crate::arch::graph::{DepGraph, Edge, Node};
+    use std::collections::HashMap;
+
+    fn node(id: Option<LayerId>) -> Node {
+        Node::new(id)
+    }
+
+    #[test]
+    fn violation_when_forbidden() {
+        let graph = DepGraph {
+            nodes: HashMap::from_iter([
+                (
+                    PathBuf::from("/a"),
+                    Node {
+                        layer: Some(0),
+                        edges: vec![Edge {
+                            target: PathBuf::from("/b"),
+                            spec: "'./b'".into(),
+                            line: 1,
+                        }],
+                    },
+                ),
+                (PathBuf::from("/b"), node(Some(1))),
+            ]),
+            root: PathBuf::from("/"),
+        };
+        let config = ArchConfig {
+            layers: vec![
+                crate::arch::config::LayerDecl {
+                    name: "presentation".into(),
+                    globs: vec![],
+                },
+                crate::arch::config::LayerDecl {
+                    name: "data".into(),
+                    globs: vec![],
+                },
+            ],
+            rules: vec![RuleDecl {
+                from: "presentation".into(),
+                may_import: vec![],
+            }],
+            ignore: vec![],
+        };
+        let violations = evaluate(&graph, &config);
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0].rule_from, "presentation");
+    }
+
+    #[test]
+    fn no_violation_when_permitted() {
+        let graph = DepGraph {
+            nodes: HashMap::from_iter([
+                (
+                    PathBuf::from("/a"),
+                    Node {
+                        layer: Some(0),
+                        edges: vec![Edge {
+                            target: PathBuf::from("/b"),
+                            spec: "'./b'".into(),
+                            line: 1,
+                        }],
+                    },
+                ),
+                (PathBuf::from("/b"), node(Some(1))),
+            ]),
+            root: PathBuf::from("/"),
+        };
+        let config = ArchConfig {
+            layers: vec![
+                crate::arch::config::LayerDecl {
+                    name: "presentation".into(),
+                    globs: vec![],
+                },
+                crate::arch::config::LayerDecl {
+                    name: "data".into(),
+                    globs: vec![],
+                },
+            ],
+            rules: vec![RuleDecl {
+                from: "presentation".into(),
+                may_import: vec!["data".into()],
+            }],
+            ignore: vec![],
+        };
+        let violations = evaluate(&graph, &config);
+        assert!(violations.is_empty());
+    }
+
+    #[test]
+    fn skip_unlayered_importer() {
+        let graph = DepGraph {
+            nodes: HashMap::from_iter([
+                (PathBuf::from("/a"), node(None)), // unlayered
+            ]),
+            root: PathBuf::from("/"),
+        };
+        let config = ArchConfig {
+            layers: vec![crate::arch::config::LayerDecl {
+                name: "presentation".into(),
+                globs: vec![],
+            }],
+            rules: vec![RuleDecl {
+                from: "presentation".into(),
+                may_import: vec![],
+            }],
+            ignore: vec![],
+        };
+        assert!(evaluate(&graph, &config).is_empty());
+    }
+
+    #[test]
+    fn skip_no_rule_for_layer() {
+        let graph = DepGraph {
+            nodes: HashMap::from_iter([
+                (
+                    PathBuf::from("/a"),
+                    Node {
+                        layer: Some(0),
+                        edges: vec![Edge {
+                            target: PathBuf::from("/b"),
+                            spec: "'./b'".into(),
+                            line: 1,
+                        }],
+                    },
+                ),
+                (PathBuf::from("/b"), node(Some(0))),
+            ]),
+            root: PathBuf::from("/"),
+        };
+        let config = ArchConfig {
+            layers: vec![crate::arch::config::LayerDecl {
+                name: "presentation".into(),
+                globs: vec![],
+            }],
+            rules: vec![], // no rule for presentation
+            ignore: vec![],
+        };
+        assert!(evaluate(&graph, &config).is_empty());
+    }
+
+    #[test]
+    fn skip_unlayered_target() {
+        let graph = DepGraph {
+            nodes: HashMap::from_iter([
+                (
+                    PathBuf::from("/a"),
+                    Node {
+                        layer: Some(0),
+                        edges: vec![Edge {
+                            target: PathBuf::from("/b"),
+                            spec: "'./b'".into(),
+                            line: 1,
+                        }],
+                    },
+                ),
+                (PathBuf::from("/b"), node(None)), // unlayered target
+            ]),
+            root: PathBuf::from("/"),
+        };
+        let config = ArchConfig {
+            layers: vec![crate::arch::config::LayerDecl {
+                name: "presentation".into(),
+                globs: vec![],
+            }],
+            rules: vec![RuleDecl {
+                from: "presentation".into(),
+                may_import: vec![],
+            }],
+            ignore: vec![],
+        };
+        assert!(evaluate(&graph, &config).is_empty());
+    }
+
+    #[test]
+    fn empty_graph_no_violations() {
+        let graph = DepGraph {
+            nodes: HashMap::new(),
+            root: PathBuf::from("/"),
+        };
+        let config = ArchConfig {
+            layers: vec![crate::arch::config::LayerDecl {
+                name: "presentation".into(),
+                globs: vec![],
+            }],
+            rules: vec![],
+            ignore: vec![],
+        };
+        assert!(evaluate(&graph, &config).is_empty());
+    }
+}
