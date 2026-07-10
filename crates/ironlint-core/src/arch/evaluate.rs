@@ -394,4 +394,139 @@ mod tests {
         // so the continue branch is taken and no violation is emitted.
         assert!(evaluate(&graph, &config).is_empty());
     }
+
+    #[test]
+    fn no_rule_for_importer_layer_returns_empty() {
+        // Importer classifies into "present" layer but no rule
+        // defines "present" → line 83 returns early.
+        let graph = DepGraph {
+            nodes: HashMap::from_iter([(PathBuf::from("/repo/src/components/lib.ts"), node(None))]),
+            root: PathBuf::from("/repo"),
+        };
+        let config = ArchConfig {
+            layers: vec![
+                crate::arch::config::LayerDecl {
+                    name: "data".into(),
+                    globs: vec!["src/data/**".into()],
+                },
+                crate::arch::config::LayerDecl {
+                    name: "present".into(),
+                    globs: vec!["src/components/**".into()],
+                },
+            ],
+            rules: vec![RuleDecl {
+                from: "present".into(),
+                may_import: vec!["data".into()],
+            }],
+            ignore: vec![],
+        };
+        let violations = evaluate_outgoing(
+            b"import { x } from './other';",
+            Path::new("/repo/src/components/lib.ts"),
+            Path::new("/repo"),
+            &graph,
+            &config,
+        )
+        .unwrap();
+        assert!(
+            violations.is_empty(),
+            "no rule for 'present' layer → early return"
+        );
+    }
+
+    #[test]
+    fn unresolved_import_continues() {
+        // Import spec that does NOT resolve to any file on disk,
+        // resolver.resolve returns None → line 88 continues.
+        let graph = DepGraph {
+            nodes: HashMap::from_iter([
+                (
+                    PathBuf::from("/repo/src/components/lib.ts"),
+                    Node {
+                        layer: Some(0),
+                        edges: vec![],
+                    },
+                ),
+                (
+                    PathBuf::from("/repo/src/components/other.ts"),
+                    node(Some(0)),
+                ),
+            ]),
+            root: PathBuf::from("/repo"),
+        };
+        let config = ArchConfig {
+            layers: vec![crate::arch::config::LayerDecl {
+                name: "present".into(),
+                globs: vec!["src/components/**".into()],
+            }],
+            rules: vec![RuleDecl {
+                from: "present".into(),
+                may_import: vec!["data".into()],
+            }],
+            ignore: vec![],
+        };
+        let violations = evaluate_outgoing(
+            b"import { x } from '../src/nonexistent_z9x8y7';",
+            Path::new("/repo/src/components/lib.ts"),
+            Path::new("/repo"),
+            &graph,
+            &config,
+        )
+        .unwrap();
+        assert!(
+            violations.is_empty(),
+            "unresolved import → continue, no violation"
+        );
+    }
+
+    #[test]
+    fn target_unlayered_returns_empty() {
+        // Import resolves to a file on disk, but that file is not
+        // classified into any layer (no rule matches its path).
+        // resolver.resolve returns Some → graph.nodes.get() returns Some →
+        // node.layer is None → line 91 continues.
+        let target_path = PathBuf::from("/repo/external_z9x8y7.ts");
+        let graph = DepGraph {
+            nodes: HashMap::from_iter([
+                (
+                    PathBuf::from("/repo/src/components/lib.ts"),
+                    Node {
+                        layer: Some(0),
+                        edges: vec![],
+                    },
+                ),
+                // Target exists in graph but has no layer assignment.
+                (target_path.clone(), node(None)),
+            ]),
+            root: PathBuf::from("/repo"),
+        };
+        let config = ArchConfig {
+            layers: vec![crate::arch::config::LayerDecl {
+                name: "present".into(),
+                globs: vec!["src/components/**".into()],
+            }],
+            rules: vec![RuleDecl {
+                from: "present".into(),
+                may_import: vec!["data".into()],
+            }],
+            ignore: vec![],
+        };
+        // Write the target file to disk so the resolver finds it.
+        std::fs::create_dir_all(target_path.parent().unwrap()).ok();
+        std::fs::write(&target_path, "// placeholder").ok();
+        let violations = evaluate_outgoing(
+            b"import { x } from '../external_z9x8y7';",
+            Path::new("/repo/src/components/lib.ts"),
+            Path::new("/repo"),
+            &graph,
+            &config,
+        )
+        .unwrap();
+        assert!(
+            violations.is_empty(),
+            "target unlayered → continue, no violation"
+        );
+        // Clean up the temp file.
+        std::fs::remove_file(&target_path).ok();
+    }
 }
