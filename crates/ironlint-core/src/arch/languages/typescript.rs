@@ -11,9 +11,11 @@ pub struct TypescriptExtractor {
 
 impl TypescriptExtractor {
     pub fn new() -> Self {
-        Self {
-            lang: tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
-        }
+        Self::with_language(tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into())
+    }
+
+    pub fn with_language(lang: tree_sitter::Language) -> Self {
+        Self { lang }
     }
 }
 
