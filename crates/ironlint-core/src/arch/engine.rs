@@ -4,7 +4,31 @@
 use crate::arch::config::ArchConfig;
 use crate::arch::evaluate::{evaluate, evaluate_outgoing, Violation};
 use crate::arch::graph::DepGraph;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+/// Resolve a path to its canonical form, falling back to the raw path when
+/// any intermediate component cannot be resolved on disk.
+fn canonicalize_through_parent(path: &Path) -> PathBuf {
+    if let Ok(c) = path.canonicalize() {
+        return c;
+    }
+    let mut suffix: Vec<std::ffi::OsString> = Vec::new();
+    let mut cursor = path.to_path_buf();
+    while let Some(name) = cursor.file_name() {
+        suffix.push(name.to_os_string());
+        if !cursor.pop() {
+            break;
+        }
+        if let Ok(c) = cursor.canonicalize() {
+            let mut out = c;
+            for seg in suffix.into_iter().rev() {
+                out.push(seg);
+            }
+            return out;
+        }
+    }
+    path.to_path_buf()
+}
 
 /// Outcome of an architecture check.
 #[derive(Debug, Clone)]
@@ -61,11 +85,16 @@ impl ArchEngine {
 
     /// Return every architecture violation whose importer is `path`.
     pub fn why(root: &Path, config: &ArchConfig, path: &Path) -> Result<Vec<Violation>, String> {
-        let g = DepGraph::build(root, config).map_err(|e| format!("{e:#}"))?;
+        // Graph keys are canonical (they come from walking `root`), so canonicalize
+        // both `root` and the requested path before comparing. This keeps `why`
+        // correct when callers pass symlinked paths such as `/tmp/...` on macOS,
+        // where `/tmp` resolves to `/private/tmp`.
+        let root = canonicalize_through_parent(root);
+        let g = DepGraph::build(&root, config).map_err(|e| format!("{e:#}"))?;
         let requested = if path.is_absolute() {
-            path.to_path_buf()
+            canonicalize_through_parent(path)
         } else {
-            root.join(path)
+            canonicalize_through_parent(&root.join(path))
         };
         Ok(evaluate(&g, config)
             .into_iter()

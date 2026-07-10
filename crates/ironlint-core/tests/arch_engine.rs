@@ -1,7 +1,7 @@
 use ironlint_core::arch::config::ArchConfig;
 use ironlint_core::arch::engine::{ArchEngine, ArchOutcome};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 fn forbidden_config() -> ArchConfig {
     serde_yaml::from_str(
@@ -133,11 +133,11 @@ fn graph_returns_error_when_root_missing() {
 #[test]
 fn why_returns_importer_violations() {
     let dir = tempfile::tempdir().unwrap();
-    let root = dir.path();
-    make_ts_repo(root);
+    let root = dir.path().canonicalize().unwrap();
+    make_ts_repo(&root);
 
     let violations = ArchEngine::why(
-        root,
+        &root,
         &forbidden_config(),
         Path::new("src/components/App.tsx"),
     )
@@ -161,20 +161,53 @@ fn why_returns_empty_for_unrelated_importer() {
 #[test]
 fn why_returns_violations_for_absolute_path() {
     let dir = tempfile::tempdir().unwrap();
-    let root = dir.path();
-    make_ts_repo(root);
+    let root = dir.path().canonicalize().unwrap();
+    make_ts_repo(&root);
 
     // Pass an ABSOLUTE path — exercises the `path.is_absolute()` → true arm
     // in `ArchEngine::why` that was previously untested (existing tests use
     // a relative path like "src/components/App.tsx").
     let violations = ArchEngine::why(
-        root,
+        &root,
         &forbidden_config(),
         &root.join("src/components/App.tsx"),
     )
     .unwrap();
     assert_eq!(violations.len(), 1);
     assert_eq!(violations[0].importer, root.join("src/components/App.tsx"));
+    assert_eq!(violations[0].rule_from, "presentation");
+}
+
+/// Build a non-canonical path alias through the `/tmp` -> `/private/tmp`
+/// symlink on macOS. Returns `None` if the path is not under `/private/tmp`.
+fn symlink_alias_through_tmp(path: &Path) -> Option<PathBuf> {
+    let s = path.to_str()?;
+    let stripped = s.strip_prefix("/private/tmp")?;
+    Some(PathBuf::from(format!("/tmp{}", stripped)))
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn why_finds_violations_via_symlinked_path() {
+    // On macOS `tempfile::tempdir_in("/private/tmp")` gives a canonical root
+    // under `/private/tmp`; `/tmp` is a symlink to that directory. Passing the
+    // non-canonical `/tmp/...` alias exercises the mismatch between graph keys
+    // (canonical) and the requested path (non-canonical) that Bug 10 fixed.
+    let dir = tempfile::tempdir_in("/private/tmp").unwrap();
+    let root = dir.path();
+    make_ts_repo(root);
+
+    let canon = root.join("src/components/App.tsx");
+    let alias =
+        symlink_alias_through_tmp(&canon).expect("tempdir should be located under /private/tmp");
+
+    let violations = ArchEngine::why(root, &forbidden_config(), &alias).unwrap();
+    assert_eq!(
+        violations.len(),
+        1,
+        "should find violation via non-canonical path"
+    );
+    assert_eq!(violations[0].importer, canon);
     assert_eq!(violations[0].rule_from, "presentation");
 }
 
