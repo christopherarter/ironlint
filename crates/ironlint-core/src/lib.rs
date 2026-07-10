@@ -3,6 +3,7 @@
 #![warn(clippy::cognitive_complexity)]
 
 pub mod adapter;
+pub mod arch;
 pub mod config;
 pub mod diff;
 pub mod disable;
