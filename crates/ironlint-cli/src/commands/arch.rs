@@ -6,8 +6,31 @@ use ironlint_core::arch::graph::DepGraph;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+fn canonicalize_through_parent(path: &Path) -> PathBuf {
+    if let Ok(c) = path.canonicalize() {
+        return c;
+    }
+    let mut suffix: Vec<std::ffi::OsString> = Vec::new();
+    let mut cursor = path.to_path_buf();
+    while let Some(name) = cursor.file_name() {
+        suffix.push(name.to_os_string());
+        if !cursor.pop() {
+            break;
+        }
+        if let Ok(c) = cursor.canonicalize() {
+            let mut out = c;
+            for seg in suffix.into_iter().rev() {
+                out.push(seg);
+            }
+            return out;
+        }
+    }
+    path.to_path_buf()
+}
+
 fn load_config(layers: Option<PathBuf>, root: Option<PathBuf>) -> Result<(PathBuf, ArchConfig)> {
     let root = root.unwrap_or_else(|| std::env::current_dir().unwrap());
+    let root = canonicalize_through_parent(&root);
     let layers_path = layers.unwrap_or_else(|| root.join(".ironlint").join("arch.yml"));
     let content = std::fs::read_to_string(&layers_path)
         .with_context(|| format!("reading layers file {}", layers_path.display()))?;
@@ -73,6 +96,7 @@ fn run_check(
                 } else {
                     root.join(path)
                 };
+                let absolute = canonicalize_through_parent(&absolute);
                 ArchEngine::check_write(root, config, &absolute, &content)
             }
             None => ArchEngine::check_whole(root, config),

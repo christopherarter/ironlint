@@ -18,7 +18,7 @@ pub fn lower_architecture(cfg: &mut Config) -> Result<()> {
     let arch = cfg.architecture.take().expect("checked above");
     arch.validate()?;
     let yaml = serde_yaml::to_string(&arch).unwrap_or_default();
-    let run = "ironlint arch check --layers \"$IRONLINT_ARCH_LAYERS\" --root \"$IRONLINT_ROOT\" --event \"$IRONLINT_EVENT\" --file \"$IRONLINT_FILE\"".to_string();
+    let run = "ironlint arch check --layers \"$IRONLINT_ARCH_LAYERS\" --root \"$IRONLINT_ROOT\" ${IRONLINT_EVENT:+--event \"$IRONLINT_EVENT\"} ${IRONLINT_FILE:+--file \"$IRONLINT_FILE\"}".to_string();
     cfg.checks.insert(
         "__arch__".to_string(),
         Check {
