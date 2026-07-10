@@ -39,20 +39,41 @@ impl ImportExtractor for TypescriptExtractor {
             (call_expression
               function: (import)
               arguments: (arguments (string) @src))
+            (call_expression
+              function: (identifier) @func
+              arguments: (arguments (string) @src))
             ",
         )
         .expect("valid query");
+        let src_idx = query.capture_index_for_name("src").expect("src capture");
+        let func_idx = query.capture_index_for_name("func").expect("func capture");
         for m in cursor.matches(&query, tree.root_node(), source) {
+            // For the `require(...)` pattern, @func and @src are both present
+            // in the same match; gate the @src on @func being exactly "require".
+            // The other patterns only capture @src, so func is None and the
+            // src is emitted unconditionally.
+            let mut func_text: Option<&str> = None;
+            let mut src_node: Option<tree_sitter::Node> = None;
             for cap in m.captures {
-                let node = cap.node;
-                let text = node.utf8_text(source).unwrap_or("");
-                let spec = text.trim_matches(|c| c == '"' || c == '\'').to_string();
-                if !spec.is_empty() {
-                    out.push(ImportSource {
-                        spec,
-                        line: node.start_position().row + 1,
-                    });
+                if cap.index == func_idx {
+                    func_text = Some(cap.node.utf8_text(source).unwrap_or(""));
+                } else if cap.index == src_idx {
+                    src_node = Some(cap.node);
                 }
+            }
+            let Some(node) = src_node else { continue };
+            if let Some(func) = func_text {
+                if func != "require" {
+                    continue;
+                }
+            }
+            let text = node.utf8_text(source).unwrap_or("");
+            let spec = text.trim_matches(|c| c == '"' || c == '\'').to_string();
+            if !spec.is_empty() {
+                out.push(ImportSource {
+                    spec,
+                    line: node.start_position().row + 1,
+                });
             }
         }
         out
@@ -175,6 +196,39 @@ mod tests {
             extract("const m = import('./lazy');"),
             vec!["./lazy".to_string()]
         );
+    }
+
+    #[test]
+    fn extracts_commonjs_require() {
+        // require("../data/db") is a CommonJS import — must be extracted so a
+        // forbidden .cjs import cannot sneak through. (Bug 2.)
+        assert_eq!(
+            extract("const db = require('../data/db');"),
+            vec!["../data/db".to_string()]
+        );
+    }
+
+    #[test]
+    fn extracts_require_with_double_quotes() {
+        assert_eq!(
+            extract("const x = require(\"./x\");"),
+            vec!["./x".to_string()]
+        );
+    }
+
+    #[test]
+    fn extracts_require_alongside_esm() {
+        assert_eq!(
+            extract("import a from './a';\nconst b = require('./b');"),
+            vec!["./a".to_string(), "./b".to_string()]
+        );
+    }
+
+    #[test]
+    fn does_not_extract_arbitrary_identifier_call() {
+        // A non-require identifier call with a string arg must NOT be treated
+        // as an import — only `require` qualifies. Guards the @func filter.
+        assert_eq!(extract("const x = load('./config');"), Vec::<String>::new());
     }
 
     #[test]

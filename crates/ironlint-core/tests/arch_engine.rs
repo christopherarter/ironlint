@@ -187,3 +187,59 @@ fn why_returns_error_when_root_missing() {
     );
     assert!(result.is_err());
 }
+
+// --- CommonJS require() (Bug 2) ---
+//
+// require() imports must be extracted so a forbidden .cjs import cannot sneak
+// through. Both the whole-graph sweep and the per-write check must see them.
+
+fn make_cjs_repo(root: &Path) {
+    fs::create_dir_all(root.join("src/components")).unwrap();
+    fs::create_dir_all(root.join("src/data")).unwrap();
+    fs::write(
+        root.join("src/components/App.cjs"),
+        "const db = require('../data/db');\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("src/data/db.cjs"),
+        "module.exports = { db: 1 };\n",
+    )
+    .unwrap();
+}
+
+#[test]
+fn check_whole_blocks_forbidden_cjs_require() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    make_cjs_repo(root);
+
+    let outcome = ArchEngine::check_whole(root, &forbidden_config());
+    match outcome {
+        ArchOutcome::Block { violations } => {
+            assert_eq!(violations.len(), 1);
+            assert_eq!(violations[0].rule_from, "presentation");
+            assert_eq!(violations[0].importer, root.join("src/components/App.cjs"));
+            assert_eq!(violations[0].target, root.join("src/data/db.cjs"));
+        }
+        other => panic!("expected Block, got {other:?}"),
+    }
+}
+
+#[test]
+fn check_write_blocks_proposed_forbidden_cjs_require() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    make_cjs_repo(root);
+
+    let proposed = root.join("src/components/App.cjs");
+    let content = b"const db = require('../data/db');\n";
+    let outcome = ArchEngine::check_write(root, &forbidden_config(), &proposed, content);
+    match outcome {
+        ArchOutcome::Block { violations } => {
+            assert_eq!(violations.len(), 1);
+            assert_eq!(violations[0].rule_from, "presentation");
+        }
+        other => panic!("expected Block, got {other:?}"),
+    }
+}
