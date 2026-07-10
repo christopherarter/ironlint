@@ -123,4 +123,12 @@ mod tests {
             vec!["react".to_string()]
         );
     }
+
+    #[test]
+    fn records_one_indexed_line_number() {
+        let src = "const a = 1;\nimport { x } from './foo';\n";
+        let imports = TypescriptExtractor::new().extract(src.as_bytes());
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].line, 2, "import is on line 2 (1-indexed)");
+    }
 }

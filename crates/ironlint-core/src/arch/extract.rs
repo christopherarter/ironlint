@@ -13,7 +13,7 @@ pub struct ImportSource {
 ///
 /// The query is near-identical across languages; the per-language work is
 /// *which* AST node kinds constitute an import.
-pub trait ImportExtractor {
+pub trait ImportExtractor: Send + Sync {
     /// The tree-sitter language for this extractor.
     fn language(&self) -> tree_sitter::Language;
 
