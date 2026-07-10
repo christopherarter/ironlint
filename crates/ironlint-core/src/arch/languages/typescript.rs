@@ -2,6 +2,7 @@
 
 use crate::arch::extract::{ImportExtractor, ImportSource};
 use crate::arch::resolve::Resolver;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 pub struct TypescriptExtractor {
@@ -92,10 +93,34 @@ impl Resolver for TypescriptResolver {
 }
 
 impl TypescriptResolver {
-    fn resolve_alias(_spec: &str, _root: &Path) -> Option<PathBuf> {
-        // v1: alias resolution reads tsconfig.json `compilerOptions.paths`.
-        // Stubbed to None here; implemented in Task 5. A spec like "@/foo"
-        // with no tsconfig → None (dropped, not a block).
+    fn resolve_alias(spec: &str, root: &Path) -> Option<PathBuf> {
+        let tsconfig = root.join("tsconfig.json");
+        let content = fs::read_to_string(&tsconfig).ok()?;
+        let v: serde_json::Value = serde_json::from_str(&content).ok()?;
+        let co = v.get("compilerOptions")?;
+        let base_url = co.get("baseUrl").and_then(|b| b.as_str()).unwrap_or(".");
+        let paths = co.get("paths")?.as_object()?;
+        for (alias, targets) in paths {
+            if let Some(suffix) = match_alias(alias, spec) {
+                let target = targets.as_array()?.first()?.as_str()?;
+                let resolved = target.replace('*', &suffix);
+                let candidate = root.join(base_url).join(resolved);
+                if let Some(found) = crate::arch::resolve::try_extensions(&candidate) {
+                    return Some(found);
+                }
+            }
+        }
+        None
+    }
+}
+
+fn match_alias(alias: &str, spec: &str) -> Option<String> {
+    if let Some(prefix) = alias.strip_suffix("/*") {
+        let marker = format!("{}/", prefix);
+        spec.strip_prefix(&marker).map(|s| s.to_string())
+    } else if alias == spec {
+        Some(String::new())
+    } else {
         None
     }
 }
@@ -231,5 +256,45 @@ mod resolver_tests {
         let importer = dir.path().join("a.ts");
         let r = TypescriptResolver::new();
         assert_eq!(r.resolve("./nonexistent", &importer, dir.path()), None);
+    }
+
+    #[test]
+    fn resolves_path_alias() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("src").join("components")).unwrap();
+        fs::write(
+            dir.path()
+                .join("src")
+                .join("components")
+                .join("UserCard.tsx"),
+            "export const X = 1;",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("tsconfig.json"),
+            r#"{"compilerOptions":{"baseUrl":".","paths":{"@/*":["src/*"]}}}"#,
+        )
+        .unwrap();
+        let importer = dir.path().join("src").join("main.ts");
+        fs::write(&importer, "").unwrap();
+        let r = TypescriptResolver::new();
+        assert_eq!(
+            r.resolve("@/components/UserCard", &importer, dir.path()),
+            Some(
+                dir.path()
+                    .join("src")
+                    .join("components")
+                    .join("UserCard.tsx")
+            )
+        );
+    }
+
+    #[test]
+    fn alias_without_tsconfig_drops() {
+        let dir = tempfile::tempdir().unwrap();
+        let importer = dir.path().join("a.ts");
+        fs::write(&importer, "").unwrap();
+        let r = TypescriptResolver::new();
+        assert_eq!(r.resolve("@/foo", &importer, dir.path()), None);
     }
 }
