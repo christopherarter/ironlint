@@ -948,7 +948,7 @@ impl IronLintEngine {
         let env = GateEnv {
             file: Some(abs),
             files: std::slice::from_ref(&abs_buf),
-            root: &self.config_dir,
+            root: &self.config_dir_canon,
             event: &self.options.event,
             tmpfile: tmp.as_ref().map(|g| g.path.as_path()),
             arch_layers: arch.as_ref().map(|g| g.path.as_path()),
@@ -1020,7 +1020,7 @@ impl IronLintEngine {
             let env = GateEnv {
                 file: None,
                 files: &matched,
-                root: &self.config_dir,
+                root: &self.config_dir_canon,
                 event: &self.options.event,
                 tmpfile: None,
                 arch_layers: arch.as_ref().map(|g| g.path.as_path()),

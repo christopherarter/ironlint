@@ -98,6 +98,50 @@ fn arch_check_blocks_on_disk_forbidden_import() {
         .stderr(contains("presentation"));
 }
 
+/// Regression for Bug 6: a NESTED relative --config path (e.g. run from the
+/// repo root with `--config packages/app/.ironlint.yml`) must pass the
+/// canonical absolute project root to the arch subprocess. When the runner
+/// used the relative config dir as `$IRONLINT_ROOT` and cwd, the arch
+/// subprocess resolved `--root packages/app` relative to its own cwd
+/// (`packages/app`), looked for `packages/app/packages/app`, and failed to
+/// build the graph — producing a false block.
+#[test]
+fn arch_check_blocks_with_nested_relative_config_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let app_dir = dir.path().join("packages/app");
+    fs::create_dir_all(app_dir.join("src/components")).unwrap();
+    fs::create_dir_all(app_dir.join("src/data")).unwrap();
+
+    let config_body = "architecture:\n  layers:\n    - name: presentation\n      globs: [\"src/components/**\"]\n    - name: data\n      globs: [\"src/data/**\"]\n  rules:\n    - from: presentation\n      may_import: []\nchecks: {}\n";
+    fs::write(app_dir.join(".ironlint.yml"), config_body).unwrap();
+    fs::write(app_dir.join("src/data/db.ts"), "export const db = 1;\n").unwrap();
+    fs::write(
+        app_dir.join("src/components/App.tsx"),
+        "import { db } from '../data/db';\nexport { db };\n",
+    )
+    .unwrap();
+
+    let xdg = tempfile::tempdir().unwrap();
+    Command::cargo_bin("ironlint")
+        .unwrap()
+        .current_dir(dir.path())
+        .env("XDG_CONFIG_HOME", xdg.path())
+        .env("PATH", ironlint_path())
+        .args(["trust", "--config", "packages/app/.ironlint.yml"])
+        .assert()
+        .success();
+
+    Command::cargo_bin("ironlint")
+        .unwrap()
+        .current_dir(dir.path())
+        .env("XDG_CONFIG_HOME", xdg.path())
+        .env("PATH", ironlint_path())
+        .args(["check", "--config", "packages/app/.ironlint.yml"])
+        .assert()
+        .code(2)
+        .stderr(contains("presentation"));
+}
+
 #[test]
 fn arch_check_exits_4_when_unblessed() {
     let (dir, _config, app) = fixture();
