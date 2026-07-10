@@ -7,7 +7,7 @@
 
 use crate::arch::config::ArchConfig;
 use crate::arch::graph::{DepGraph, LayerId};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// A single architecture-rule violation: an edge whose import is forbidden by
 /// the importer's layer rule.
@@ -60,6 +60,54 @@ pub fn evaluate(graph: &DepGraph, config: &ArchConfig) -> Vec<Violation> {
         }
     }
     out
+}
+
+/// Evaluate the proposed content of a single file against the supplied graph.
+///
+/// v1 rebuilds the graph per invocation; callers pass a freshly built graph
+/// so a prior accepted write is already reflected on disk.
+pub fn evaluate_outgoing(
+    proposed_content: &[u8],
+    proposed_path: &Path,
+    root: &Path,
+    graph: &DepGraph,
+    config: &ArchConfig,
+) -> anyhow::Result<Vec<Violation>> {
+    let Some((extractor, resolver)) = crate::arch::languages::for_path(proposed_path) else {
+        return Ok(vec![]);
+    };
+    let Some(importer_layer) = graph.classify(config, proposed_path) else {
+        return Ok(vec![]);
+    };
+    let layer_name = &config.layers[importer_layer].name;
+    let Some(rule) = config.rules.iter().find(|r| r.from == *layer_name) else {
+        return Ok(vec![]);
+    };
+    let mut violations = Vec::new();
+    for import in extractor.extract(proposed_content) {
+        let Some(target) = resolver.resolve(&import.spec, proposed_path, root) else {
+            continue;
+        };
+        let Some(target_layer) = graph.nodes.get(&target).and_then(|node| node.layer) else {
+            continue;
+        };
+        if !rule
+            .may_import
+            .iter()
+            .any(|name| name == &config.layers[target_layer].name)
+        {
+            violations.push(Violation {
+                importer: proposed_path.to_path_buf(),
+                target,
+                importer_layer,
+                target_layer,
+                spec: import.spec,
+                line: import.line,
+                rule_from: layer_name.clone(),
+            });
+        }
+    }
+    Ok(violations)
 }
 
 #[cfg(test)]
@@ -254,6 +302,65 @@ mod tests {
             ignore: vec![],
         };
         assert!(evaluate(&graph, &config).is_empty());
+    }
+
+    #[test]
+    fn unsupported_language_returns_empty() {
+        let graph = DepGraph {
+            nodes: HashMap::new(),
+            root: PathBuf::from("/repo"),
+        };
+        let config = ArchConfig {
+            layers: vec![crate::arch::config::LayerDecl {
+                name: "presentation".into(),
+                globs: vec![],
+            }],
+            rules: vec![],
+            ignore: vec![],
+        };
+        assert!(evaluate_outgoing(
+            b"import { x } from './x';",
+            Path::new("/repo/README.md"),
+            Path::new("/repo"),
+            &graph,
+            &config
+        )
+        .unwrap()
+        .is_empty());
+    }
+
+    #[test]
+    fn unlayered_importer_returns_empty() {
+        let graph = DepGraph {
+            nodes: HashMap::from_iter([(
+                PathBuf::from("/repo/src/lib.ts"),
+                Node {
+                    layer: None,
+                    edges: vec![],
+                },
+            )]),
+            root: PathBuf::from("/repo"),
+        };
+        let config = ArchConfig {
+            layers: vec![crate::arch::config::LayerDecl {
+                name: "presentation".into(),
+                globs: vec!["src/components/**".into()],
+            }],
+            rules: vec![RuleDecl {
+                from: "presentation".into(),
+                may_import: vec![],
+            }],
+            ignore: vec![],
+        };
+        assert!(evaluate_outgoing(
+            b"import { x } from '../data/x';",
+            Path::new("/repo/src/lib.ts"),
+            Path::new("/repo"),
+            &graph,
+            &config
+        )
+        .unwrap()
+        .is_empty());
     }
 
     #[test]
