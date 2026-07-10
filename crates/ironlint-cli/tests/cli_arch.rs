@@ -187,6 +187,24 @@ fn arch_graph_defaults_to_dot() {
 }
 
 #[test]
+fn arch_why_errors_with_exit_3_when_layers_missing() {
+    let (dir, _layers) = fixture(false);
+    Command::cargo_bin("ironlint")
+        .unwrap()
+        .args([
+            "arch",
+            "why",
+            "src/components/App.tsx",
+            "--root",
+            dir.path().to_str().unwrap(),
+            "--layers",
+            dir.path().join(".ironlint/missing.yml").to_str().unwrap(),
+        ])
+        .assert()
+        .code(3);
+}
+
+#[test]
 fn arch_why_accepts_a_root_relative_path() {
     let (dir, layers) = fixture(false);
     let output = Command::cargo_bin("ironlint")
