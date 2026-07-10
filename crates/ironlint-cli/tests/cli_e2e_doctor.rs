@@ -267,6 +267,37 @@ fn doctor_json_includes_trust_and_hooks_rows() {
     );
 }
 
+/// A repo with an `architecture:` block and a `.rs` source file must warn that
+/// Rust has no grammar support in v1. The row only appears when `architecture:`
+/// is present; the file is dropped from the graph rather than silently ignored.
+#[test]
+fn doctor_warns_on_unsupported_arch_grammar() {
+    let dir = tempdir().unwrap();
+    let home = tempdir().unwrap();
+    fs::write(
+        dir.path().join(".ironlint.yml"),
+        "architecture:\n  layers:\n    - name: data\n      globs: [\"src/data/**\"]\nchecks:\n  g:\n    files: [\"**/*.rs\"]\n    run: \"true\"\n",
+    )
+    .unwrap();
+    fs::write(dir.path().join("main.rs"), "fn main() {}\n").unwrap();
+    let out = run_doctor(dir.path(), home.path());
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "grammar warning must not fail doctor: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let s = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        s.contains("architecture") && s.contains("warn"),
+        "expected an `architecture` warn row: {s}"
+    );
+    assert!(
+        s.contains("Rust not supported in v1"),
+        "expected unsupported Rust warning: {s}"
+    );
+}
+
 #[test]
 fn doctor_json_output_is_valid_for_clean_gates_config() {
     let dir = tempdir().unwrap();

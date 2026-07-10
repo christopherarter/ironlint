@@ -603,6 +603,29 @@ mod tests {
     }
 
     #[test]
+    fn editing_architecture_changes_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = dir.path().join(".ironlint.yml");
+        write(
+            &cfg,
+            "architecture:\n  layers:\n    - name: data\n      globs: [\"src/data/**\"]\nchecks:\n  g:\n    files: \"*.rs\"\n    run: \"true\"\n",
+        );
+        let before = compute_hash(&cfg).unwrap();
+        // Edit an architecture layer glob — raw config bytes change, so the
+        // trust hash must change even though compute_hash has no arch-specific
+        // logic (it hashes the entire config file).
+        write(
+            &cfg,
+            "architecture:\n  layers:\n    - name: data\n      globs: [\"src/data/**\", \"src/other/**\"]\nchecks:\n  g:\n    files: \"*.rs\"\n    run: \"true\"\n",
+        );
+        let after = compute_hash(&cfg).unwrap();
+        assert_ne!(
+            before, after,
+            "an architecture block edit must invalidate the hash"
+        );
+    }
+
+    #[test]
     fn editing_a_script_changes_hash() {
         let dir = tempfile::tempdir().unwrap();
         let cfg = dir.path().join(".ironlint.yml");
