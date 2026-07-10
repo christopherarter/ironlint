@@ -166,6 +166,49 @@ pub enum Command {
     /// Exit 0 = allow (empty stdout); exit 2 = block (reason on stdout).
     /// Not a check, not trust-gated; works with no .ironlint.yml present.
     GateBash,
+    /// Architecture-enforcement layer rules: check imports, render the dependency
+    /// graph, or explain why a file is blocked.
+    Arch {
+        #[command(subcommand)]
+        sub: ArchSub,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ArchSub {
+    /// Check the whole graph, or a single proposed write, against layer rules.
+    Check {
+        #[arg(long)]
+        layers: Option<PathBuf>,
+        #[arg(long)]
+        root: Option<PathBuf>,
+        #[arg(
+            long,
+            value_parser = clap::builder::PossibleValuesParser::new(["write", "pre-commit"])
+        )]
+        event: Option<String>,
+        #[arg(long)]
+        file: Option<PathBuf>,
+    },
+    /// Render the dependency graph (DOT by default).
+    Graph {
+        #[arg(long)]
+        layers: Option<PathBuf>,
+        #[arg(long)]
+        root: Option<PathBuf>,
+        #[arg(long, conflicts_with = "json")]
+        dot: bool,
+        #[arg(long, conflicts_with = "dot")]
+        json: bool,
+    },
+    /// Explain every violation whose importer is `<path>`.
+    Why {
+        path: PathBuf,
+        #[arg(long)]
+        layers: Option<PathBuf>,
+        #[arg(long)]
+        root: Option<PathBuf>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
