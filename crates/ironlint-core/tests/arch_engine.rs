@@ -159,6 +159,26 @@ fn why_returns_empty_for_unrelated_importer() {
 }
 
 #[test]
+fn why_returns_violations_for_absolute_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    make_ts_repo(root);
+
+    // Pass an ABSOLUTE path — exercises the `path.is_absolute()` → true arm
+    // in `ArchEngine::why` that was previously untested (existing tests use
+    // a relative path like "src/components/App.tsx").
+    let violations = ArchEngine::why(
+        root,
+        &forbidden_config(),
+        &root.join("src/components/App.tsx"),
+    )
+    .unwrap();
+    assert_eq!(violations.len(), 1);
+    assert_eq!(violations[0].importer, root.join("src/components/App.tsx"));
+    assert_eq!(violations[0].rule_from, "presentation");
+}
+
+#[test]
 fn why_returns_error_when_root_missing() {
     let result = ArchEngine::why(
         Path::new("/does/not/exist/arch-root"),

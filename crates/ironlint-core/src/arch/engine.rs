@@ -46,6 +46,10 @@ impl ArchEngine {
         match evaluate_outgoing(content, proposed, root, &graph, config) {
             Ok(v) if v.is_empty() => ArchOutcome::Pass,
             Ok(v) => ArchOutcome::Block { violations: v },
+            // Defensive: evaluate_outgoing has no fallible path today (all early
+            // returns are `Ok(vec![])` and the final return is `Ok(violations)`),
+            // but keeping this arm so a future fallible addition surfaces as
+            // InternalError rather than panicking on the unwrap.
             Err(e) => ArchOutcome::InternalError(format!("{e:#}")),
         }
     }
