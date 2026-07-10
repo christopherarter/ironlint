@@ -28,13 +28,17 @@ pub fn run(config: &Path, format: ShowFormat) -> Result<i32> {
             return Ok(1);
         }
     };
-    let (cfg, origins) = match ironlint_core::config::extends::resolve_with_origin(&config) {
+    let (mut cfg, origins) = match ironlint_core::config::extends::resolve_with_origin(&config) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("error: {:#}", e);
             return Ok(1);
         }
     };
+    if let Err(e) = ironlint_core::arch::lowering::lower_architecture(&mut cfg) {
+        eprintln!("error: {:#}", e);
+        return Ok(1);
+    }
     let rows = build_rows(&cfg, &origins);
     match format {
         ShowFormat::Tsv => print_tsv(&rows),
@@ -49,10 +53,14 @@ fn build_rows(cfg: &Config, origins: &BTreeMap<String, PathBuf>) -> Vec<Resolved
         .iter()
         .map(|(id, check)| ResolvedCheck {
             check: id.clone(),
-            origin: origins
-                .get(id)
-                .map(|p| p.display().to_string())
-                .unwrap_or_default(),
+            origin: if id == "__arch__" {
+                "<architecture>".to_string()
+            } else {
+                origins
+                    .get(id)
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default()
+            },
             files: check.files.clone(),
             run: check.run.clone().unwrap_or_default(),
         })
