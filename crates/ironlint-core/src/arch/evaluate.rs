@@ -116,6 +116,7 @@ mod tests {
     use crate::arch::config::RuleDecl;
     use crate::arch::graph::{DepGraph, Edge, Node};
     use std::collections::HashMap;
+    use std::fs;
 
     fn node(id: Option<LayerId>) -> Node {
         Node::new(id)
@@ -397,8 +398,8 @@ mod tests {
 
     #[test]
     fn no_rule_for_importer_layer_returns_empty() {
-        // Importer classifies into "present" layer but no rule
-        // defines "present" → line 83 returns early.
+        // Importer classifies into "present" layer but the only rule is for
+        // a different layer, so `find` returns None → line 83 returns early.
         let graph = DepGraph {
             nodes: HashMap::from_iter([(PathBuf::from("/repo/src/components/lib.ts"), node(None))]),
             root: PathBuf::from("/repo"),
@@ -415,8 +416,8 @@ mod tests {
                 },
             ],
             rules: vec![RuleDecl {
-                from: "present".into(),
-                may_import: vec!["data".into()],
+                from: "data".into(),
+                may_import: vec![],
             }],
             ignore: vec![],
         };
@@ -485,20 +486,32 @@ mod tests {
         // classified into any layer (no rule matches its path).
         // resolver.resolve returns Some → graph.nodes.get() returns Some →
         // node.layer is None → line 91 continues.
-        let target_path = PathBuf::from("/repo/external_z9x8y7.ts");
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let components = root.join("src/components");
+        fs::create_dir_all(&components).unwrap();
+        let importer = components.join("lib.ts");
+        fs::write(&importer, "// importer").unwrap();
+
+        // From src/components/lib.ts, '../external_z9x8y7' resolves to
+        // src/external_z9x8y7.ts.
+        let target = root.join("src/external_z9x8y7.ts");
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(&target, "// placeholder").unwrap();
+
         let graph = DepGraph {
             nodes: HashMap::from_iter([
                 (
-                    PathBuf::from("/repo/src/components/lib.ts"),
+                    importer.clone(),
                     Node {
                         layer: Some(0),
                         edges: vec![],
                     },
                 ),
                 // Target exists in graph but has no layer assignment.
-                (target_path.clone(), node(None)),
+                (target.clone(), node(None)),
             ]),
-            root: PathBuf::from("/repo"),
+            root: root.to_path_buf(),
         };
         let config = ArchConfig {
             layers: vec![crate::arch::config::LayerDecl {
@@ -511,13 +524,10 @@ mod tests {
             }],
             ignore: vec![],
         };
-        // Write the target file to disk so the resolver finds it.
-        std::fs::create_dir_all(target_path.parent().unwrap()).ok();
-        std::fs::write(&target_path, "// placeholder").ok();
         let violations = evaluate_outgoing(
             b"import { x } from '../external_z9x8y7';",
-            Path::new("/repo/src/components/lib.ts"),
-            Path::new("/repo"),
+            &importer,
+            root,
             &graph,
             &config,
         )
@@ -526,7 +536,5 @@ mod tests {
             violations.is_empty(),
             "target unlayered → continue, no violation"
         );
-        // Clean up the temp file.
-        std::fs::remove_file(&target_path).ok();
     }
 }

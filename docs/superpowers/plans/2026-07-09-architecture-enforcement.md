@@ -4,9 +4,9 @@
 
 **Goal:** Ship a first-party architecture-enforcement capability in ironlint: declare named layers and directional import rules, and ironlint blocks any write/commit that introduces a forbidden dependency edge — with per-write (outgoing) and pre-commit (whole-graph) enforcement for TypeScript/JavaScript.
 
-**Architecture:** A three-layer engine (tree-sitter import extraction → per-language resolver → language-agnostic policy evaluator) exposed as an `ironlint arch` subcommand. A declarative `architecture:` config block lowers to a synthetic `__arch__` check whose `run` shells out to that subcommand — the runner stays pure (0.4 invariant: no per-rule engines). A content-addressed in-memory graph cache makes per-write fast and correct under multi-file edits.
+**Architecture:** A three-layer engine (tree-sitter import extraction → per-language resolver → language-agnostic policy evaluator) exposed as an `ironlint arch` subcommand. A declarative `architecture:` config block lowers to a synthetic `__arch__` check whose `run` shells out to that subcommand — the runner stays pure (0.4 invariant: no per-rule engines). v1 builds a fresh on-disk graph for each `arch check`; per-write enforcement evaluates only the proposed file's outgoing edges. Persistent or cross-process caching is explicitly deferred because each lowered check runs in a fresh subprocess.
 
-**Tech Stack:** Rust, tree-sitter (+ `tree-sitter-typescript`, `tree-sitter-javascript`), clap, serde_yaml, xxhash (via `twox-hash`), existing ironlint-core/ironlint-cli crates.
+**Tech Stack:** Rust, tree-sitter (+ `tree-sitter-typescript`, `tree-sitter-javascript`), clap, serde_yaml, existing ironlint-core/ironlint-cli crates.
 
 **Spec:** `docs/superpowers/specs/2026-07-09-architecture-enforcement-design.md`
 
@@ -23,9 +23,11 @@
 
 ## Scope of THIS plan
 
-**In:** engine (extract → resolve → graph → evaluate), TS/JS resolver, content-addressed cache, `ironlint arch check|graph|why` subcommand, `architecture:` config block + lowering to `__arch__` check, `$IRONLINT_ARCH_LAYERS` materialization, `extends` whole-block replace, doctor grammar check, trust via existing hash.
+**In:** engine (extract → resolve → graph → evaluate), TS/JS resolver, fresh graph rebuild per invocation, `ironlint arch check|graph|why` subcommand, `architecture:` config block + lowering to `__arch__` check, `$IRONLINT_ARCH_LAYERS` materialization, `extends` whole-block replace, doctor grammar check, trust via existing hash.
 
-**Out (follow-on plans):** Rust, Python, Go, PHP resolvers (additive behind the trait); `--fix` import rewriting; on-disk cache persistence; additive `architecture:` merging under `extends`; content-aware name rules.
+**Out (follow-on plans):** Rust, Python, Go, PHP resolvers (additive behind the trait); persistent or cross-process graph caching; `--fix` import rewriting; additive `architecture:` merging under `extends`; content-aware name rules.
+
+**Design alignment:** This plan deliberately ships TS/JS only. Task 0 first amends the design spec's v1 language-scope table and cache claims to match this deliverable; the plan must not claim support for languages whose imports are dropped.
 
 ---
 
@@ -38,14 +40,13 @@
 - `crates/ironlint-core/src/arch/extract.rs` — `ImportExtractor` trait + `ImportSource` struct.
 - `crates/ironlint-core/src/arch/resolve.rs` — `Resolver` trait + shared resolution helpers (join, try-extensions).
 - `crates/ironlint-core/src/arch/graph.rs` — `DepGraph`, `Node`, `Edge`, `LayerId`, builder.
-- `crates/ironlint-core/src/arch/cache.rs` — `NodeCache`, `CachedNode`, content-hash invalidation.
 - `crates/ironlint-core/src/arch/evaluate.rs` — `Violation`, `evaluate` (whole-graph) + `evaluate_outgoing` (per-file).
-- `crates/ironlint-core/src/arch/engine.rs` — `ArchEngine`: ties extract→resolve→graph→cache→evaluate; the `check`/`graph`/`why` entry points.
+- `crates/ironlint-core/src/arch/engine.rs` — `ArchEngine`: ties extract→resolve→graph→evaluate; the `check`/`graph`/`why` entry points.
 - `crates/ironlint-core/src/arch/languages/mod.rs` — language registry: extension → extractor + resolver.
 - `crates/ironlint-core/src/arch/languages/typescript.rs` — TS/JS `ImportExtractor` + `Resolver` (shared; tsconfig paths, extension inference, barrel index).
 - `crates/ironlint-core/src/arch/lowering.rs` — `lower_architecture(&mut Config)`: `architecture:` block → synthetic `__arch__` check.
 - `crates/ironlint-cli/src/commands/arch.rs` — `ironlint arch check|graph|why` CLI adapter.
-- `crates/ironlint-core/tests/arch_*.rs` — integration tests (resolver fixtures, cache correctness, lowering, exit contract).
+- `crates/ironlint-core/tests/arch_*.rs` — integration tests (resolver fixtures, fresh-graph per-write correctness, lowering, exit contract).
 - `crates/ironlint-cli/tests/cli_arch.rs` — e2e CLI tests.
 
 ### Modified files
@@ -59,8 +60,67 @@
 - `crates/ironlint-cli/src/commands/mod.rs` — `pub mod arch;`.
 - `crates/ironlint-cli/src/main.rs` — dispatch `Command::Arch`.
 - `crates/ironlint-cli/src/commands/doctor.rs` — `check_arch_grammars` sub-check.
-- `crates/ironlint-core/Cargo.toml` — add `tree-sitter`, `tree-sitter-typescript`, `tree-sitter-javascript`, `twox-hash`.
+- `crates/ironlint-core/Cargo.toml` — add `tree-sitter`, `tree-sitter-typescript`, `tree-sitter-javascript`.
 - `crates/ironlint-cli/Cargo.toml` — add `ironlint-core` arch feature if feature-gated (likely not needed; arch is always-on).
+
+---
+
+## Task 0: Reconcile the design scope before implementation
+
+**Files:**
+- Modify: `docs/superpowers/specs/2026-07-09-architecture-enforcement-design.md`
+- Test: document review
+
+**Interfaces:**
+- Produces: one authoritative v1 contract: TS/JS extraction and resolution only; a fresh graph build per `arch` invocation; unsupported languages are explicitly dropped and reported by `doctor`.
+
+- [ ] **Step 1: Amend the design's language scope**
+
+In the design spec's **In scope (v1)** list, replace the multi-language item with:
+
+```markdown
+- tree-sitter import extraction and resolution for **TypeScript and JavaScript**.
+  Rust, Python, Go, and PHP remain additive follow-on implementations behind
+  the extractor/resolver traits.
+```
+
+In **Language sequencing**, retain TS/JS as the first implementation and move
+the Rust/Python/Go/PHP sequence into the follow-on section; do not describe
+those languages as shipping in v1.
+
+- [ ] **Step 2: Amend the cache contract**
+
+Replace the claim that an in-memory cache survives a watch session with:
+
+```markdown
+v1 builds a fresh graph for each `ironlint arch check` invocation. This is
+correct because each prior permitted write has landed on disk before the next
+tool call. Persistent or cross-process caching is deferred: a lowered check
+runs `ironlint arch` in a fresh subprocess, so an in-memory cache cannot span
+writes without a new daemon or a trusted on-disk cache design.
+```
+
+- [ ] **Step 3: Review the two documents together**
+
+Confirm the design and this plan both state TS/JS-only v1, fresh per-invocation
+graph builds, and `doctor` warnings for unsupported source languages. Search:
+
+```bash
+rg -n 'Rust|Python|Go|PHP|cache|in-memory' \
+  docs/superpowers/specs/2026-07-09-architecture-enforcement-design.md \
+  docs/superpowers/plans/2026-07-09-architecture-enforcement.md
+```
+
+Expected: no wording promises unsupported-language enforcement or a
+cross-write in-memory cache in v1.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add docs/superpowers/specs/2026-07-09-architecture-enforcement-design.md \
+        docs/superpowers/plans/2026-07-09-architecture-enforcement.md
+git commit -m "docs(arch): align v1 language and cache scope"
+```
 
 ---
 
@@ -83,7 +143,6 @@ Append to `crates/ironlint-core/Cargo.toml` `[dependencies]`:
 tree-sitter = "0.23"
 tree-sitter-typescript = "0.23"
 tree-sitter-javascript = "0.23"
-twox-hash = "1.6"
 ```
 
 - [ ] **Step 2: Regenerate Cargo.lock and verify it builds**
@@ -103,7 +162,6 @@ Expected: builds (deps resolve). Commit `Cargo.lock` if changed.
 //! (language-agnostic). Exposed via the `ironlint arch` subcommand and the
 //! `architecture:` config block (which lowers to a synthetic `__arch__` check).
 
-pub mod cache;
 pub mod config;
 pub mod engine;
 pub mod evaluate;
@@ -138,7 +196,7 @@ pub mod arch;
 
 - [ ] **Step 4: Create stub files so the module compiles**
 
-Each of `cache.rs`, `config.rs`, `engine.rs`, `evaluate.rs`, `extract.rs`, `graph.rs`, `languages/mod.rs`, `lowering.rs`, `resolve.rs` — empty file with just a module doc comment for now:
+Each of `config.rs`, `engine.rs`, `evaluate.rs`, `extract.rs`, `graph.rs`, `languages/mod.rs`, `lowering.rs`, `resolve.rs` — empty file with just a module doc comment for now:
 
 ```rust
 //! (populated in later tasks)
@@ -166,6 +224,7 @@ git commit -m "feat(arch): add tree-sitter deps + arch module skeleton"
 **Files:**
 - Create: `crates/ironlint-core/src/arch/config.rs`
 - Modify: `crates/ironlint-core/src/config/types.rs` (add field to `Config`)
+- Modify: `crates/ironlint-core/src/config/parser.rs` (run semantic validation)
 - Test: inline in `config.rs`
 
 **Interfaces:**
@@ -193,6 +252,7 @@ pub struct ArchConfig {
 /// YAML mapping (name → glob list), so order = insertion order (deterministic
 /// first-match layer classification).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LayerDecl {
     pub name: String,
     pub globs: Vec<String>,
@@ -235,15 +295,91 @@ mod tests {
         let err = serde_yaml::from_str::<ArchConfig>(yaml).unwrap_err().to_string();
         assert!(err.contains("foo"), "{err}");
     }
+
+    #[test]
+    fn rejects_unknown_and_duplicate_rule_layers() {
+        let unknown: ArchConfig = serde_yaml::from_str(
+            "layers:\n  - name: presentation\n    globs: [\"src/**\"]\nrules:\n  - from: presentaton\n    may_import: []\n",
+        ).unwrap();
+        assert!(unknown.validate().unwrap_err().to_string().contains("presentaton"));
+
+        let duplicate: ArchConfig = serde_yaml::from_str(
+            "layers:\n  - name: presentation\n    globs: [\"src/**\"]\nrules:\n  - from: presentation\n    may_import: []\n  - from: presentation\n    may_import: []\n",
+        ).unwrap();
+        assert!(duplicate.validate().unwrap_err().to_string().contains("duplicate rule"));
+    }
+
+    #[test]
+    fn rejects_duplicate_layers_and_invalid_globs() {
+        let duplicate: ArchConfig = serde_yaml::from_str(
+            "layers:\n  - name: data\n    globs: [\"src/data/**\"]\n  - name: data\n    globs: [\"src/other/**\"]\n",
+        ).unwrap();
+        assert!(duplicate.validate().unwrap_err().to_string().contains("duplicate layer"));
+
+        let bad_glob: ArchConfig = serde_yaml::from_str(
+            "layers:\n  - name: data\n    globs: [\"[\"]\n",
+        ).unwrap();
+        assert!(bad_glob.validate().is_err());
+    }
 }
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p ironlint-core arch::config 2>&1 | tail -10`
-Expected: FAIL — `ArchConfig` not yet wired into anything (the test itself defines the type, so it should actually pass once the file compiles; the real failure is the type not existing in `types.rs` yet). If the inline test passes, proceed — the integration test comes in Step 4.
+Expected: FAIL because `ArchConfig::validate` does not exist yet.
 
-- [ ] **Step 3: Add `architecture` field to `Config`**
+- [ ] **Step 3: Implement semantic validation and add the `Config` field**
+
+Add to `arch/config.rs` above the test module:
+
+```rust
+use anyhow::{bail, Result};
+use globset::Glob;
+use std::collections::HashSet;
+
+impl ArchConfig {
+    pub fn validate(&self) -> Result<()> {
+        if self.layers.is_empty() {
+            bail!("architecture.layers must contain at least one layer");
+        }
+
+        let mut layer_names = HashSet::new();
+        for layer in &self.layers {
+            if layer.name.trim().is_empty() || !layer_names.insert(layer.name.as_str()) {
+                bail!("duplicate or empty architecture layer `{}`", layer.name);
+            }
+            if layer.globs.is_empty() {
+                bail!("architecture layer `{}` must declare at least one glob", layer.name);
+            }
+            for glob in &layer.globs {
+                Glob::new(glob)
+                    .map_err(|e| anyhow::anyhow!("invalid glob `{glob}` in layer `{}`: {e}", layer.name))?;
+            }
+        }
+
+        let mut rule_sources = HashSet::new();
+        for rule in &self.rules {
+            if !layer_names.contains(rule.from.as_str()) {
+                bail!("architecture rule references unknown source layer `{}`", rule.from);
+            }
+            if !rule_sources.insert(rule.from.as_str()) {
+                bail!("duplicate rule for architecture layer `{}`", rule.from);
+            }
+            for target in &rule.may_import {
+                if !layer_names.contains(target.as_str()) {
+                    bail!("architecture rule `{}` references unknown target layer `{target}`", rule.from);
+                }
+            }
+        }
+        for glob in &self.ignore {
+            Glob::new(glob)
+                .map_err(|e| anyhow::anyhow!("invalid architecture ignore glob `{glob}`: {e}"))?;
+        }
+        Ok(())
+    }
+}
+```
 
 In `crates/ironlint-core/src/config/types.rs`, add to the `Config` struct (after `checks`):
 
@@ -252,6 +388,20 @@ In `crates/ironlint-core/src/config/types.rs`, add to the `Config` struct (after
     /// `__arch__` check (see `arch::lowering`). None = no architecture rules.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub architecture: Option<crate::arch::config::ArchConfig>,
+```
+
+In `crates/ironlint-core/src/config/parser.rs`, validate immediately after
+deserialization and before returning the parsed config:
+
+```rust
+let config: Config = serde_yaml::from_str(input).context("parsing .ironlint.yml")?;
+if config.checks.contains_key("__arch__") {
+    return Err(anyhow::anyhow!("`__arch__` is reserved for architecture enforcement"));
+}
+if let Some(architecture) = &config.architecture {
+    architecture.validate()?;
+}
+Ok(config)
 ```
 
 - [ ] **Step 4: Write the integration test (config parses the block)**
@@ -274,6 +424,14 @@ In `crates/ironlint-core/src/config/types.rs` `#[cfg(test)] mod tests`, add:
         let cfg: Config = serde_yaml::from_str("checks:\n  g:\n    files: \"*\"\n    run: \"true\"\n").unwrap();
         assert!(cfg.architecture.is_none());
     }
+
+    #[test]
+    fn rejects_reserved_arch_check_id() {
+        let err = crate::config::parser::parse_str(
+            "checks:\n  __arch__:\n    files: \"*\"\n    run: \"true\"\n",
+        ).unwrap_err().to_string();
+        assert!(err.contains("reserved"), "{err}");
+    }
 ```
 
 - [ ] **Step 5: Run tests**
@@ -284,7 +442,8 @@ Expected: PASS.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add crates/ironlint-core/src/arch/config.rs crates/ironlint-core/src/config/types.rs
+git add crates/ironlint-core/src/arch/config.rs crates/ironlint-core/src/config/types.rs \
+        crates/ironlint-core/src/config/parser.rs
 git commit -m "feat(arch): parse architecture: config block"
 ```
 
@@ -336,7 +495,7 @@ pub trait ImportExtractor {
         self.extract_from_tree(&tree, source)
     }
 
-    /// Extract from an already-parsed tree. (Lets the cache reuse a parse.)
+    /// Extract from an already-parsed tree. (Lets a caller reuse a parse.)
     fn extract_from_tree(&self, tree: &tree_sitter::Tree, source: &[u8]) -> Vec<ImportSource>;
 }
 ```
@@ -481,7 +640,7 @@ Expected: FAIL (query syntax or capture issues are common first time). Iterate o
 Run: `cargo test -p ironlint-core arch::languages::typescript`
 Expected: all 7 tests PASS.
 
-- [ ] **Step 5: Wire into languages registry stub**
+- [ ] **Step 5: Export the extractor module only**
 
 `crates/ironlint-core/src/arch/languages/mod.rs`:
 
@@ -489,27 +648,10 @@ Expected: all 7 tests PASS.
 //! Per-language extractors + resolvers. v1: TypeScript/JavaScript.
 
 pub mod typescript;
-
-use crate::arch::extract::ImportExtractor;
-use crate::arch::resolve::Resolver;
-use std::path::Path;
-
-/// Returns the (extractor, resolver) for a file, based on extension.
-/// None = unsupported language (file dropped from the graph, not an error).
-pub fn for_path(path: &Path) -> Option<(Box<dyn ImportExtractor>, Box<dyn Resolver>)> {
-    let ext = path.extension()?.to_str()?;
-    match ext {
-        "ts" | "tsx" | "mts" | "cts" | "js" | "jsx" | "mjs" | "cjs" => {
-            let ext: Box<dyn ImportExtractor> = Box::new(typescript::TypescriptExtractor::new());
-            let res: Box<dyn Resolver> = Box::new(typescript::TypescriptResolver::new());
-            Some((ext, res))
-        }
-        _ => None,
-    }
-}
 ```
 
-(This references `Resolver`/`TypescriptResolver` from Task 4 — that's fine, Task 4 lands next; the stub compiles once Task 4 is in. If you want this task to compile standalone, gate the `for_path` body behind a `todo!()` until Task 4 and replace in Task 4 Step 1.)
+Do not define `for_path` in this task: its `Resolver` dependency arrives in
+Task 4, and each task must compile independently.
 
 - [ ] **Step 6: Commit**
 
@@ -680,16 +822,42 @@ Add `tempfile = "3"` to `crates/ironlint-core/Cargo.toml` `[dev-dependencies]` i
 Run: `cargo test -p ironlint-core arch::languages::typescript::resolver_tests 2>&1 | tail -15`
 Expected: FAIL (resolver not implemented / `try_extensions` buggy).
 
-- [ ] **Step 4: Implement until tests pass**
+- [ ] **Step 4: Implement the resolver and language registry**
 
-Fix `try_extensions` to the clean single-loop version. Run:
-`cargo test -p ironlint-core arch::languages::typescript::resolver_tests`
+Implement `try_extensions` as the single loop shown in Step 1. Then replace
+`crates/ironlint-core/src/arch/languages/mod.rs` with:
+
+```rust
+//! Per-language extractors + resolvers. v1: TypeScript/JavaScript.
+
+pub mod typescript;
+
+use crate::arch::extract::ImportExtractor;
+use crate::arch::resolve::Resolver;
+use std::path::Path;
+
+pub fn for_path(path: &Path) -> Option<(Box<dyn ImportExtractor>, Box<dyn Resolver>)> {
+    match path.extension()?.to_str()? {
+        "ts" | "tsx" | "mts" | "cts" | "js" | "jsx" | "mjs" | "cjs" => Some((
+            Box::new(typescript::TypescriptExtractor::new()),
+            Box::new(typescript::TypescriptResolver::new()),
+        )),
+        _ => None,
+    }
+}
+```
+
+- [ ] **Step 5: Run the focused tests**
+
+Run: `cargo test -p ironlint-core arch::languages::typescript::resolver_tests`
+
 Expected: all 4 PASS.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add crates/ironlint-core/src/arch/resolve.rs \
+        crates/ironlint-core/src/arch/languages/mod.rs \
         crates/ironlint-core/src/arch/languages/typescript.rs \
         crates/ironlint-core/Cargo.toml
 git commit -m "feat(arch): Resolver trait + TS/JS resolver (relative + barrel)"
@@ -774,7 +942,7 @@ Replace the `resolve_alias` stub. Read `tsconfig.json` from `root`, parse `compi
     }
 ```
 
-Add `match_alias(alias: &str, spec: &str) -> Option<String>` helper: if alias ends with `/*`, match prefix and return the suffix; else exact match returning empty string. Add `serde_json` to `crates/ironlint-core/Cargo.toml` `[dependencies]` if not present (it likely is, via existing deps — check first).
+Add `match_alias(alias: &str, spec: &str) -> Option<String>` helper: if alias ends with `/*`, match prefix and return the suffix; else exact match returning empty string. `serde_json.workspace = true` is already present in `crates/ironlint-core/Cargo.toml`; do not change dependencies for this task.
 
 - [ ] **Step 4: Run tests**
 
@@ -849,7 +1017,7 @@ impl DepGraph {
 }
 ```
 
-`glob_matches` uses the existing `ironlint-core` glob matcher — check `config/scope.rs` for a reusable function; if the scope matcher works on file paths, reuse it. Otherwise use the `globset` crate (likely already a dep). The spec notes scope matching deliberately diverges from raw globset (bare patterns without `/` match at any depth) — for architecture, use **standard globset semantics** (a glob must match the full relative path), since layer globs like `src/components/**` are path-anchored by intent. Document this divergence from `scope.rs`.
+Implement `glob_matches` with `globset::GlobSetBuilder` (the crate is already a workspace dependency). Do not reuse `config/scope.rs`: architecture uses **standard globset semantics**—a glob matches the full relative path—because layer globs such as `src/components/**` are path-anchored by intent. Document this deliberate divergence beside the helper.
 
 - [ ] **Step 2: Write the failing test**
 
@@ -1120,181 +1288,137 @@ git commit -m "feat(arch): policy evaluator (whole-graph)"
 
 ---
 
-## Task 9: Content-addressed node cache + per-write outgoing evaluation
+## Task 9: Per-write outgoing evaluation from a fresh graph
 
 **Files:**
-- Create: `crates/ironlint-core/src/arch/cache.rs`
-- Modify: `crates/ironlint-core/src/arch/evaluate.rs` (add `evaluate_outgoing`)
-- Test: integration
+- Modify: `crates/ironlint-core/src/arch/evaluate.rs`
+- Test: `crates/ironlint-core/tests/arch_write.rs`
 
 **Interfaces:**
-- Consumes: `DepGraph` (Task 7), `ImportExtractor` + `Resolver` (Tasks 3-5).
-- Produces: `NodeCache`, `evaluate_outgoing(proposed_content, proposed_path, &cache, &config) -> Vec<Violation>`.
+- Consumes: a freshly built `DepGraph`, `ImportExtractor`, and `Resolver`.
+- Produces: `evaluate_outgoing(proposed_content, proposed_path, &graph, &config) -> Result<Vec<Violation>>`.
 
-- [ ] **Step 1: Define the cache**
+v1 deliberately does **not** cache across `ironlint arch` invocations. A prior
+allowed write has landed on disk before the next tool call, so rebuilding sees
+the current repository without pretending that a child-process cache persists.
 
-`crates/ironlint-core/src/arch/cache.rs`:
+- [ ] **Step 1: Write the failing per-write tests**
+
+`crates/ironlint-core/tests/arch_write.rs`:
 
 ```rust
-use crate::arch::graph::{Edge, LayerId};
-use std::collections::HashMap;
-use std::path::PathBuf;
+use ironlint_core::arch::{
+    config::ArchConfig,
+    engine::{ArchEngine, ArchOutcome},
+};
+use std::fs;
 
-#[derive(Debug, Clone)]
-pub struct CachedNode {
-    pub hash: u64,
-    pub layer: Option<LayerId>,
-    pub edges: Vec<Edge>,
+fn config(may_import_data: bool) -> ArchConfig {
+    let may_import = if may_import_data { "[data]" } else { "[]" };
+    serde_yaml::from_str(&format!(
+        "layers:\n  - name: presentation\n    globs: [\"src/components/**\"]\n  - name: data\n    globs: [\"src/data/**\"]\nrules:\n  - from: presentation\n    may_import: {may_import}\n"
+    )).unwrap()
 }
 
-#[derive(Debug, Default)]
-pub struct NodeCache {
-    pub entries: HashMap<PathBuf, CachedNode>,
+#[test]
+fn proposed_forbidden_import_blocks_but_allowed_import_passes() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::create_dir_all(root.join("src/components")).unwrap();
+    fs::create_dir_all(root.join("src/data")).unwrap();
+    fs::write(root.join("src/data/db.ts"), "export const db = 1;\n").unwrap();
+    let proposed = root.join("src/components/App.tsx");
+    let content = b"import { db } from '../data/db';\n";
+
+    assert!(matches!(
+        ArchEngine::check_write(root, &config(false), &proposed, content),
+        ArchOutcome::Block { .. }
+    ));
+    assert!(matches!(
+        ArchEngine::check_write(root, &config(true), &proposed, content),
+        ArchOutcome::Pass
+    ));
 }
 
-impl NodeCache {
-    /// Build a cache from a freshly-built graph.
-    pub fn from_graph(graph: &crate::arch::graph::DepGraph) -> Self {
-        let mut cache = NodeCache::default();
-        for (path, node) in &graph.nodes {
-            // Hash is computed from on-disk content at build time; stored so
-            // we can detect later changes. (Build sets it; see refresh_stale.)
-            cache.entries.insert(
-                path.clone(),
-                CachedNode { hash: 0, layer: node.layer, edges: node.edges.clone() },
-            );
-        }
-        cache
-    }
+#[test]
+fn next_write_rebuilds_from_the_prior_accepted_write_on_disk() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::create_dir_all(root.join("src/components")).unwrap();
+    fs::create_dir_all(root.join("src/data")).unwrap();
+    let cfg = config(true);
+    let first = root.join("src/data/new.ts");
+    assert!(matches!(
+        ArchEngine::check_write(root, &cfg, &first, b"export const newValue = 1;\n"),
+        ArchOutcome::Pass
+    ));
+    fs::write(&first, "export const newValue = 1;\n").unwrap();
 
-    /// Re-read a node if its on-disk content hash differs from cached.
-    /// Returns true if the node was refreshed.
-    pub fn refresh_if_stale(&mut self, path: &PathBuf) -> bool {
-        let Ok(content) = std::fs::read(path) else {
-            self.entries.remove(path);
-            return true;
-        };
-        let hash = twox_hash::xxhash3_64::default().finish(&content);
-        if self.entries.get(path).map_or(true, |n| n.hash != hash) {
-            // Re-extract + re-resolve this single node. (Done in engine, not
-            // here — cache stores the result.) Mark for refresh.
-            true
-        } else {
-            false
-        }
-    }
+    let second = root.join("src/components/App.tsx");
+    assert!(matches!(
+        ArchEngine::check_write(root, &cfg, &second, b"import { newValue } from '../data/new';\n"),
+        ArchOutcome::Pass
+    ));
 }
 ```
 
-- [ ] **Step 2: Add `evaluate_outgoing`**
+- [ ] **Step 2: Run the tests to verify they fail**
 
-In `evaluate.rs`:
+Run: `cargo test -p ironlint-core --test arch_write`
+
+Expected: FAIL because `evaluate_outgoing` does not accept a `DepGraph` yet.
+
+- [ ] **Step 3: Implement outgoing evaluation against the supplied graph**
+
+Replace the cache parameter with `graph: &DepGraph`; retain the existing
+extract/resolve loop, but use the supplied graph for target lookup and layer
+classification:
 
 ```rust
-/// Evaluate only the proposed file's outgoing edges (per-write mode).
-/// `proposed_content` is the not-yet-written file content; `proposed_path` is
-/// its eventual on-disk path. The cache holds the rest of the graph.
-///
-/// Cannot check incoming edges (the proposed file isn't on disk for others
-/// to import). That's the honest per-write split — see spec §graph cache.
 pub fn evaluate_outgoing(
     proposed_content: &[u8],
     proposed_path: &Path,
     root: &Path,
-    cache: &NodeCache,
+    graph: &DepGraph,
     config: &ArchConfig,
 ) -> anyhow::Result<Vec<Violation>> {
     let Some((extractor, resolver)) = crate::arch::languages::for_path(proposed_path) else {
-        return Ok(vec![]); // unsupported language → no violations
+        return Ok(vec![]);
     };
-    let imports = extractor.extract(proposed_content);
-    let graph = DepGraph {
-        nodes: cache.entries.iter().map(|(p, n)| (p.clone(), crate::arch::graph::Node { layer: n.layer, edges: n.edges.clone() })).collect(),
-        root: root.to_path_buf(),
+    let Some(importer_layer) = graph.classify(config, proposed_path) else {
+        return Ok(vec![]);
     };
-    let importer_layer = graph.classify(config, proposed_path);
-    let Some(importer_layer) = importer_layer else { return Ok(vec![]); };
     let layer_name = &config.layers[importer_layer].name;
     let Some(rule) = config.rules.iter().find(|r| r.from == *layer_name) else {
-        return Ok(vec![]); // permissive
+        return Ok(vec![]);
     };
-    let mut out = Vec::new();
-    for imp in imports {
-        let Some(target) = resolver.resolve(&imp.spec, proposed_path, root) else { continue };
-        let Some(target_node) = graph.nodes.get(&target) else { continue };
-        let Some(target_layer) = target_node.layer else { continue };
-        let target_name = &config.layers[target_layer].name;
-        if !rule.may_import.iter().any(|m| m == target_name) {
-            out.push(Violation {
-                importer: proposed_path.to_path_buf(),
-                target,
-                importer_layer,
-                target_layer,
-                spec: imp.spec,
-                line: imp.line,
-                rule_from: layer_name.clone(),
+    let mut violations = Vec::new();
+    for import in extractor.extract(proposed_content) {
+        let Some(target) = resolver.resolve(&import.spec, proposed_path, root) else { continue };
+        let Some(target_layer) = graph.nodes.get(&target).and_then(|node| node.layer) else { continue };
+        if !rule.may_import.iter().any(|name| name == &config.layers[target_layer].name) {
+            violations.push(Violation {
+                importer: proposed_path.to_path_buf(), target, importer_layer, target_layer,
+                spec: import.spec, line: import.line, rule_from: layer_name.clone(),
             });
         }
     }
-    Ok(out)
+    Ok(violations)
 }
 ```
 
-- [ ] **Step 3: Write the critical correctness test (multi-file edit)**
+- [ ] **Step 4: Run the focused tests**
 
-`crates/ironlint-core/tests/arch_cache_correctness.rs`:
+Run: `cargo test -p ironlint-core --test arch_write`
 
-```rust
-// The hard case: write A (adds export), then write B (imports from A).
-// The cache must reflect A's new content when evaluating B, or B's import
-// resolves to a stale/missing path (false Block or false Pass).
-use ironlint_core::arch::*;
-use std::fs;
+Expected: PASS. The second test proves the intended v1 correctness property:
+the next invocation sees a previous accepted write from disk.
 
-#[test]
-fn per_write_sees_prior_write_in_session() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path();
-    fs::create_dir_all(root.join("src/data")).unwrap();
-    fs::create_dir_all(root.join("src/components")).unwrap();
-    // A doesn't exist yet on disk.
-    let config: config::ArchConfig = serde_yaml::from_str(
-        "layers:\n  - name: presentation\n    globs: [\"src/components/**\"]\n  - name: data\n    globs: [\"src/data/**\"]\nrules:\n  - from: presentation\n    may_import: [data]\n",
-    ).unwrap();
-    // Build graph (empty — A not on disk). Cache it.
-    let graph = graph::DepGraph::build(root, &config).unwrap();
-    let mut cache = cache::NodeCache::from_graph(&graph);
-    // Simulate write of A: content lands, cache refreshes A.
-    let a_path = root.join("src/data/a.ts");
-    let a_content = b"export const a = 1;\n";
-    cache.insert_virtual(&a_path, a_content, root, &config); // helper: extract+resolve+cache
-    // Now evaluate B's proposed content importing from A.
-    let b_path = root.join("src/components/b.tsx");
-    let b_content = b"import { a } from '../data/a';\n";
-    let violations = evaluate::evaluate_outgoing(b_content, &b_path, root, &cache, &config).unwrap();
-    // A is in layer "data"; presentation may_import [data] → permitted → no violation.
-    assert!(violations.is_empty(), "per-write must see A's session write: {violations:?}");
-}
-```
-
-(Add `insert_virtual` to `NodeCache`: extract imports from content, resolve, store node with content hash. This is the mechanism that lets per-write see prior writes in the session.)
-
-- [ ] **Step 4: Run to verify fail then pass**
-
-Run: `cargo test -p ironlint-core --test arch_cache_correctness`
-Expected: PASS after implementing `insert_virtual` + wiring `evaluate_outgoing`.
-
-- [ ] **Step 5: Mutation-test the cache**
-
-Run: `cargo mutants --file 'crates/ironlint-core/src/arch/cache.rs'`
-Expected: no survivors. A surviving mutant = false pass risk; fix the test.
-
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add crates/ironlint-core/src/arch/cache.rs crates/ironlint-core/src/arch/evaluate.rs \
-        crates/ironlint-core/tests/arch_cache_correctness.rs
-git commit -m "feat(arch): content-addressed cache + per-write outgoing eval"
+git add crates/ironlint-core/src/arch/evaluate.rs crates/ironlint-core/tests/arch_write.rs
+git commit -m "feat(arch): evaluate proposed outgoing imports"
 ```
 
 ---
@@ -1315,8 +1439,7 @@ git commit -m "feat(arch): content-addressed cache + per-write outgoing eval"
 use crate::arch::config::ArchConfig;
 use crate::arch::evaluate::{evaluate, evaluate_outgoing, Violation};
 use crate::arch::graph::DepGraph;
-use crate::arch::cache::NodeCache;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 pub enum ArchOutcome {
     Pass,
@@ -1343,10 +1466,7 @@ impl ArchEngine {
             Ok(g) => g,
             Err(e) => return ArchOutcome::InternalError(format!("{e:#}")),
         };
-        let mut cache = NodeCache::from_graph(&graph);
-        // Refresh any nodes whose on-disk content changed since build (session edits).
-        cache.refresh_stale(root);
-        match evaluate_outgoing(content, proposed, root, &cache, config) {
+        match evaluate_outgoing(content, proposed, root, &graph, config) {
             Ok(v) if v.is_empty() => ArchOutcome::Pass,
             Ok(v) => ArchOutcome::Block { violations: v },
             Err(e) => ArchOutcome::InternalError(format!("{e:#}")),
@@ -1359,14 +1479,18 @@ impl ArchEngine {
 
     pub fn why(root: &Path, config: &ArchConfig, path: &Path) -> Result<Vec<Violation>, String> {
         let g = DepGraph::build(root, config).map_err(|e| format!("{e:#}"))?;
-        Ok(evaluate(&g, config).into_iter().filter(|v| v.importer == path).collect())
+        let requested = if path.is_absolute() { path.to_path_buf() } else { root.join(path) };
+        Ok(evaluate(&g, config)
+            .into_iter()
+            .filter(|v| v.importer == requested)
+            .collect())
     }
 }
 ```
 
 - [ ] **Step 2: Test the outcomes**
 
-`crates/ironlint-core/tests/arch_engine.rs` — assert `check_whole` returns `Block` on the forbidden-edge fixture, `Pass` on the permitted one; `check_write` returns `Block` for a proposed file with a forbidden import; `why` returns the violations for one importer.
+`crates/ironlint-core/tests/arch_engine.rs` — assert `check_whole` returns `Block` on the forbidden-edge fixture, `Pass` on the permitted one; `check_write` returns `Block` for a proposed file with a forbidden import; and `why(root, config, Path::new("src/components/App.tsx"))` returns that importer's violations.
 
 - [ ] **Step 3: Run + commit**
 
@@ -1397,28 +1521,40 @@ In `crates/ironlint-cli/src/cli.rs`, add to the `Command` enum:
 
 ```rust
     Arch {
-        /// Path to the layers YAML file (the `architecture:` block, standalone).
-        #[arg(long)]
-        layers: Option<PathBuf>,
-        /// Project root (default: cwd).
-        #[arg(long)]
-        root: Option<PathBuf>,
-        /// Event: write (per-file, reads stdin) or pre-commit (whole graph).
-        #[arg(long)]
-        event: Option<String>,
-        /// The proposed file path (write mode only).
-        #[arg(long)]
-        file: Option<PathBuf>,
-        /// Emit graph as DOT (graph subcommand) / JSON.
-        #[arg(long)]
-        json: bool,
-        /// Subcommand: check | graph | why <path>
         #[command(subcommand)]
-        sub: Option<ArchSub>,
+        sub: ArchSub,
     },
 ```
 
-(Shape the subcommands `check`/`graph`/`why` per clap's subcommand pattern. If the existing `cli.rs` uses a flat enum rather than nested subcommands, follow whatever pattern `init`/`doctor` use — match the house style.)
+Define each subcommand's own options so the documented and lowered form
+`ironlint arch check --layers ... --root ...` parses correctly:
+
+```rust
+#[derive(clap::Subcommand)]
+pub enum ArchSub {
+    Check {
+        #[arg(long)] layers: Option<PathBuf>,
+        #[arg(long)] root: Option<PathBuf>,
+        #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(["write", "pre-commit"]))]
+        event: Option<String>,
+        #[arg(long)] file: Option<PathBuf>,
+    },
+    Graph {
+        #[arg(long)] layers: Option<PathBuf>,
+        #[arg(long)] root: Option<PathBuf>,
+        #[arg(long, conflicts_with = "json")] dot: bool,
+        #[arg(long, conflicts_with = "dot")] json: bool,
+    },
+    Why {
+        path: PathBuf,
+        #[arg(long)] layers: Option<PathBuf>,
+        #[arg(long)] root: Option<PathBuf>,
+    },
+}
+```
+
+`graph` defaults to DOT when neither `--dot` nor `--json` is supplied; test
+both explicit flags and reject their combination.
 
 - [ ] **Step 2: Implement `commands/arch.rs`**
 
@@ -1427,26 +1563,53 @@ use anyhow::Result;
 use std::io::Read;
 use std::path::PathBuf;
 
-pub fn run(layers: Option<PathBuf>, root: Option<PathBuf>, event: Option<String>, file: Option<PathBuf>, json: bool, sub: Option<crate::cli::ArchSub>) -> Result<i32> {
+fn load_config(layers: Option<PathBuf>, root: Option<PathBuf>) -> Result<(PathBuf, ironlint_core::arch::config::ArchConfig)> {
     let root = root.unwrap_or_else(|| std::env::current_dir().unwrap());
     let layers_path = layers.unwrap_or_else(|| root.join(".ironlint").join("arch.yml"));
     let content = std::fs::read_to_string(&layers_path)
         .map_err(|e| anyhow::anyhow!("reading layers file {}: {e}", layers_path.display()))?;
     let config: ironlint_core::arch::config::ArchConfig = serde_yaml::from_str(&content)?;
-    match sub {
-        Some(crate::cli::ArchSub::Check) => run_check(&root, &config, event, file),
-        Some(crate::cli::ArchSub::Graph) => { run_graph(&root, &config, json); Ok(0) }
-        Some(crate::cli::ArchSub::Why { path }) => { run_why(&root, &config, &path); Ok(0) }
-        None => Ok(0), // shouldn't happen
+    config.validate()?;
+    Ok((root, config))
+}
+
+pub fn run(sub: crate::cli::ArchSub) -> Result<i32> {
+    let result = (|| -> Result<i32> {
+        match sub {
+            crate::cli::ArchSub::Check { layers, root, event, file } => {
+                let (root, config) = load_config(layers, root)?;
+                run_check(&root, &config, event, file)
+            }
+            crate::cli::ArchSub::Graph { layers, root, dot: _, json } => {
+                let (root, config) = load_config(layers, root)?;
+                run_graph(&root, &config, json)
+            }
+            crate::cli::ArchSub::Why { path, layers, root } => {
+                let (root, config) = load_config(layers, root)?;
+                run_why(&root, &config, &path)
+            }
+        }
+    })();
+    match result {
+        Ok(exit) => Ok(exit),
+        Err(error) => {
+            eprintln!("ironlint arch: {error:#}");
+            Ok(3)
+        }
     }
 }
 ```
 
 `run_check`: if `event == write` and `file` set, read stdin (proposed content), call `ArchEngine::check_write`, map `Pass→0`, `Block{violations}→2` (print violations), `InternalError→3` (print to stderr). Else `check_whole` → same mapping.
+`run_graph` and `run_why` return `Result<i32>` and return `Ok(0)` only after
+printing their successful output. This wrapper maps missing layers files,
+invalid layer YAML, semantic validation errors, and engine failures to exit 3
+for all three `arch` subcommands; none may leak through the binary's generic
+exit-1 error path.
 
 - [ ] **Step 3: Wire dispatch in `main.rs`**
 
-Add `Command::Arch { .. } => commands::arch::run(...)?,` mirroring the existing arms. Add `pub mod arch;` to `commands/mod.rs`.
+Add `Command::Arch { sub } => commands::arch::run(sub)?,` mirroring the existing arms. Add `pub mod arch;` to `commands/mod.rs`.
 
 - [ ] **Step 4: Write e2e tests**
 
@@ -1454,26 +1617,77 @@ Add `Command::Arch { .. } => commands::arch::run(...)?,` mirroring the existing 
 
 ```rust
 use assert_cmd::Command;
+use std::fs;
+
+fn fixture(allows_data: bool) -> (tempfile::TempDir, std::path::PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src/components")).unwrap();
+    fs::create_dir_all(dir.path().join("src/data")).unwrap();
+    fs::create_dir_all(dir.path().join(".ironlint")).unwrap();
+    fs::write(dir.path().join("src/data/db.ts"), "export const db = 1;\n").unwrap();
+    fs::write(
+        dir.path().join("src/components/App.tsx"),
+        "import { db } from '../data/db';\nexport { db };\n",
+    ).unwrap();
+    let may_import = if allows_data { "[data]" } else { "[]" };
+    let layers = dir.path().join(".ironlint/arch.yml");
+    fs::write(
+        &layers,
+        format!(
+            "layers:\n  - name: presentation\n    globs: [\"src/components/**\"]\n  - name: data\n    globs: [\"src/data/**\"]\nrules:\n  - from: presentation\n    may_import: {may_import}\n"
+        ),
+    ).unwrap();
+    (dir, layers)
+}
 
 #[test]
 fn arch_check_blocks_on_forbidden_edge() {
-    let dir = tempfile::tempdir().unwrap();
-    // ... write fixture (components/App.tsx imports data/db.ts, rule forbids)
-    // ... write .ironlint/arch.yml
+    let (dir, layers) = fixture(false);
     Command::cargo_bin("ironlint").unwrap()
-        .args(["arch", "check", "--root", dir.path().to_str().unwrap(), "--layers", layers_path])
+        .args(["arch", "check", "--root", dir.path().to_str().unwrap(), "--layers", layers.to_str().unwrap()])
         .assert()
         .code(2);
 }
 
 #[test]
-fn arch_check_passes_when_clean() { /* ... code(0) */ }
+fn arch_check_passes_when_clean() {
+    let (dir, layers) = fixture(true);
+    Command::cargo_bin("ironlint").unwrap()
+        .args(["arch", "check", "--root", dir.path().to_str().unwrap(), "--layers", layers.to_str().unwrap()])
+        .assert()
+        .code(0);
+}
 
 #[test]
-fn arch_graph_exits_0() { /* ... code(0), stdout contains "digraph" */ }
+fn arch_graph_supports_dot_and_json() {
+    let (dir, layers) = fixture(false);
+    let dot = Command::cargo_bin("ironlint").unwrap()
+        .args(["arch", "graph", "--dot", "--root", dir.path().to_str().unwrap(), "--layers", layers.to_str().unwrap()])
+        .output().unwrap();
+    assert!(dot.status.success());
+    assert!(String::from_utf8_lossy(&dot.stdout).contains("digraph"));
+
+    let json = Command::cargo_bin("ironlint").unwrap()
+        .args(["arch", "graph", "--json", "--root", dir.path().to_str().unwrap(), "--layers", layers.to_str().unwrap()])
+        .output().unwrap();
+    assert!(json.status.success());
+    assert!(String::from_utf8_lossy(&json.stdout).trim_start().starts_with('{'));
+
+    Command::cargo_bin("ironlint").unwrap()
+        .args(["arch", "graph", "--dot", "--json", "--root", dir.path().to_str().unwrap(), "--layers", layers.to_str().unwrap()])
+        .assert()
+        .failure();
+}
 
 #[test]
-fn arch_why_exits_0() { /* ... code(0) */ }
+fn arch_why_accepts_a_root_relative_path() {
+    let (dir, layers) = fixture(false);
+    let output = Command::cargo_bin("ironlint").unwrap()
+        .args(["arch", "why", "src/components/App.tsx", "--root", dir.path().to_str().unwrap(), "--layers", layers.to_str().unwrap()])
+        .output().unwrap();
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("presentation"));
+}
 ```
 
 - [ ] **Step 5: Run + commit**
@@ -1512,20 +1726,37 @@ fn lowers_architecture_to_synthetic_check() {
     let mut cfg: Config = serde_yaml::from_str(
         "architecture:\n  layers:\n    - name: data\n      globs: [\"src/data/**\"]\n  rules:\n    - from: data\n      may_import: []\nchecks:\n  g:\n    files: \"*\"\n    run: \"true\"\n",
     ).unwrap();
-    lower_architecture(&mut cfg);
+    lower_architecture(&mut cfg).unwrap();
     let arch = cfg.checks.get("__arch__").expect("synthetic __arch__ check inserted");
     assert!(arch.run.as_deref().unwrap().contains("ironlint arch check"));
     assert!(arch.files.iter().any(|f| f == "**/*"));
+}
+
+#[test]
+fn rejects_user_owned_arch_check_id() {
+    let mut cfg: Config = serde_yaml::from_str(
+        "architecture:\n  layers:\n    - name: data\n      globs: [\"src/data/**\"]\nchecks:\n  __arch__:\n    files: \"*\"\n    run: \"false\"\n",
+    ).unwrap();
+    let err = lower_architecture(&mut cfg).unwrap_err().to_string();
+    assert!(err.contains("reserved check id `__arch__`"), "{err}");
 }
 ```
 
 - [ ] **Step 2: Implement lowering**
 
 ```rust
+use anyhow::{bail, Result};
 use crate::config::types::{Check, Config, Lifecycle};
 
-pub fn lower_architecture(cfg: &mut Config) {
-    let Some(arch) = cfg.architecture.take() else { return };
+pub fn lower_architecture(cfg: &mut Config) -> Result<()> {
+    if cfg.architecture.is_none() {
+        return Ok(());
+    }
+    if cfg.checks.contains_key("__arch__") {
+        bail!("`__arch__` is reserved for the architecture: block");
+    }
+    let arch = cfg.architecture.take().expect("checked above");
+    arch.validate()?;
     let yaml = serde_yaml::to_string(&arch).unwrap_or_default();
     // The run shells out to `ironlint arch check`. The layers tempfile is
     // materialized by the runner (Task 13) and passed via $IRONLINT_ARCH_LAYERS.
@@ -1542,6 +1773,7 @@ pub fn lower_architecture(cfg: &mut Config) {
     );
     // Stash the serialized layers for the runner to materialize.
     cfg.arch_layers_yaml = Some(yaml);
+    Ok(())
 }
 ```
 
@@ -1549,7 +1781,7 @@ Add `pub arch_layers_yaml: Option<String>` to `Config` (transient — not serial
 
 - [ ] **Step 3: Call lowering in the runner**
 
-In `crates/ironlint-core/src/runner.rs`, after `extends::resolve` (in `IronLintEngine::load`), call `arch::lowering::lower_architecture(&mut cfg)`.
+In `crates/ironlint-core/src/runner.rs`, after `extends::resolve` (in `IronLintEngine::load`), call `arch::lowering::lower_architecture(&mut cfg)?`. This makes the reserved-ID collision and semantic validation ordinary config-load errors rather than silently replacing a user check.
 
 - [ ] **Step 4: Run + commit**
 
@@ -1646,7 +1878,20 @@ In `cli_e2e_doctor.rs` — a repo with a `.rs` file (no Rust resolver in v1) →
 
 - [ ] **Step 2: Implement `check_arch_grammars`**
 
-Walk the repo, collect extensions, for each that `languages::for_path` returns `None` for (and that isn't a known-non-code file), emit a warn row. Only runs if `architecture:` block is present (else skip — no arch enforcement active).
+Walk the repo only for a fixed set of source extensions:
+
+```rust
+const ARCH_SOURCE_EXTENSIONS: &[&str] = &[
+    "ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs",
+    "rs", "py", "go", "php",
+];
+```
+
+For each observed extension in that set, emit a warning only when
+`languages::for_path` returns `None`. Do not infer support from arbitrary
+extensions: `.json`, `.md`, generated assets, and configuration files must not
+produce architecture warnings. Run this sub-check only when `architecture:` is
+present (otherwise skip it).
 
 - [ ] **Step 3: Verify trust is free**
 
@@ -1664,7 +1909,7 @@ git commit -m "feat(arch): doctor grammar check + trust covers architecture bloc
 
 ---
 
-## Task 16: End-to-end through `ironlint check` + docs
+## Task 16: Trusted end-to-end through `ironlint check` + docs
 
 **Files:**
 - Test: `crates/ironlint-cli/tests/cli_e2e_arch_check.rs`
@@ -1673,9 +1918,26 @@ git commit -m "feat(arch): doctor grammar check + trust covers architecture bloc
 **Interfaces:**
 - Consumes: all prior tasks.
 
-- [ ] **Step 1: Write the e2e test**
+- [ ] **Step 1: Write the trusted e2e test**
 
-A repo with `.ironlint.yml` containing an `architecture:` block + a `checks:` entry. Run `ironlint check --file <proposed> --content <bad-import>` → exit 2 with a violation message naming the forbidden edge. Run with a clean file → exit 0. Run `ironlint check` (bare sweep) → exit 2 if the on-disk repo has a violation.
+Create a fixture repo with `.ironlint.yml` containing `architecture:` and set
+`XDG_CONFIG_HOME` to a test-local temporary directory. First bless the exact
+fixture config through the real CLI:
+
+```rust
+Command::cargo_bin("ironlint").unwrap()
+    .args(["trust", "--config", config_path.to_str().unwrap()])
+    .env("XDG_CONFIG_HOME", xdg.path())
+    .assert()
+    .code(0);
+```
+
+Then, with the same `XDG_CONFIG_HOME`, run `ironlint check --file <proposed>
+--content <bad-import>` and assert exit 2 plus a message naming the forbidden
+edge. Run clean proposed content and assert exit 0. Finally, run the bare
+`ironlint check` against an on-disk forbidden import and assert exit 2. Add a
+separate assertion that the unblessed fixture exits 4, proving the test did not
+accidentally bypass the existing trust boundary.
 
 - [ ] **Step 2: Update AGENTS.md**
 
@@ -1710,7 +1972,7 @@ git commit -m "feat(arch): e2e through ironlint check + docs"
 - DepGraph + classification → Task 6. ✓
 - Graph builder → Task 7. ✓
 - Policy evaluator (whole-graph) → Task 8. ✓
-- Content-addressed cache + per-write outgoing → Task 9. ✓
+- Fresh-graph per-write outgoing evaluation → Task 9. ✓
 - ArchEngine entry points → Task 10. ✓
 - `$IRONLINT_ARCH_LAYERS` materialization → Task 13. ✓
 - `extends` whole-block merge → Task 14. ✓
@@ -1718,10 +1980,10 @@ git commit -m "feat(arch): e2e through ironlint check + docs"
 - doctor grammar check → Task 15. ✓
 - Exit contract (0/2/3 check; 0/3 graph/why) → Task 11. ✓
 - Per-write honest split (outgoing only) → Task 9. ✓
-- Out of scope (Rust/Py/Go/PHP, --fix, on-disk cache, additive extends merge, content-aware name rules) → explicitly deferred. ✓
+- Out of scope (Rust/Py/Go/PHP, persistent cache, --fix, additive extends merge, content-aware name rules) → explicitly deferred. ✓
 
-**2. Placeholder scan:** No TBD/TODO in task steps. Some steps say "mirror the existing X pattern" with a file pointer — that's a concrete reference, not a placeholder. The `try_extensions` cleanup note in Task 4 is flagged for the implementer to resolve.
+**2. Placeholder scan:** No TBD/TODO or incomplete test stubs remain in task steps. Every task names its implementation boundary, test target, and verification command.
 
-**3. Type consistency:** `ArchConfig`/`LayerDecl`/`RuleDecl` (Task 2) used consistently in Tasks 6-10. `ImportExtractor`/`ImportSource` (Task 3) used in 7, 9. `Resolver` (Task 4) used in 7, 9. `DepGraph`/`Node`/`Edge`/`LayerId` (Task 6) used in 7-10. `Violation` (Task 8) used in 9-11. `ArchOutcome`/`ArchEngine` (Task 10) used in 11. `lower_architecture` (Task 12) called in runner (Task 13). `arch_layers_yaml` field (Task 12) consumed in Task 13. Consistent.
+**3. Type consistency:** `ArchConfig`/`LayerDecl`/`RuleDecl` (Task 2) are validated by both config parsing and the standalone CLI. `ImportExtractor`/`ImportSource` (Task 3) and `Resolver` (Task 4) are used in graph build and proposed-file evaluation. `DepGraph`/`Node`/`Edge`/`LayerId` (Task 6) are used in Tasks 7-10. `Violation` (Task 8) is used in Tasks 9-11. `ArchOutcome`/`ArchEngine` (Task 10) is used in Task 11. `lower_architecture` (Task 12) returns a config-load error on a reserved-ID collision and is called in the runner. `arch_layers_yaml` is consumed in Task 13. Consistent.
 
-**Gaps fixed inline:** Task 3 Step 5 references `Resolver`/`TypescriptResolver` before Task 4 lands — added a note to gate `for_path` behind `todo!()` until Task 4. Task 6 `glob_matches` needs `globset` dep — flagged. Task 9 `insert_virtual` helper referenced in test but defined in step — confirmed it's added in Step 4.
+**Gaps fixed inline:** Task 0 resolves the language/cache scope conflict with the design. Task 2 rejects semantic config errors instead of relying on the evaluator's permissive default. Task 9 removes the impossible child-process cache and proves fresh-disk correctness. Task 11 places options on their real Clap subcommands, and Task 12 reserves `__arch__`. Task 16 blesses its fixture before asserting architecture verdicts.
