@@ -26,6 +26,6 @@ mod tests {
         let tree = parser
             .parse("import { x } from './foo';", None)
             .expect("parse");
-        assert!(tree.root_node().has_error() == false);
+        assert!(!tree.root_node().has_error());
     }
 }

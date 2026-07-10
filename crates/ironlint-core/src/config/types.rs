@@ -13,6 +13,10 @@ pub struct Config {
     /// [`Config::timeout_secs`] to read the resolved value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution: Option<ExecutionConfig>,
+    /// Optional architecture-enforcement block. Lowers to a synthetic
+    /// `__arch__` check (see `arch::lowering`). None = no architecture rules.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub architecture: Option<crate::arch::config::ArchConfig>,
     pub checks: BTreeMap<String, Check>,
 }
 
@@ -229,5 +233,33 @@ mod tests {
         assert_eq!(steps.len(), 2);
         assert_eq!(steps[0].name.as_deref(), Some("a"));
         assert_eq!(steps[1].name, None);
+    }
+
+    #[test]
+    fn parses_config_with_architecture_block() {
+        let cfg: Config = serde_yaml::from_str(
+            "architecture:\n  layers:\n    - name: data\n      globs: [\"src/data/**\"]\n  rules:\n    - from: data\n      may_import: []\nchecks:\n  g:\n    files: \"*\"\n    run: \"true\"\n",
+        )
+        .unwrap();
+        let arch = cfg.architecture.expect("architecture block present");
+        assert_eq!(arch.layers[0].name, "data");
+        assert!(arch.rules[0].may_import.is_empty());
+    }
+
+    #[test]
+    fn architecture_defaults_to_none() {
+        let cfg: Config =
+            serde_yaml::from_str("checks:\n  g:\n    files: \"*\"\n    run: \"true\"\n").unwrap();
+        assert!(cfg.architecture.is_none());
+    }
+
+    #[test]
+    fn rejects_reserved_arch_check_id() {
+        let err = crate::config::parser::parse_str(
+            "checks:\n  __arch__:\n    files: \"*\"\n    run: \"true\"\n",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("reserved"), "{err}");
     }
 }
