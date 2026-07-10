@@ -33,6 +33,12 @@ pub struct GateEnv<'a> {
     /// when the check references the token and an `architecture:` block is
     /// present; `None` otherwise (var unset).
     pub arch_layers: Option<&'a Path>,
+    /// Absolute path to the `ironlint` binary running this check (or the bare
+    /// name `ironlint` if `current_exe()` failed at engine load — the pre-fix
+    /// PATH-resolved behavior). Passed to the lowered `__arch__` check so it
+    /// shells out to the same binary instead of resolving `ironlint` from
+    /// `PATH` (which may be missing or stale).
+    pub bin: &'a Path,
 }
 
 #[derive(Debug)]
@@ -269,6 +275,10 @@ fn build_check_env(
     ));
     out.push((OsString::from("IRONLINT_EVENT"), OsString::from(env.event)));
     out.push((OsString::from("IRONLINT_FILES"), files_str.to_os_string()));
+    out.push((
+        OsString::from("IRONLINT_BIN"),
+        env.bin.as_os_str().to_os_string(),
+    ));
     if let Some(f) = env.file {
         out.push((
             OsString::from("IRONLINT_FILE"),
@@ -345,6 +355,7 @@ mod tests {
             event: "write",
             tmpfile: None,
             arch_layers: None,
+            bin: root,
         }
     }
 
@@ -356,6 +367,7 @@ mod tests {
             event: "write",
             tmpfile: None,
             arch_layers: None,
+            bin: root,
         }
     }
 
@@ -569,6 +581,7 @@ mod tests {
             event: "write",
             tmpfile: Some(&tmp),
             arch_layers: None,
+            bin: dir.path(),
         };
         // Gate passes iff $IRONLINT_TMPFILE equals the path we passed.
         let run = format!("test \"$IRONLINT_TMPFILE\" = \"{}\"", tmp.display());
@@ -587,6 +600,7 @@ mod tests {
             event: "write",
             tmpfile: None,
             arch_layers: Some(&arch),
+            bin: dir.path(),
         };
         // Gate passes iff $IRONLINT_ARCH_LAYERS equals the path we passed.
         let run = format!("test \"$IRONLINT_ARCH_LAYERS\" = \"{}\"", arch.display());
@@ -800,6 +814,7 @@ mod tests {
             event: "write",
             tmpfile: Some(&tmp),
             arch_layers: Some(&arch),
+            bin: dir.path(),
         };
         let files_str = std::ffi::OsStr::new("irrelevant-files-str");
 
@@ -842,6 +857,10 @@ mod tests {
             get("IRONLINT_ARCH_LAYERS"),
             Some(arch.as_os_str().to_os_string())
         );
+        assert_eq!(
+            get("IRONLINT_BIN"),
+            Some(dir.path().as_os_str().to_os_string())
+        );
     }
 
     #[test]
@@ -855,6 +874,7 @@ mod tests {
             event: "pre-commit",
             tmpfile: None,
             arch_layers: None,
+            bin: dir.path(),
         };
 
         let result = build_check_env(&env, std::ffi::OsStr::new(""), &source);
@@ -882,6 +902,7 @@ mod tests {
             event: "write",
             tmpfile: None,
             arch_layers: None,
+            bin: dir.path(),
         };
         // With the var unset, `test -n` on it is false → exit 1 → Block. Pass means it WAS set (bug).
         assert!(matches!(
@@ -901,6 +922,7 @@ mod tests {
             event: "write",
             tmpfile: None,
             arch_layers: None,
+            bin: dir.path(),
         };
         // With the var unset, `test -n` on it is false → exit 1 → Block. Pass means it WAS set (bug).
         assert!(matches!(

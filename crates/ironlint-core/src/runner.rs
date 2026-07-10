@@ -84,6 +84,12 @@ pub struct IronLintEngine {
     scope_matchers: BTreeMap<String, crate::config::scope::ScopeMatcher>,
     /// Per-check wall-clock budget (`IRONLINT_TIMEOUT` env → `execution.timeout_secs`).
     timeout: Duration,
+    /// Absolute path to the `ironlint` binary running this engine. Passed to
+    /// every check as `$IRONLINT_BIN` so the lowered `__arch__` check can shell
+    /// out to the same binary instead of relying on `PATH` (which may be
+    /// missing or stale). Falls back to the bare name `ironlint` if
+    /// `current_exe()` fails, preserving the pre-fix behavior in that edge case.
+    bin: PathBuf,
 }
 
 /// Per-check run result, before folding into the verdict. Skipped checks carry
@@ -675,6 +681,12 @@ impl IronLintEngine {
 
         let timeout = resolve_timeout(&config);
 
+        // Absolute path to this ironlint binary. `current_exe()` can fail in
+        // exotic cases (e.g. the executable was unlinked after startup); fall
+        // back to the bare name so the lowered `__arch__` check degrades to the
+        // pre-fix PATH-resolved behavior instead of crashing the engine load.
+        let bin = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("ironlint"));
+
         Ok(Self {
             config,
             config_dir,
@@ -682,6 +694,7 @@ impl IronLintEngine {
             options,
             scope_matchers,
             timeout,
+            bin,
         })
     }
 
@@ -952,6 +965,7 @@ impl IronLintEngine {
             event: &self.options.event,
             tmpfile: tmp.as_ref().map(|g| g.path.as_path()),
             arch_layers: arch.as_ref().map(|g| g.path.as_path()),
+            bin: &self.bin,
         };
         self.run_steps(check, &env, Some(content.as_bytes()))
         // `tmp` and `arch` drop here → temp files removed.
@@ -1024,6 +1038,7 @@ impl IronLintEngine {
                 event: &self.options.event,
                 tmpfile: None,
                 arch_layers: arch.as_ref().map(|g| g.path.as_path()),
+                bin: &self.bin,
             };
             let status = self.run_steps(check, &env, None);
             // `arch` drops here → temp file removed.

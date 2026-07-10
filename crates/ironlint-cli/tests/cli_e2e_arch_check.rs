@@ -142,6 +142,40 @@ fn arch_check_blocks_with_nested_relative_config_path() {
         .stderr(contains("presentation"));
 }
 
+/// Regression for Bug 5: the lowered `__arch__` check must invoke the SAME
+/// `ironlint` binary that is running `ironlint check`, not rely on `ironlint`
+/// being on `PATH`. If the binary's directory is removed from `PATH`, a bare
+/// `ironlint arch check ...` would fail with "command not found" (exit 127 →
+/// InternalError) and never report the real architecture violation.
+#[test]
+fn arch_check_runs_same_binary_when_ironlint_not_on_path() {
+    let (dir, config, app) = fixture();
+    fs::write(&app, "export function App() { return null; }\n").unwrap();
+    let xdg = common::blessed_store(&config);
+
+    // PATH that deliberately excludes the ironlint binary's directory.
+    // Keep /usr/bin:/bin so `sh` (the gate shell) is still available.
+    let minimal_path = "/usr/bin:/bin";
+
+    let mut cmd = Command::cargo_bin("ironlint").unwrap();
+    cmd.current_dir(dir.path())
+        .env("XDG_CONFIG_HOME", xdg.path())
+        .env("PATH", minimal_path)
+        .args([
+            "check",
+            "--file",
+            app.to_str().unwrap(),
+            "--content",
+            "-",
+            "--config",
+            ".ironlint.yml",
+        ]);
+    cmd.write_stdin("import { db } from '../data/db';\nexport { db };\n")
+        .assert()
+        .code(2)
+        .stderr(contains("presentation"));
+}
+
 #[test]
 fn arch_check_exits_4_when_unblessed() {
     let (dir, _config, app) = fixture();

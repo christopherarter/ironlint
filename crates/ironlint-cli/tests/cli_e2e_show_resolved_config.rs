@@ -130,8 +130,8 @@ fn show_resolved_config_lowers_architecture_block_into_arch_check() {
     assert_eq!(cols[1], "<architecture>", "synthetic check origin label");
     assert_eq!(cols[2], "**/*", "__arch__ matches all files");
     assert!(
-        cols[3].contains("ironlint arch check"),
-        "__arch__ run must shell out to ironlint arch check: {line:?}"
+        cols[3].contains("\"$IRONLINT_BIN\" arch check"),
+        "__arch__ run must shell out via IRONLINT_BIN: {line:?}"
     );
 }
 

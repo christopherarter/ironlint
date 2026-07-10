@@ -12,7 +12,13 @@ fn lowers_architecture_to_synthetic_check() {
         .checks
         .get("__arch__")
         .expect("synthetic __arch__ check inserted");
-    assert!(arch.run.as_deref().unwrap().contains("ironlint arch check"));
+    assert!(
+        arch.run
+            .as_deref()
+            .unwrap()
+            .contains("\"$IRONLINT_BIN\" arch check"),
+        "lowered __arch__ check must invoke the same binary via IRONLINT_BIN"
+    );
     assert!(arch.files.iter().any(|f| f == "**/*"));
     assert!(cfg.arch_layers_yaml.is_some());
 }

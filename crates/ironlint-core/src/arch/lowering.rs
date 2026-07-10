@@ -3,9 +3,9 @@ use anyhow::{bail, Result};
 
 /// Lower an `architecture:` config block into a synthetic `__arch__` check.
 ///
-/// The check's `run` shells out to `ironlint arch check`, which reads the
-/// layers file from `$IRONLINT_ARCH_LAYERS` (materialized by the runner in a
-/// later task). This keeps the runner pure: architecture enforcement becomes
+/// The check's `run` shells out to `"$IRONLINT_BIN" arch check`, which reads
+/// the layers file from `$IRONLINT_ARCH_LAYERS` (materialized by the runner in
+/// a later task). This keeps the runner pure: architecture enforcement becomes
 /// an ordinary check that flows through the same `gate::run_gate` path as any
 /// other.
 pub fn lower_architecture(cfg: &mut Config) -> Result<()> {
@@ -18,7 +18,7 @@ pub fn lower_architecture(cfg: &mut Config) -> Result<()> {
     let arch = cfg.architecture.take().expect("checked above");
     arch.validate()?;
     let yaml = serde_yaml::to_string(&arch).unwrap_or_default();
-    let run = "ironlint arch check --layers \"$IRONLINT_ARCH_LAYERS\" --root \"$IRONLINT_ROOT\" ${IRONLINT_EVENT:+--event \"$IRONLINT_EVENT\"} ${IRONLINT_FILE:+--file \"$IRONLINT_FILE\"}".to_string();
+    let run = "\"$IRONLINT_BIN\" arch check --layers \"$IRONLINT_ARCH_LAYERS\" --root \"$IRONLINT_ROOT\" ${IRONLINT_EVENT:+--event \"$IRONLINT_EVENT\"} ${IRONLINT_FILE:+--file \"$IRONLINT_FILE\"}".to_string();
     cfg.checks.insert(
         "__arch__".to_string(),
         Check {
