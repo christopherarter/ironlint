@@ -1,6 +1,8 @@
 //! TypeScript/JavaScript import extractor.
 
 use crate::arch::extract::{ImportExtractor, ImportSource};
+use crate::arch::resolve::Resolver;
+use std::path::{Path, PathBuf};
 
 pub struct TypescriptExtractor {
     lang: tree_sitter::Language,
@@ -53,6 +55,48 @@ impl ImportExtractor for TypescriptExtractor {
             }
         }
         out
+    }
+}
+
+pub struct TypescriptResolver;
+
+impl TypescriptResolver {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for TypescriptResolver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Resolver for TypescriptResolver {
+    fn resolve(&self, spec: &str, importer: &Path, root: &Path) -> Option<PathBuf> {
+        // Only relative (./ ../) and alias (@/...) specs resolve to project
+        // files. Bare specifiers ("react", "lodash") are external → None.
+        if spec.starts_with("./") || spec.starts_with("../") {
+            let base = importer.parent()?;
+            let joined = base.join(spec);
+            return crate::arch::resolve::try_extensions(&joined);
+        }
+        if spec.starts_with('@') {
+            // Alias resolution: read tsconfig paths. v1: if no tsconfig found,
+            // drop (None). Full alias support is the hard part — see Step 4.
+            return Self::resolve_alias(spec, root);
+        }
+        // Bare specifier → external package. Dropped.
+        None
+    }
+}
+
+impl TypescriptResolver {
+    fn resolve_alias(_spec: &str, _root: &Path) -> Option<PathBuf> {
+        // v1: alias resolution reads tsconfig.json `compilerOptions.paths`.
+        // Stubbed to None here; implemented in Task 5. A spec like "@/foo"
+        // with no tsconfig → None (dropped, not a block).
+        None
     }
 }
 
@@ -130,5 +174,62 @@ mod tests {
         let imports = TypescriptExtractor::new().extract(src.as_bytes());
         assert_eq!(imports.len(), 1);
         assert_eq!(imports[0].line, 2, "import is on line 2 (1-indexed)");
+    }
+}
+
+#[cfg(test)]
+mod resolver_tests {
+    use super::*;
+    use std::fs;
+
+    fn tmp_repo() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.ts"), "export const a = 1;").unwrap();
+        fs::create_dir(dir.path().join("comp")).unwrap();
+        fs::write(
+            dir.path().join("comp").join("index.ts"),
+            "export const c = 1;",
+        )
+        .unwrap();
+        fs::write(dir.path().join("b.tsx"), "export const b = 1;").unwrap();
+        dir
+    }
+
+    #[test]
+    fn resolves_relative_with_extension() {
+        let dir = tmp_repo();
+        let importer = dir.path().join("a.ts");
+        let r = TypescriptResolver::new();
+        assert_eq!(
+            r.resolve("./b", &importer, dir.path()),
+            Some(dir.path().join("b.tsx"))
+        );
+    }
+
+    #[test]
+    fn resolves_barrel_index() {
+        let dir = tmp_repo();
+        let importer = dir.path().join("a.ts");
+        let r = TypescriptResolver::new();
+        assert_eq!(
+            r.resolve("./comp", &importer, dir.path()),
+            Some(dir.path().join("comp").join("index.ts"))
+        );
+    }
+
+    #[test]
+    fn drops_external_package() {
+        let dir = tmp_repo();
+        let importer = dir.path().join("a.ts");
+        let r = TypescriptResolver::new();
+        assert_eq!(r.resolve("react", &importer, dir.path()), None);
+    }
+
+    #[test]
+    fn drops_unresolvable_relative() {
+        let dir = tmp_repo();
+        let importer = dir.path().join("a.ts");
+        let r = TypescriptResolver::new();
+        assert_eq!(r.resolve("./nonexistent", &importer, dir.path()), None);
     }
 }
