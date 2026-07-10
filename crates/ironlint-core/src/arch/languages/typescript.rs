@@ -118,18 +118,35 @@ impl Resolver for TypescriptResolver {
 impl TypescriptResolver {
     fn resolve_alias(spec: &str, root: &Path) -> Option<PathBuf> {
         let tsconfig = root.join("tsconfig.json");
-        let content = fs::read_to_string(&tsconfig).ok()?;
+        let jsconfig = root.join("jsconfig.json");
+        let content = fs::read_to_string(&tsconfig)
+            .or_else(|_| fs::read_to_string(&jsconfig))
+            .ok()?;
         let v: serde_json::Value = serde_json::from_str(&content).ok()?;
         let co = v.get("compilerOptions")?;
         let base_url = co.get("baseUrl").and_then(|b| b.as_str()).unwrap_or(".");
         let paths = co.get("paths")?.as_object()?;
+
+        // Collect every alias pattern that matches the spec. TypeScript paths
+        // resolution picks the longest matching pattern, not insertion order.
+        let mut matches: Vec<(&String, &serde_json::Value, String, usize)> = Vec::new();
         for (alias, targets) in paths {
             if let Some(suffix) = match_alias(alias, spec) {
-                let target = targets.as_array()?.first()?.as_str()?;
-                let resolved = target.replace('*', &suffix);
-                let candidate = root.join(base_url).join(resolved);
-                if let Some(found) = crate::arch::resolve::try_extensions(&candidate) {
-                    return Some(found);
+                let consumed = spec.len() - suffix.len();
+                matches.push((alias, targets, suffix, consumed));
+            }
+        }
+        matches.sort_by(|a, b| b.3.cmp(&a.3).then_with(|| b.0.len().cmp(&a.0.len())));
+
+        for (_, targets, suffix, _) in matches {
+            let targets = targets.as_array()?;
+            for target in targets {
+                if let Some(target) = target.as_str() {
+                    let resolved = target.replace('*', &suffix);
+                    let candidate = root.join(base_url).join(resolved);
+                    if let Some(found) = crate::arch::resolve::try_extensions(&candidate) {
+                        return Some(found);
+                    }
                 }
             }
         }
@@ -342,6 +359,91 @@ mod resolver_tests {
                     .join("components")
                     .join("UserCard.tsx")
             )
+        );
+    }
+
+    #[test]
+    fn alias_longest_match_wins() {
+        // TypeScript paths resolution selects the LONGEST matching pattern,
+        // not the first one in object order. (Bug 4.)
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("src").join("data")).unwrap();
+        fs::create_dir_all(dir.path().join("src").join("legacy").join("data")).unwrap();
+        fs::write(
+            dir.path().join("src").join("data").join("db.ts"),
+            "export const db = 1;",
+        )
+        .unwrap();
+        fs::write(
+            dir.path()
+                .join("src")
+                .join("legacy")
+                .join("data")
+                .join("db.ts"),
+            "export const legacy = 1;",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("tsconfig.json"),
+            r#"{"compilerOptions":{"baseUrl":".","paths":{"@/*":["src/legacy/*"],"@/data/*":["src/data/*"]}}}"#,
+        )
+        .unwrap();
+        let importer = dir.path().join("src").join("main.ts");
+        fs::write(&importer, "").unwrap();
+        let r = TypescriptResolver::new();
+        assert_eq!(
+            r.resolve("@/data/db", &importer, dir.path()),
+            Some(dir.path().join("src").join("data").join("db.ts"))
+        );
+    }
+
+    #[test]
+    fn alias_tries_all_targets() {
+        // TypeScript tries each entry in the target array until one resolves.
+        // (Bug 4.)
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("src").join("fallback")).unwrap();
+        fs::write(
+            dir.path().join("src").join("fallback").join("foo.ts"),
+            "export const foo = 1;",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("tsconfig.json"),
+            r#"{"compilerOptions":{"baseUrl":".","paths":{"@/*":["src/missing/*","src/fallback/*"]}}}"#,
+        )
+        .unwrap();
+        let importer = dir.path().join("src").join("main.ts");
+        fs::write(&importer, "").unwrap();
+        let r = TypescriptResolver::new();
+        assert_eq!(
+            r.resolve("@/foo", &importer, dir.path()),
+            Some(dir.path().join("src").join("fallback").join("foo.ts"))
+        );
+    }
+
+    #[test]
+    fn alias_falls_back_to_jsconfig() {
+        // The resolver is selected for .jsx/.js too, so jsconfig.json should be
+        // honored when tsconfig.json is absent.
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("src").join("components")).unwrap();
+        fs::write(
+            dir.path().join("src").join("components").join("Button.jsx"),
+            "export const Button = 1;",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("jsconfig.json"),
+            r#"{"compilerOptions":{"baseUrl":".","paths":{"@/*":["src/*"]}}}"#,
+        )
+        .unwrap();
+        let importer = dir.path().join("src").join("main.js");
+        fs::write(&importer, "").unwrap();
+        let r = TypescriptResolver::new();
+        assert_eq!(
+            r.resolve("@/components/Button", &importer, dir.path()),
+            Some(dir.path().join("src").join("components").join("Button.jsx"))
         );
     }
 
