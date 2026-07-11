@@ -48,6 +48,7 @@ fn render_summary(summary: &BlessedSummary) -> String {
     for script in &summary.scripts {
         lines.push(format!("    - {script}"));
     }
+    lines.push(format!("  scope: {}", summary.scope));
 
     lines.join("\n")
 }
@@ -64,6 +65,7 @@ mod tests {
                 .to_string(),
             checks,
             scripts: scripts.into_iter().map(String::from).collect(),
+            scope: "this config path".to_string(),
         }
     }
 
@@ -113,6 +115,17 @@ mod tests {
         assert!(
             out.contains("config sha256: abcd\n"),
             "a short hash must not index-panic, just print what's there: {out}"
+        );
+    }
+
+    #[test]
+    fn render_summary_prints_scope_line() {
+        let mut s = summary(0, vec![]);
+        s.scope = "linked worktrees".to_string();
+        let out = render_summary(&s);
+        assert!(
+            out.contains("scope: linked worktrees"),
+            "scope line present: {out}"
         );
     }
 }

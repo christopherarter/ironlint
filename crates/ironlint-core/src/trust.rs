@@ -205,7 +205,6 @@ pub fn compute_hash(config_path: &Path) -> Result<String> {
 /// worktrees. Any config or scripts dir that escapes `scope.worktree_root`
 /// makes the policy ineligible (`Ok(None)`) rather than silently omitting a
 /// file.
-#[allow(dead_code)]
 fn compute_worktree_hash(config_path: &Path, scope: &WorktreeScope) -> Result<Option<String>> {
     let config_paths = crate::config::extends::resolve_paths(config_path)
         .with_context(|| format!("resolving extends closure for {}", config_path.display()))?;
@@ -243,13 +242,11 @@ fn compute_worktree_hash(config_path: &Path, scope: &WorktreeScope) -> Result<Op
 }
 
 /// True iff every path in `paths` is under `root` (after canonicalization).
-#[allow(dead_code)]
 fn all_under_root(paths: &[PathBuf], root: &Path) -> bool {
     paths.iter().all(|p| p.strip_prefix(root).is_ok())
 }
 
 /// `canon` relative to `root`, `/`-separated. `Err` if not under `root`.
-#[allow(dead_code)]
 fn worktree_rel(canon: &Path, root: &Path) -> Result<String> {
     let rel = canon.strip_prefix(root).with_context(|| {
         format!(
@@ -283,6 +280,9 @@ pub struct BlessedSummary {
     pub checks: usize,
     /// Every file relative path under `.ironlint/scripts/`, sorted and deduped.
     pub scripts: Vec<String>,
+    /// Human-readable trust scope: `"linked worktrees"` when the policy is
+    /// eligible for worktree-family inheritance, else `"this config path"`.
+    pub scope: String,
 }
 
 /// Enumerate what trust covers for `config_path`.
@@ -322,12 +322,28 @@ pub fn blessed_summary(config_path: &Path) -> Result<BlessedSummary> {
     let merged = crate::config::extends::resolve(config_path)?;
     let checks = merged.checks.len();
 
+    let scope = match WorktreeScope::discover(config_path) {
+        Some(s) if policy_is_eligible(config_path, &s).unwrap_or(false) => {
+            "linked worktrees".to_string()
+        }
+        _ => "this config path".to_string(),
+    };
+
     Ok(BlessedSummary {
         config_path: config_path.to_path_buf(),
         config_hash,
         checks,
         scripts,
+        scope,
     })
+}
+
+/// True iff the resolved extends closure + scripts dirs are all under `scope.worktree_root`.
+fn policy_is_eligible(config_path: &Path, scope: &WorktreeScope) -> Result<bool> {
+    match compute_worktree_hash(config_path, scope)? {
+        Some(_) => Ok(true),
+        None => Ok(false),
+    }
 }
 
 pub const TRUST_STORE_VERSION: u32 = 2;
@@ -603,13 +619,35 @@ pub fn bless_in(config_path: &Path, store_path: &Path, now: &str) -> Result<()> 
     let mut store = read_store_for_bless(store_path)?;
     store.version = TRUST_STORE_VERSION;
     store.entries.insert(
-        key,
+        key.clone(),
         TrustEntry {
-            hash,
+            hash: hash.clone(),
             blessed_at: now.to_string(),
         },
     );
+    write_worktree_entry(&mut store, config_path, &hash, now);
     write_store(store_path, &store)
+}
+
+/// If `config_path` has an eligible worktree scope, record its worktree hash
+/// (identical content, root-relative labels) in `worktree_entries`. Best-effort:
+/// any discovery/hash failure is swallowed — blessing still succeeds with the
+/// direct entry already written by the caller.
+fn write_worktree_entry(store: &mut TrustStore, config_path: &Path, _hash: &str, now: &str) {
+    let Some(scope) = WorktreeScope::discover(config_path) else {
+        return;
+    };
+    let Ok(Some(wt_hash)) = compute_worktree_hash(config_path, &scope) else {
+        return;
+    };
+    let common = scope.common_dir.to_string_lossy().to_string();
+    store.worktree_entries.entry(common).or_default().insert(
+        scope.config_rel,
+        TrustEntry {
+            hash: wt_hash,
+            blessed_at: now.to_string(),
+        },
+    );
 }
 
 /// Thin wrapper: enforce trust against the real out-of-repo store.
@@ -1420,5 +1458,74 @@ mod tests {
             compute_worktree_hash(&cfg, &scope).unwrap().is_none(),
             "an extends target outside the root is ineligible"
         );
+    }
+
+    // --- blessing worktree entry (Task 4) --------------------------------
+    #[test]
+    fn bless_writes_worktree_entry_for_eligible_git_repo() {
+        let root = tempfile::tempdir().unwrap();
+        git_repo(root.path());
+        let cfg = root.path().join(".ironlint.yml");
+        write(
+            &cfg,
+            "checks:\n  g:\n    files: \"*.rs\"\n    run: \"true\"\n",
+        );
+        let store = tempfile::tempdir().unwrap();
+        let store_path = store.path().join("trust.json");
+        bless_in(&cfg, &store_path, "t").unwrap();
+        let s = read_store(&store_path).unwrap();
+        let scope = WorktreeScope::discover(&cfg).unwrap();
+        let inner = s
+            .worktree_entries
+            .get(&scope.common_dir.to_string_lossy().to_string())
+            .and_then(|m| m.get(&scope.config_rel))
+            .expect("eligible bless writes a worktree_entries entry");
+        let h = compute_worktree_hash(&cfg, &scope).unwrap().unwrap();
+        assert_eq!(inner.hash, h);
+    }
+
+    #[test]
+    fn bless_skips_worktree_entry_when_not_a_git_repo() {
+        // No .git -> discover returns None -> only the direct entry is written.
+        let root = tempfile::tempdir().unwrap();
+        let cfg = root.path().join(".ironlint.yml");
+        write(
+            &cfg,
+            "checks:\n  g:\n    files: \"*.rs\"\n    run: \"true\"\n",
+        );
+        let store = tempfile::tempdir().unwrap();
+        let store_path = store.path().join("trust.json");
+        bless_in(&cfg, &store_path, "t").unwrap();
+        let s = read_store(&store_path).unwrap();
+        assert!(
+            s.worktree_entries.is_empty(),
+            "non-Git config writes no worktree entry"
+        );
+        assert_eq!(s.entries.len(), 1, "direct entry still written");
+    }
+
+    #[test]
+    fn blessed_summary_scope_is_linked_worktrees_for_git_repo() {
+        let root = tempfile::tempdir().unwrap();
+        git_repo(root.path());
+        let cfg = root.path().join(".ironlint.yml");
+        write(
+            &cfg,
+            "checks:\n  g:\n    files: \"*.rs\"\n    run: \"true\"\n",
+        );
+        let sum = blessed_summary(&cfg).unwrap();
+        assert_eq!(sum.scope, "linked worktrees");
+    }
+
+    #[test]
+    fn blessed_summary_scope_is_this_config_path_when_not_git() {
+        let root = tempfile::tempdir().unwrap();
+        let cfg = root.path().join(".ironlint.yml");
+        write(
+            &cfg,
+            "checks:\n  g:\n    files: \"*.rs\"\n    run: \"true\"\n",
+        );
+        let sum = blessed_summary(&cfg).unwrap();
+        assert_eq!(sum.scope, "this config path");
     }
 }
