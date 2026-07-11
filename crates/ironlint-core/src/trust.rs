@@ -330,7 +330,7 @@ pub fn blessed_summary(config_path: &Path) -> Result<BlessedSummary> {
     })
 }
 
-pub const TRUST_STORE_VERSION: u32 = 1;
+pub const TRUST_STORE_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TrustStore {
@@ -341,9 +341,14 @@ pub struct TrustStore {
     pub version: u32,
     #[serde(default)]
     pub entries: BTreeMap<String, TrustEntry>,
+    /// v2: linked-worktree inheritance. Outer key = canonical Git common
+    /// directory; inner key = normalized config-relative path. serde-defaulted
+    /// so a v1 store (no such field) deserializes with an empty map.
+    #[serde(default)]
+    pub worktree_entries: BTreeMap<String, BTreeMap<String, TrustEntry>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrustEntry {
     pub hash: String,
     pub blessed_at: String,
@@ -947,7 +952,7 @@ mod tests {
         let path = dir.path().join("nested/trust.json"); // parent must be created
         let mut store = TrustStore {
             version: TRUST_STORE_VERSION,
-            entries: std::collections::BTreeMap::new(),
+            ..Default::default()
         };
         store.entries.insert(
             "/abs/.ironlint.yml".to_string(),
@@ -1281,6 +1286,43 @@ mod tests {
         let store_path = dir.path().join("trust.json");
         let store = classify_store_read(&store_path, Ok("{ not json".to_string())).unwrap();
         assert!(store.entries.is_empty());
+    }
+
+    // --- store v2 (Task 3) -----------------------------------------------
+    #[test]
+    fn version_one_store_deserializes_with_empty_worktree_entries() {
+        let v1 = r#"{"version":1,"entries":{"\/x\/.ironlint.yml":{"hash":"sha256:ab","blessed_at":"t"}}}"#;
+        let store: TrustStore = serde_json::from_str(v1).unwrap();
+        assert_eq!(store.version, 1);
+        assert_eq!(store.entries.len(), 1);
+        assert!(
+            store.worktree_entries.is_empty(),
+            "v1 store gets empty worktree_entries"
+        );
+    }
+
+    #[test]
+    fn worktree_entries_round_trip() {
+        let mut store = TrustStore::default();
+        store.worktree_entries.insert("/common/.git".to_string(), {
+            let mut inner = BTreeMap::new();
+            inner.insert(
+                ".ironlint.yml".to_string(),
+                TrustEntry {
+                    hash: "sha256:cd".to_string(),
+                    blessed_at: "t".to_string(),
+                },
+            );
+            inner
+        });
+        let json = serde_json::to_string(&store).unwrap();
+        let back: TrustStore = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.worktree_entries, store.worktree_entries);
+    }
+
+    #[test]
+    fn trust_store_version_is_two() {
+        assert_eq!(TRUST_STORE_VERSION, 2);
     }
 
     // --- worktree hash (Task 2) -------------------------------------------
