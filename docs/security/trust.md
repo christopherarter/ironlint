@@ -16,7 +16,7 @@ This computes a SHA-256 over the config and its check scripts and records it in 
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "entries": {
     "/home/you/project/.ironlint.yml": {
       "hash": "sha256:8798ad5a0ab624c9a5d56b87372cdaf1fdd3ccc5339fe2573b82b26be28b9f36",
@@ -25,6 +25,8 @@ This computes a SHA-256 over the config and its check scripts and records it in 
   }
 }
 ```
+
+The store may also carry a `worktree_entries` map that blesses the same policy for every linked Git worktree sharing the same common Git directory; see [Linked-worktree inheritance](#linked-worktree-inheritance) below.
 
 To bless a config other than `.ironlint.yml`:
 
@@ -48,15 +50,31 @@ indirection — adversarial tier, out of scope).
 
 ## How verification works
 
-Before loading the engine or running any check, `ironlint check` recomputes the hash and compares it to the blessed entry for that config's path. On a missing or mismatched entry it stops with a config error (exit `1`) and a hint to re-bless — no check runs:
+Before loading the engine or running any check, `ironlint check` recomputes the hash and compares it to the blessed entry for that config's path. On a missing or mismatched entry it stops with a trust error (exit `4`) and a hint to re-bless — no check runs:
 
 ```
-config/gates not trusted — review and run `ironlint trust`
+config/scripts not trusted — review and run `ironlint trust`
 ```
 
 Only `check` enforces trust. The read-only commands — `validate`, `explain`, `show-resolved-config`, `doctor` — never do, so you can inspect an untrusted config without blessing it first.
 
 Any change to a covered file invalidates the hash. That's the point: a config, or a check script, that's been edited — by you, a teammate, or anything else — since you last reviewed it won't run until you look at the change and re-bless.
+
+### Linked-worktree inheritance
+
+One `ironlint trust` in any worktree of a local Git repo covers the same unchanged policy in every linked worktree that shares the same common Git directory. Creating a worktree, switching branches, or editing ordinary source code no longer requires another `ironlint trust`.
+
+This is convenience around an existing approval, not automatic approval: any change to a covered config or covered script still revokes trust; `check` never writes the store; and `ironlint trust` remains the only operation that grants approval. The adapter Bash gates still block an agent from invoking `ironlint trust` through Bash.
+
+The boundary is strict: only fully in-worktree policy is eligible. The root config, every config it `extends:`, and every `.ironlint/scripts/` file must all sit under the same worktree root. An external `extends:` target or a config symlinked outside the root disables inheritance for that policy; exact-path direct trust still applies.
+
+A separate clone, copied directory, or unrelated repository — any worktree with a different common Git directory — does not inherit. The common Git directory stays part of the trust identity.
+
+No `git` binary is invoked at the trust boundary. Discovery uses filesystem metadata only, so nonstandard or unreadable Git metadata simply disables inheritance; direct trust still works.
+
+Upgrading: a still-present trusted v1 entry is honored via a read-only legacy fallback, so a pre-existing blessing keeps working without an immediate re-trust. Running `ironlint trust` again in any eligible worktree writes the durable v2 family entry.
+
+The `ironlint trust` summary now prints a `scope:` line — `scope: linked worktrees` when the policy qualifies for inheritance, or `scope: this config path` otherwise — so the broader approval is visible.
 
 ## Re-blessing after a change
 
