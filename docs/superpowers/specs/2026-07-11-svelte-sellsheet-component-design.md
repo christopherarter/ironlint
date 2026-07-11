@@ -58,7 +58,9 @@ export type Row = {
 
 ### Override Props
 
-- `class` — added to the root `role="grid"` wrapper.
+All class props are optional and merged with the component’s base Tailwind classes.
+
+- `class` — added to the root `role="grid"` wrapper. Because `class` is a reserved word, the Svelte 5 component uses prop destructuring (`let { class: className } = $props()`).
 - `headerClass` — added to every header cell.
 - `rowClass` — added to every body row.
 - `cellClass` — added to every body cell.
@@ -112,7 +114,8 @@ sellsheet-component/
 ### `HeaderRow.svelte`
 
 - Renders a `role="row"` containing `role="columnheader"` cells.
-- Each header is a real `<button>` for focusability and future menu actions.
+- Headers participate in the roving focus model so keyboard users can reach them with arrow keys.
+- Each header is focusable and supports future menu actions.
 - Last cell contains the “+ New column” button.
 
 ### `BodyRow.svelte`
@@ -199,6 +202,7 @@ Example usage in components:
 
 ## Build & Distribution
 
+- Target: Svelte 5 (runes) with TypeScript.
 - Build tool: `@sveltejs/package` (`svelte-package`).
 - `package.json` exports:
   ```json
