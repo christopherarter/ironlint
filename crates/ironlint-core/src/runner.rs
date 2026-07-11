@@ -649,6 +649,17 @@ impl IronLintEngine {
     }
 
     fn load_with(config_path: &Path, options: CheckOptions) -> Result<Self> {
+        Self::load_with_tmp(config_path, options, &std::env::temp_dir())
+    }
+
+    /// Same as [`IronLintEngine::load_with`], but the directory swept for
+    /// `$IRONLINT_ARCH_LAYERS` leaks is injected rather than read from
+    /// `std::env::temp_dir()`. The system temp dir is process-global: mutating
+    /// `TMPDIR` in a test races every concurrent `TempDir::new()` in the suite
+    /// (see the same reasoning in `gate.rs`'s env-scrub tests). Threading the
+    /// path here keeps the load path's sweep call site testable without env
+    /// gymnastics — and without serializing the whole module.
+    fn load_with_tmp(config_path: &Path, options: CheckOptions, tmp_dir: &Path) -> Result<Self> {
         // Debug hook: counts engine loads per process. Gated on the env var so
         // it is invisible in production; integration tests set it to assert
         // that `ironlint check` loads the engine exactly once.
@@ -693,8 +704,10 @@ impl IronLintEngine {
         sweep_stale_tmpfiles(&config_dir_canon, TMPFILE_SWEEP_MAX_AGE);
         // $IRONLINT_ARCH_LAYERS lives in the system temp dir, not the project
         // tree, so sweep that too. The same prefix + is_file + age gate makes
-        // this safe in a shared directory.
-        sweep_stale_tmpfiles(&std::env::temp_dir(), TMPFILE_SWEEP_MAX_AGE);
+        // this safe in a shared directory. `tmp_dir` is injected (defaults to
+        // `std::env::temp_dir()` in `load_with`) so the load-time sweep of the
+        // system temp dir is testable without mutating process-global `TMPDIR`.
+        sweep_stale_tmpfiles(tmp_dir, TMPFILE_SWEEP_MAX_AGE);
 
         let timeout = resolve_timeout(&config);
 
@@ -1992,6 +2005,79 @@ mod gate_dispatch_tests {
         assert!(
             weird_dir.exists(),
             "a directory matching the arch-layers prefix must never be removed"
+        );
+    }
+
+    fn load_engine_with_tmp(dir: &TempDir, tmp_dir: &Path) -> IronLintEngine {
+        // Mirrors `load_with_event` but drives the real `load_with_tmp` path
+        // with an injected system-temp dir, so the load-time sweep call site
+        // (runner.rs `sweep_stale_tmpfiles(tmp_dir, ...)`) is exercised
+        // end-to-end without mutating process-global `TMPDIR`.
+        IronLintEngine::load_with_tmp(
+            &dir.path().join(".ironlint.yml"),
+            CheckOptions {
+                event: "write".to_string(),
+                ..Default::default()
+            },
+            tmp_dir,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn load_sweeps_stale_arch_layers_file_in_system_temp_dir() {
+        // Bug 8 / audit item 2: the load-time sweep at the `sweep_stale_tmpfiles`
+        // call site (runner.rs `sweep_stale_tmpfiles(tmp_dir, ...)`) is the
+        // reclaim path for `$IRONLINT_ARCH_LAYERS` leaks left in the SYSTEM
+        // temp dir by a SIGKILLed prior run. The 6 unit tests of the sweep
+        // function call it directly, so they pass even if this call site were
+        // deleted. This test drives the real `IronLintEngine::load` path.
+        //
+        // Discrimination: the stale file lives in a SEPARATE temp dir from the
+        // config dir, so the config_dir sweep (line 693) cannot reclaim it —
+        // only the system-temp-dir sweep at the injected `tmp_dir` can. Delete
+        // that one line and the stale file survives → test fails for the right
+        // reason, not a tautology.
+        let config_dir = TempDir::new().unwrap();
+        write_config(
+            &config_dir,
+            "checks:\n  noop:\n    files: \"**/*.rs\"\n    run: \"true\"\n",
+        );
+
+        // The injected system-temp dir: distinct from config_dir so the
+        // config_dir sweep can't cover for a deleted system-temp sweep.
+        let tmp_dir = TempDir::new().unwrap();
+
+        // Stale: a leaked ironlint-arch-* file from a killed prior run, backdated
+        // past the sweep's 1h threshold.
+        let stale = tmp_dir.path().join("ironlint-arch-1111-0-1.yml");
+        std::fs::write(&stale, "layers:\n").unwrap();
+        backdate_mtime(&stale, 2 * 60 * 60); // 2h ago
+
+        // Fresh: same prefix, recent mtime — a concurrently-running ironlint
+        // process's still-live $IRONLINT_ARCH_LAYERS. Must survive the sweep.
+        let fresh = tmp_dir.path().join("ironlint-arch-2222-0-2.yml");
+        std::fs::write(&fresh, "layers:\n").unwrap();
+
+        // Unrelated: old, but the name doesn't match the arch-layers prefix.
+        // Must never be touched, regardless of age.
+        let unrelated = tmp_dir.path().join("someone-elses-cache.yml");
+        std::fs::write(&unrelated, "keep me").unwrap();
+        backdate_mtime(&unrelated, 2 * 60 * 60);
+
+        let _engine = load_engine_with_tmp(&config_dir, tmp_dir.path());
+
+        assert!(
+            !stale.exists(),
+            "stale ironlint-arch-* file in the system temp dir must be swept at engine load"
+        );
+        assert!(
+            fresh.exists(),
+            "fresh ironlint-arch-* file must survive (may be a concurrent live run)"
+        );
+        assert!(
+            unrelated.exists(),
+            "non-matching files in the system temp dir must never be touched, regardless of age"
         );
     }
 
