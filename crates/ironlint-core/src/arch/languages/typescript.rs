@@ -455,4 +455,103 @@ mod resolver_tests {
         let r = TypescriptResolver::new();
         assert_eq!(r.resolve("@/foo", &importer, dir.path()), None);
     }
+
+    #[test]
+    fn bare_alias_exact_match_resolves() {
+        // A non-wildcard (bare) alias — `"@/utils": ["src/utils.ts"]`, no `/*` —
+        // must resolve its exact spec. Guards the `else if alias == spec` arm
+        // in `match_alias` (mutant: `==` → `!=`).
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("src")).unwrap();
+        fs::write(
+            dir.path().join("src").join("utils.ts"),
+            "export const u = 1;",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("tsconfig.json"),
+            r#"{"compilerOptions":{"baseUrl":".","paths":{"@/utils":["src/utils.ts"]}}}"#,
+        )
+        .unwrap();
+        let importer = dir.path().join("src").join("main.ts");
+        fs::write(&importer, "").unwrap();
+        let r = TypescriptResolver::new();
+        assert_eq!(
+            r.resolve("@/utils", &importer, dir.path()),
+            Some(dir.path().join("src").join("utils.ts"))
+        );
+    }
+
+    #[test]
+    fn bare_alias_does_not_match_other_specs() {
+        // A bare alias matches ONLY its exact spec — not every spec. This is
+        // the assertion that kills the `==` → `!=` mutant: under `!=`, the
+        // bare alias would match any `@/...` spec and resolve to its target.
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("src")).unwrap();
+        fs::write(
+            dir.path().join("src").join("utils.ts"),
+            "export const u = 1;",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("tsconfig.json"),
+            r#"{"compilerOptions":{"baseUrl":".","paths":{"@/utils":["src/utils.ts"]}}}"#,
+        )
+        .unwrap();
+        let importer = dir.path().join("src").join("main.ts");
+        fs::write(&importer, "").unwrap();
+        let r = TypescriptResolver::new();
+        assert_eq!(
+            r.resolve("@/something-else", &importer, dir.path()),
+            None,
+            "bare alias must not match specs other than its exact target"
+        );
+    }
+
+    #[test]
+    fn bare_alias_beats_wildcard_for_exact_spec() {
+        // A bare alias (`"@/utils"`, no `/*`) and a wildcard (`"@/*"`) can
+        // both match the exact spec `"@/utils"`. Longest-match resolution
+        // must pick the bare alias — its marker consumes the whole spec —
+        // not the wildcard. (Bug 4 sort key; mutant 1a.)
+        //
+        // The two targets are deliberately *different files* so the assertion
+        // genuinely discriminates: the bare alias points at `src/exact-utils.ts`,
+        // while the wildcard `src/*` over `@/utils` resolves to
+        // `src/utils/index.ts`. If the wildcard wrongly won the sort, the
+        // resolver would return the wildcard's file — a different path than
+        // asserted. (The bare-alias `+`/`*` arithmetic mutants at this line
+        // are covered by `alias_longest_match_wins`; this one pins the `/`
+        // mutant via its divide-by-zero on the bare alias's empty suffix.)
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("src").join("utils")).unwrap();
+        // Bare-alias target — the CORRECT resolution.
+        fs::write(
+            dir.path().join("src").join("exact-utils.ts"),
+            "export const exact = 1;",
+        )
+        .unwrap();
+        // Wildcard target — what a wrong (wildcard-wins) resolution returns.
+        fs::write(
+            dir.path().join("src").join("utils").join("index.ts"),
+            "export const wildcard = 1;",
+        )
+        .unwrap();
+        // Object order puts the wildcard FIRST so that only longest-match
+        // selection picks the bare alias — first-match would not.
+        fs::write(
+            dir.path().join("tsconfig.json"),
+            r#"{"compilerOptions":{"baseUrl":".","paths":{"@/*":["src/*"],"@/utils":["src/exact-utils.ts"]}}}"#,
+        )
+        .unwrap();
+        let importer = dir.path().join("src").join("main.ts");
+        fs::write(&importer, "").unwrap();
+        let r = TypescriptResolver::new();
+        assert_eq!(
+            r.resolve("@/utils", &importer, dir.path()),
+            Some(dir.path().join("src").join("exact-utils.ts")),
+            "exact bare alias must win over the broader wildcard"
+        );
+    }
 }
