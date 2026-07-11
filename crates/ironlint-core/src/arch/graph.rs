@@ -124,6 +124,16 @@ impl DepGraph {
             return;
         };
         let canon_path = canonicalize_manifest_path(&entry.file_path, &self.root);
+        // Honor `architecture.ignore` so a manifest entry for an ignored file
+        // does not become a virtual node — the same single-policy answer the
+        // on-disk sweep (walk_files) and the write path (evaluate_outgoing)
+        // already enforce. (Final-review Minor-1.)
+        let rel = canon_path.strip_prefix(&self.root).unwrap_or(&canon_path);
+        if let Ok(ignore_set) = build_ignore_set(&config.ignore) {
+            if ignore_set.is_match(rel) {
+                return;
+            }
+        }
         let Some((extractor, resolver)) = crate::arch::languages::for_path(&canon_path) else {
             return;
         };
@@ -600,5 +610,34 @@ mod tests {
         // Should not panic.
         graph.merge_proposed(Path::new("/does/not/exist/manifest.tsv"), &cfg);
         assert!(graph.nodes.is_empty());
+    }
+
+    #[test]
+    fn merge_proposed_skips_ignored_file() {
+        // An ignored file in the manifest must NOT become a virtual node —
+        // same single-policy answer as the on-disk sweep (walk_files) and the
+        // write path (evaluate_outgoing, Bug 7). Without this, an ignored
+        // *.test.ts in the manifest would be merged, which is over-blocking
+        // (conservative) but inconsistent. (Final-review Minor-1.)
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("src/data")).unwrap();
+        let test_path = root.join("src/data/db.test.ts");
+        let content_file = root.join("db-content.txt");
+        fs::write(&content_file, "export const db = 1;\n").unwrap();
+        let manifest = format!("{}\t{}\n", test_path.display(), content_file.display());
+        let manifest_path = root.join("manifest.tsv");
+        fs::write(&manifest_path, &manifest).unwrap();
+
+        let mut cfg = cfg_with_rules();
+        cfg.ignore = vec!["**/*.test.ts".into()];
+
+        let mut graph = DepGraph::build(root, &cfg).unwrap();
+        graph.merge_proposed(&manifest_path, &cfg);
+        let test_canon = canonicalize_manifest_path(&test_path, root);
+        assert!(
+            !graph.nodes.contains_key(&test_canon),
+            "merge_proposed should skip an ignored file (not add it as a virtual node)"
+        );
     }
 }
