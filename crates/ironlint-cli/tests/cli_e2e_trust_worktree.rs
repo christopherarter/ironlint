@@ -73,7 +73,10 @@ fn trusted_sibling_runs_a_blocking_check_and_exits_2() {
         .arg(&cfg)
         .assert()
         .success()
-        .stdout(predicates::str::contains("scope: linked worktrees"));
+        .stdout(predicates::str::contains("scope: linked worktrees"))
+        .stdout(predicates::str::contains("config sha256:"))
+        .stdout(predicates::str::contains("checks:"))
+        .stdout(predicates::str::contains("scripts:"));
     // In the sibling: check runs the blocking gate -> exit 2.
     let linked_cfg = linked_wt.join(".ironlint.yml");
     std::fs::write(linked_wt.join("dummy.rs"), "fn main() {}\n").unwrap();
@@ -88,6 +91,10 @@ fn trusted_sibling_runs_a_blocking_check_and_exits_2() {
         .failure()
         .code(2);
     let store = std::fs::read_to_string(xdg.path().join("ironlint/trust.json")).unwrap();
+    assert!(
+        store.contains("\"entries\""),
+        "store has a direct entries field: {store}"
+    );
     assert!(
         store.contains("worktree_entries"),
         "store has a worktree_entries field: {store}"
