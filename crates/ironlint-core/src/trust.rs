@@ -9,6 +9,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// Filesystem-only Git worktree identity discovery. See `WorktreeScope`.
 mod worktree;
 
+use crate::trust::worktree::WorktreeScope;
+
 /// Feed one labeled blob into the hasher with length prefixes on both the
 /// label and the content, so no two distinct (label, bytes) pairs can collide
 /// by concatenation.
@@ -192,6 +194,75 @@ pub fn compute_hash(config_path: &Path) -> Result<String> {
     }
 
     Ok(sha256_digest_hex(&hasher.finalize()))
+}
+
+/// Compute the worktree-relative policy hash for `config_path` under `scope`.
+///
+/// Reuses the same extends-closure resolution, `.ironlint/scripts/`
+/// enumeration, symlink refusal, sorting, and `hash_entry` framing as
+/// [`compute_hash`] — the only semantic difference is the labels, which use
+/// worktree-root-relative paths so the digest is stable across linked
+/// worktrees. Any config or scripts dir that escapes `scope.worktree_root`
+/// makes the policy ineligible (`Ok(None)`) rather than silently omitting a
+/// file.
+#[allow(dead_code)]
+fn compute_worktree_hash(config_path: &Path, scope: &WorktreeScope) -> Result<Option<String>> {
+    let config_paths = crate::config::extends::resolve_paths(config_path)
+        .with_context(|| format!("resolving extends closure for {}", config_path.display()))?;
+    if !all_under_root(&config_paths, &scope.worktree_root) {
+        return Ok(None);
+    }
+    let mut hasher = Sha256::new();
+    for path in &config_paths {
+        let rel = worktree_rel(path, &scope.worktree_root)?;
+        let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+        hash_entry(&mut hasher, &format!("config\0{rel}"), &bytes);
+    }
+    let script_dirs = closure_script_dirs(&config_paths);
+    if !all_under_root(&script_dirs, &scope.worktree_root) {
+        return Ok(None);
+    }
+    for scripts_dir in &script_dirs {
+        match classify_entry(scripts_dir)? {
+            EntryKind::Dir => {
+                let dir_rel = worktree_rel(scripts_dir, &scope.worktree_root)?;
+                for (rel, bytes) in collect_gate_files(scripts_dir)? {
+                    hash_entry(&mut hasher, &format!("scripts\0{dir_rel}\0{rel}"), &bytes);
+                }
+            }
+            EntryKind::Missing => {}
+            EntryKind::File => {
+                anyhow::bail!(
+                    "expected {} to be a directory (scripts dir)",
+                    scripts_dir.display()
+                );
+            }
+        }
+    }
+    Ok(Some(sha256_digest_hex(&hasher.finalize())))
+}
+
+/// True iff every path in `paths` is under `root` (after canonicalization).
+#[allow(dead_code)]
+fn all_under_root(paths: &[PathBuf], root: &Path) -> bool {
+    paths.iter().all(|p| p.strip_prefix(root).is_ok())
+}
+
+/// `canon` relative to `root`, `/`-separated. `Err` if not under `root`.
+#[allow(dead_code)]
+fn worktree_rel(canon: &Path, root: &Path) -> Result<String> {
+    let rel = canon.strip_prefix(root).with_context(|| {
+        format!(
+            "{} escapes worktree root {}",
+            canon.display(),
+            root.display()
+        )
+    })?;
+    Ok(rel
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join("/"))
 }
 
 /// A read-only, human-facing enumeration of exactly what trust covers.
@@ -1210,5 +1281,102 @@ mod tests {
         let store_path = dir.path().join("trust.json");
         let store = classify_store_read(&store_path, Ok("{ not json".to_string())).unwrap();
         assert!(store.entries.is_empty());
+    }
+
+    // --- worktree hash (Task 2) -------------------------------------------
+    use crate::trust::worktree::WorktreeScope;
+    use std::process::Command;
+
+    /// Build a real git repo at `root` so `WorktreeScope::discover` succeeds.
+    fn git_repo(root: &Path) {
+        fs::create_dir_all(root).unwrap();
+        let _ = Command::new("git").args(["init", "-q"]).arg(root).status();
+        // .ironlint.yml is the trust surface; commit is unnecessary for discovery.
+    }
+
+    #[test]
+    fn worktree_hash_matches_for_equivalent_roots() {
+        // Two tempdirs with identical policy + identical .git dir layout must
+        // produce the SAME worktree hash (labels are root-relative).
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        for root in [a.path(), b.path()] {
+            git_repo(root);
+            let cfg = root.join(".ironlint.yml");
+            write(
+                &cfg,
+                "checks:\n  g:\n    files: \"*.rs\"\n    run: \"true\"\n",
+            );
+        }
+        let sa = WorktreeScope::discover(&a.path().join(".ironlint.yml")).unwrap();
+        let sb = WorktreeScope::discover(&b.path().join(".ironlint.yml")).unwrap();
+        let ha = compute_worktree_hash(&a.path().join(".ironlint.yml"), &sa)
+            .unwrap()
+            .unwrap();
+        let hb = compute_worktree_hash(&b.path().join(".ironlint.yml"), &sb)
+            .unwrap()
+            .unwrap();
+        assert_eq!(ha, hb, "identical policy in equivalent roots hashes alike");
+    }
+
+    #[test]
+    fn worktree_hash_changes_when_config_changes() {
+        let root = tempfile::tempdir().unwrap();
+        git_repo(root.path());
+        let cfg = root.path().join(".ironlint.yml");
+        write(
+            &cfg,
+            "checks:\n  g:\n    files: \"*.rs\"\n    run: \"true\"\n",
+        );
+        let scope = WorktreeScope::discover(&cfg).unwrap();
+        let h1 = compute_worktree_hash(&cfg, &scope).unwrap().unwrap();
+        write(
+            &cfg,
+            "checks:\n  g:\n    files: \"*.rs\"\n    run: \"false\"\n",
+        );
+        let h2 = compute_worktree_hash(&cfg, &scope).unwrap().unwrap();
+        assert_ne!(h1, h2, "editing the config changes the worktree hash");
+    }
+
+    #[test]
+    fn worktree_hash_changes_when_script_changes() {
+        let root = tempfile::tempdir().unwrap();
+        git_repo(root.path());
+        let cfg = root.path().join(".ironlint.yml");
+        write(
+            &cfg,
+            "checks:\n  g:\n    files: \"*.rs\"\n    run: \".ironlint/scripts/s.sh\"\n",
+        );
+        let scripts = root.path().join(".ironlint/scripts");
+        fs::create_dir_all(&scripts).unwrap();
+        write(&scripts.join("s.sh"), "#!/bin/sh\nexit 0\n");
+        let scope = WorktreeScope::discover(&cfg).unwrap();
+        let h1 = compute_worktree_hash(&cfg, &scope).unwrap().unwrap();
+        write(&scripts.join("s.sh"), "#!/bin/sh\nexit 1\n");
+        let h2 = compute_worktree_hash(&cfg, &scope).unwrap().unwrap();
+        assert_ne!(h1, h2, "editing a covered script changes the worktree hash");
+    }
+
+    #[test]
+    fn worktree_hash_is_ineligible_when_extends_escapes_root() {
+        // extends: target lives OUTSIDE the worktree root -> ineligible (None).
+        let outside = tempfile::tempdir().unwrap();
+        let base = outside.path().join("base.ironlint.yml");
+        write(
+            &base,
+            "checks:\n  b:\n    files: \"*\"\n    run: \"true\"\n",
+        );
+        let root = tempfile::tempdir().unwrap();
+        git_repo(root.path());
+        let cfg = root.path().join(".ironlint.yml");
+        write(
+            &cfg,
+            &format!("extends: [\"{}\"]\nchecks: {{}}\n", base.display()),
+        );
+        let scope = WorktreeScope::discover(&cfg).unwrap();
+        assert!(
+            compute_worktree_hash(&cfg, &scope).unwrap().is_none(),
+            "an extends target outside the root is ineligible"
+        );
     }
 }
