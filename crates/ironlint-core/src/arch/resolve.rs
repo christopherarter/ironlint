@@ -56,7 +56,7 @@ pub fn try_extensions(base: &Path) -> Option<PathBuf> {
 /// This keeps the result inside the original logical tree, unlike
 /// `canonicalize` which resolves symlinks and may cross filesystem boundaries.
 #[allow(clippy::path_buf_push_overwrite)]
-fn normalize_path(path: &Path) -> PathBuf {
+pub(crate) fn normalize_path(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for comp in path.components() {
         match comp {

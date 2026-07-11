@@ -50,9 +50,16 @@ pub fn run(sub: crate::cli::ArchSub) -> Result<i32> {
                 root,
                 event,
                 file,
+                proposed_manifest,
             } => {
                 let (root, config) = load_config(layers, root)?;
-                run_check(&root, &config, event.as_deref(), file)
+                run_check(
+                    &root,
+                    &config,
+                    event.as_deref(),
+                    file,
+                    proposed_manifest.as_ref(),
+                )
             }
             crate::cli::ArchSub::Graph {
                 layers,
@@ -83,6 +90,7 @@ fn run_check(
     config: &ArchConfig,
     event: Option<&str>,
     file: Option<PathBuf>,
+    proposed_manifest: Option<&PathBuf>,
 ) -> Result<i32> {
     let outcome = if event == Some("write") {
         match file {
@@ -97,7 +105,13 @@ fn run_check(
                     root.join(path)
                 };
                 let absolute = canonicalize_through_parent(&absolute);
-                ArchEngine::check_write(root, config, &absolute, &content)
+                ArchEngine::check_write(
+                    root,
+                    config,
+                    &absolute,
+                    &content,
+                    proposed_manifest.map(|p| p.as_path()),
+                )
             }
             None => ArchEngine::check_whole(root, config),
         }

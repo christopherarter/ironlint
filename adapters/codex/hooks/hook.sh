@@ -254,6 +254,16 @@ fi
 # Run ironlint per touched file; first block wins. No manifest lines (e.g. a
 # delete-only patch) → nothing to gate → allow. Reading from a file (not a
 # pipe) keeps the loop in this shell, so `deny`'s exit ends the whole script.
+#
+# Bug 1: export the full manifest as IRONLINT_PROPOSED_MANIFEST so the lowered
+# __arch__ check can see cross-file imports within this single atomic patch.
+# The hook already built the manifest as ABSPATH\tCONTENTFILE lines in
+# ${WORKDIR}/manifest — just point the env var at it. The runner reads it
+# from its own env and passes it through to the __arch__ subprocess via
+# GateEnv.proposed_manifest, which merges each entry as a VIRTUAL graph node
+# before resolving the proposed file's outgoing imports.
+export IRONLINT_PROPOSED_MANIFEST="${WORKDIR}/manifest"
+
 while IFS=$'\t' read -r ABSPATH CONTENTFILE; do
   if [[ -z "${ABSPATH}" ]]; then
     continue

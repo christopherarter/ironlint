@@ -189,6 +189,11 @@ pub enum ArchSub {
         event: Option<String>,
         #[arg(long)]
         file: Option<PathBuf>,
+        /// Path to a manifest of sibling proposed files (tab-separated
+        /// `file_path\tcontent_path` lines). Lets the arch check see
+        /// cross-file imports within a single atomic patch (Bug 1).
+        #[arg(long)]
+        proposed_manifest: Option<PathBuf>,
     },
     /// Render the dependency graph (DOT by default).
     Graph {

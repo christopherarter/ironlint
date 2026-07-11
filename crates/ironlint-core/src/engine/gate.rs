@@ -39,6 +39,13 @@ pub struct GateEnv<'a> {
     /// shells out to the same binary instead of resolving `ironlint` from
     /// `PATH` (which may be missing or stale).
     pub bin: &'a Path,
+    /// Absolute path to a manifest of sibling proposed files
+    /// (`$IRONLINT_PROPOSED_MANIFEST`), so the lowered `__arch__` check can
+    /// see cross-file imports within a single atomic patch. `Some` only when
+    /// the parent process (e.g. the codex hook) set
+    /// `IRONLINT_PROPOSED_MANIFEST`; `None` otherwise (var unset). Tab-
+    /// separated `file_path\tcontent_path` lines.
+    pub proposed_manifest: Option<&'a Path>,
 }
 
 #[derive(Debug)]
@@ -297,6 +304,12 @@ fn build_check_env(
             al.as_os_str().to_os_string(),
         ));
     }
+    if let Some(pm) = env.proposed_manifest {
+        out.push((
+            OsString::from("IRONLINT_PROPOSED_MANIFEST"),
+            pm.as_os_str().to_os_string(),
+        ));
+    }
     out
 }
 
@@ -356,6 +369,7 @@ mod tests {
             tmpfile: None,
             arch_layers: None,
             bin: root,
+            proposed_manifest: None,
         }
     }
 
@@ -368,6 +382,7 @@ mod tests {
             tmpfile: None,
             arch_layers: None,
             bin: root,
+            proposed_manifest: None,
         }
     }
 
@@ -582,6 +597,7 @@ mod tests {
             tmpfile: Some(&tmp),
             arch_layers: None,
             bin: dir.path(),
+            proposed_manifest: None,
         };
         // Gate passes iff $IRONLINT_TMPFILE equals the path we passed.
         let run = format!("test \"$IRONLINT_TMPFILE\" = \"{}\"", tmp.display());
@@ -601,6 +617,7 @@ mod tests {
             tmpfile: None,
             arch_layers: Some(&arch),
             bin: dir.path(),
+            proposed_manifest: None,
         };
         // Gate passes iff $IRONLINT_ARCH_LAYERS equals the path we passed.
         let run = format!("test \"$IRONLINT_ARCH_LAYERS\" = \"{}\"", arch.display());
@@ -806,6 +823,7 @@ mod tests {
         let f = dir.path().join("x.txt");
         let tmp = dir.path().join("ironlint-tmp-1.txt");
         let arch = dir.path().join("ironlint-arch-layers.yml");
+        let pm = dir.path().join("manifest.tsv");
         let files = vec![f.clone()];
         let env = GateEnv {
             file: Some(&f),
@@ -815,6 +833,7 @@ mod tests {
             tmpfile: Some(&tmp),
             arch_layers: Some(&arch),
             bin: dir.path(),
+            proposed_manifest: Some(&pm),
         };
         let files_str = std::ffi::OsStr::new("irrelevant-files-str");
 
@@ -861,6 +880,10 @@ mod tests {
             get("IRONLINT_BIN"),
             Some(dir.path().as_os_str().to_os_string())
         );
+        assert_eq!(
+            get("IRONLINT_PROPOSED_MANIFEST"),
+            Some(pm.as_os_str().to_os_string())
+        );
     }
 
     #[test]
@@ -875,6 +898,7 @@ mod tests {
             tmpfile: None,
             arch_layers: None,
             bin: dir.path(),
+            proposed_manifest: None,
         };
 
         let result = build_check_env(&env, std::ffi::OsStr::new(""), &source);
@@ -885,6 +909,10 @@ mod tests {
         assert!(
             !has("IRONLINT_ARCH_LAYERS"),
             "no arch_layers → var must be unset"
+        );
+        assert!(
+            !has("IRONLINT_PROPOSED_MANIFEST"),
+            "no proposed_manifest → var must be unset"
         );
         assert!(has("IRONLINT_ROOT"));
         assert!(has("IRONLINT_EVENT"));
@@ -903,6 +931,7 @@ mod tests {
             tmpfile: None,
             arch_layers: None,
             bin: dir.path(),
+            proposed_manifest: None,
         };
         // With the var unset, `test -n` on it is false → exit 1 → Block. Pass means it WAS set (bug).
         assert!(matches!(
@@ -923,10 +952,55 @@ mod tests {
             tmpfile: None,
             arch_layers: None,
             bin: dir.path(),
+            proposed_manifest: None,
         };
         // With the var unset, `test -n` on it is false → exit 1 → Block. Pass means it WAS set (bug).
         assert!(matches!(
             run_gate("test -n \"$IRONLINT_ARCH_LAYERS\"", &env, None, t()),
+            GateOutcome::Block { .. }
+        ));
+    }
+
+    #[test]
+    fn proposed_manifest_env_is_set_when_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("x.txt");
+        let pm = dir.path().join("manifest.tsv");
+        let env = GateEnv {
+            file: Some(&f),
+            files: &[],
+            root: dir.path(),
+            event: "write",
+            tmpfile: None,
+            arch_layers: None,
+            bin: dir.path(),
+            proposed_manifest: Some(&pm),
+        };
+        // Gate passes iff $IRONLINT_PROPOSED_MANIFEST equals the path we passed.
+        let run = format!(
+            "test \"$IRONLINT_PROPOSED_MANIFEST\" = \"{}\"",
+            pm.display()
+        );
+        assert!(matches!(run_gate(&run, &env, None, t()), GateOutcome::Pass));
+    }
+
+    #[test]
+    fn proposed_manifest_env_is_unset_when_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("x.txt");
+        let env = GateEnv {
+            file: Some(&f),
+            files: &[],
+            root: dir.path(),
+            event: "write",
+            tmpfile: None,
+            arch_layers: None,
+            bin: dir.path(),
+            proposed_manifest: None,
+        };
+        // With the var unset, `test -n` on it is false → exit 1 → Block. Pass means it WAS set (bug).
+        assert!(matches!(
+            run_gate("test -n \"$IRONLINT_PROPOSED_MANIFEST\"", &env, None, t()),
             GateOutcome::Block { .. }
         ));
     }

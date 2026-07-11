@@ -74,7 +74,7 @@ fn check_write_blocks_proposed_forbidden_import() {
 
     let proposed = root.join("src/components/App.tsx");
     let content = b"import { db } from '../data/db';\n";
-    let outcome = ArchEngine::check_write(root, &forbidden_config(), &proposed, content);
+    let outcome = ArchEngine::check_write(root, &forbidden_config(), &proposed, content, None);
     match outcome {
         ArchOutcome::Block { violations } => {
             assert_eq!(violations.len(), 1);
@@ -92,7 +92,7 @@ fn check_write_passes_when_no_forbidden_import() {
 
     let proposed = root.join("src/components/App.tsx");
     let content = b"import { local } from './local';\n";
-    let outcome = ArchEngine::check_write(root, &forbidden_config(), &proposed, content);
+    let outcome = ArchEngine::check_write(root, &forbidden_config(), &proposed, content, None);
     assert!(matches!(outcome, ArchOutcome::Pass), "{outcome:?}");
 }
 
@@ -104,6 +104,7 @@ fn check_write_internal_error_when_root_missing() {
         &forbidden_config(),
         proposed,
         b"import { db } from '../data/db';\n",
+        None,
     );
     assert!(
         matches!(outcome, ArchOutcome::InternalError(_)),
@@ -267,7 +268,7 @@ fn check_write_blocks_proposed_forbidden_cjs_require() {
 
     let proposed = root.join("src/components/App.cjs");
     let content = b"const db = require('../data/db');\n";
-    let outcome = ArchEngine::check_write(root, &forbidden_config(), &proposed, content);
+    let outcome = ArchEngine::check_write(root, &forbidden_config(), &proposed, content, None);
     match outcome {
         ArchOutcome::Block { violations } => {
             assert_eq!(violations.len(), 1);

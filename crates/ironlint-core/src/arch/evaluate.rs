@@ -92,7 +92,9 @@ pub fn evaluate_outgoing(
     };
     let mut violations = Vec::new();
     for import in extractor.extract(proposed_content) {
-        let Some(target) = resolver.resolve(&import.spec, proposed_path, root) else {
+        let Some(target) =
+            graph.resolve_with_overlay(&import.spec, proposed_path, root, resolver.as_ref())
+        else {
             continue;
         };
         let Some(target_layer) = graph.nodes.get(&target).and_then(|node| node.layer) else {

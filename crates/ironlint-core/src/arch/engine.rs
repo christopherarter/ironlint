@@ -57,16 +57,26 @@ impl ArchEngine {
     }
 
     /// Per-write check (outgoing only). `content` is the proposed file content.
+    /// `proposed_manifest` — when `Some` — is a path to a manifest of ALL
+    /// sibling proposed files in the same atomic patch (tab-separated
+    /// `file_path\tcontent_path` lines). The arch engine merges those as
+    /// VIRTUAL graph nodes before resolving the proposed file's outgoing
+    /// imports, so a cross-file import to a not-yet-on-disk file is caught
+    /// instead of silently dropped (Bug 1).
     pub fn check_write(
         root: &Path,
         config: &ArchConfig,
         proposed: &Path,
         content: &[u8],
+        proposed_manifest: Option<&Path>,
     ) -> ArchOutcome {
-        let graph = match DepGraph::build(root, config) {
+        let mut graph = match DepGraph::build(root, config) {
             Ok(g) => g,
             Err(e) => return ArchOutcome::InternalError(format!("{e:#}")),
         };
+        if let Some(manifest) = proposed_manifest {
+            graph.merge_proposed(manifest, config);
+        }
         match evaluate_outgoing(content, proposed, root, &graph, config) {
             Ok(v) if v.is_empty() => ArchOutcome::Pass,
             Ok(v) => ArchOutcome::Block { violations: v },

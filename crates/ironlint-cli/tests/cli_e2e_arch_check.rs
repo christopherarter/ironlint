@@ -176,6 +176,102 @@ fn arch_check_runs_same_binary_when_ironlint_not_on_path() {
         .stderr(contains("presentation"));
 }
 
+/// Bug 1: a single atomic patch adds `src/data/db.ts` AND modifies
+/// `src/components/App.tsx` to import from it. The codex hook checks
+/// `App.tsx` BEFORE `db.ts` is on disk. Without `IRONLINT_PROPOSED_MANIFEST`,
+/// the arch subprocess can't resolve the import → false negative (Pass).
+/// With the manifest pointing at a content file for db.ts, the arch
+/// subprocess merges it as a virtual graph node → import resolves → Block.
+///
+/// This test proves the FULL plumbing: env var → runner reads it →
+/// GateEnv.proposed_manifest → $IRONLINT_PROPOSED_MANIFEST → lowered
+/// __arch__ check passes --proposed-manifest → ArchEngine::check_write
+/// merges virtual nodes → evaluate_outgoing catches the violation.
+#[test]
+fn arch_check_catches_cross_file_import_via_proposed_manifest() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::create_dir_all(root.join("src/components")).unwrap();
+    fs::create_dir_all(root.join("src/data")).unwrap();
+    // db.ts is intentionally NOT on disk — simulates the pre-patch state
+    // where the hook checks App.tsx before db.ts is written.
+
+    let config = root.join(".ironlint.yml");
+    let config_body = "architecture:\n  layers:\n    - name: presentation\n      globs: [\"src/components/**\"]\n    - name: data\n      globs: [\"src/data/**\"]\n  rules:\n    - from: presentation\n      may_import: []\nchecks: {}\n";
+    fs::write(&config, config_body).unwrap();
+
+    let app = root.join("src/components/App.tsx");
+    fs::write(&app, "export function App() { return null; }\n").unwrap();
+    let xdg = common::blessed_store(&config);
+
+    // Write a manifest: one entry for db.ts → its proposed content.
+    let db_path = root.join("src/data/db.ts");
+    let db_content_file = root.join("proposed-db.ts");
+    fs::write(&db_content_file, "export const db = 1;\n").unwrap();
+    let manifest = root.join("manifest.tsv");
+    fs::write(
+        &manifest,
+        format!("{}\t{}\n", db_path.display(), db_content_file.display()),
+    )
+    .unwrap();
+
+    let mut cmd = Command::cargo_bin("ironlint").unwrap();
+    cmd.current_dir(root)
+        .env("XDG_CONFIG_HOME", xdg.path())
+        .env("PATH", ironlint_path())
+        .env("IRONLINT_PROPOSED_MANIFEST", manifest.to_str().unwrap())
+        .args([
+            "check",
+            "--file",
+            app.to_str().unwrap(),
+            "--content",
+            "-",
+            "--config",
+            ".ironlint.yml",
+        ]);
+    cmd.write_stdin("import { db } from '../data/db';\nexport { db };\n")
+        .assert()
+        .code(2)
+        .stderr(contains("presentation"));
+}
+
+/// Bug 1 complement: without the manifest, the same scenario PASSES
+/// (false negative). This proves the manifest is what closes the hole.
+#[test]
+fn arch_check_false_negative_without_manifest() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::create_dir_all(root.join("src/components")).unwrap();
+    fs::create_dir_all(root.join("src/data")).unwrap();
+    // db.ts NOT on disk.
+
+    let config = root.join(".ironlint.yml");
+    let config_body = "architecture:\n  layers:\n    - name: presentation\n      globs: [\"src/components/**\"]\n    - name: data\n      globs: [\"src/data/**\"]\n  rules:\n    - from: presentation\n      may_import: []\nchecks: {}\n";
+    fs::write(&config, config_body).unwrap();
+
+    let app = root.join("src/components/App.tsx");
+    fs::write(&app, "export function App() { return null; }\n").unwrap();
+    let xdg = common::blessed_store(&config);
+
+    let mut cmd = Command::cargo_bin("ironlint").unwrap();
+    cmd.current_dir(root)
+        .env("XDG_CONFIG_HOME", xdg.path())
+        .env("PATH", ironlint_path())
+        .args([
+            "check",
+            "--file",
+            app.to_str().unwrap(),
+            "--content",
+            "-",
+            "--config",
+            ".ironlint.yml",
+        ]);
+    // No IRONLINT_PROPOSED_MANIFEST → db.ts unresolved → no violation → Pass.
+    cmd.write_stdin("import { db } from '../data/db';\nexport { db };\n")
+        .assert()
+        .code(0);
+}
+
 #[test]
 fn arch_check_exits_4_when_unblessed() {
     let (dir, _config, app) = fixture();

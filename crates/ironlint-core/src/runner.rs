@@ -90,6 +90,14 @@ pub struct IronLintEngine {
     /// missing or stale). Falls back to the bare name `ironlint` if
     /// `current_exe()` fails, preserving the pre-fix behavior in that edge case.
     bin: PathBuf,
+    /// Absolute path to a manifest of sibling proposed files, read from the
+    /// `IRONLINT_PROPOSED_MANIFEST` env var at load time (set by the codex
+    /// hook before invoking `ironlint check`). Passed to the lowered
+    /// `__arch__` check as `$IRONLINT_PROPOSED_MANIFEST` so the arch
+    /// subprocess can merge cross-file imports within a single atomic patch
+    /// as virtual graph nodes (Bug 1). `None` when the env var is unset
+    /// (the common case — no manifest, no overlay, status quo behavior).
+    proposed_manifest: Option<PathBuf>,
 }
 
 /// Per-check run result, before folding into the verdict. Skipped checks carry
@@ -696,6 +704,12 @@ impl IronLintEngine {
         // pre-fix PATH-resolved behavior instead of crashing the engine load.
         let bin = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("ironlint"));
 
+        // Bug 1: read the proposed-manifest path from the parent env (set by
+        // the codex hook before invoking `ironlint check`). The runner owns
+        // which IRONLINT_* vars flow to checks — this is the same pattern used
+        // for `IRONLINT_BIN` (current_exe). `None` when unset (common case).
+        let proposed_manifest = std::env::var_os("IRONLINT_PROPOSED_MANIFEST").map(PathBuf::from);
+
         Ok(Self {
             config,
             config_dir,
@@ -704,6 +718,7 @@ impl IronLintEngine {
             scope_matchers,
             timeout,
             bin,
+            proposed_manifest,
         })
     }
 
@@ -975,6 +990,7 @@ impl IronLintEngine {
             tmpfile: tmp.as_ref().map(|g| g.path.as_path()),
             arch_layers: arch.as_ref().map(|g| g.path.as_path()),
             bin: &self.bin,
+            proposed_manifest: self.proposed_manifest.as_deref(),
         };
         self.run_steps(check, &env, Some(content.as_bytes()))
         // `tmp` and `arch` drop here → temp files removed.
@@ -1048,6 +1064,7 @@ impl IronLintEngine {
                 tmpfile: None,
                 arch_layers: arch.as_ref().map(|g| g.path.as_path()),
                 bin: &self.bin,
+                proposed_manifest: self.proposed_manifest.as_deref(),
             };
             let status = self.run_steps(check, &env, None);
             // `arch` drops here → temp file removed.
