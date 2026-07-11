@@ -462,7 +462,12 @@ fn millis(d: Duration) -> u64 {
 /// Re-anchors to `now_ms` at the start of a fresh burst (`shown == anchor_base`,
 /// nothing released yet) so a row's wipe is measured from its arrival, not from
 /// however long the idle poll slept before the entry was seen.
-fn advance_cascade(c: &mut Cascade, entries_len: usize, now_ms: u64, revealed_ms: &mut Vec<u64>) {
+fn advance_cascade(
+    c: &mut Cascade,
+    entries_len: usize,
+    now_ms: u64,
+    revealed_ms: &mut Vec<Option<u64>>,
+) {
     if c.shown >= entries_len {
         c.anchor_base = c.shown;
         return;
@@ -475,9 +480,21 @@ fn advance_cascade(c: &mut Cascade, entries_len: usize, now_ms: u64, revealed_ms
     let target = c.anchor_base + cascade_released(elapsed, STEP_MS, queued);
     while c.shown < target {
         let offset = STEP_MS * u64::try_from(c.shown - c.anchor_base).unwrap_or(0);
-        revealed_ms.push(c.anchor_ms + offset);
+        revealed_ms.push(Some(c.anchor_ms + offset));
         c.shown += 1;
     }
+}
+
+/// Mark `n` already-present entries as settled (no wipe-in): the launch
+/// backlog, or the full re-read after a log rotation. Pushes `None` reveal
+/// times and advances the cascade to "caught up" so genuinely new arrivals
+/// afterwards still cascade normally. Pure + unit-tested.
+fn prime_backlog(revealed_ms: &mut Vec<Option<u64>>, n: usize, c: &mut Cascade) {
+    for _ in 0..n {
+        revealed_ms.push(None);
+    }
+    c.shown = n;
+    c.anchor_base = n;
 }
 
 fn event_loop<B: Backend>(
@@ -496,14 +513,15 @@ where
     let mut state = ViewState::default();
     let mut entries: Vec<LogEntry> = Vec::new();
     let mut offset: u64 = 0;
+    let mut primed = false;
 
     let loop_start = Instant::now();
     let mut cascade = Cascade {
         shown: 0,
-        anchor_ms: 0,
         anchor_base: 0,
+        anchor_ms: 0,
     };
-    let mut revealed_ms: Vec<u64> = Vec::new();
+    let mut revealed_ms: Vec<Option<u64>> = Vec::new();
 
     loop {
         if let Ok((new, reset)) = ironlint_core::telemetry::read_since(&log, &mut offset) {
@@ -512,8 +530,21 @@ where
                 revealed_ms.clear();
                 cascade.shown = 0;
                 cascade.anchor_base = 0;
+                primed = false;
             }
             entries.extend(new);
+
+            // Prime any already-present entries so they render instantly on
+            // the first successful tick (and after a log-rotation full
+            // reread) instead of cascading one row per STEP_MS — a launch
+            // backlog is history, not live traffic. Gated on a successful
+            // read: a first-tick I/O error must NOT mark an empty backlog as
+            // primed, or the real backlog would silently animate once the
+            // read later succeeds.
+            if !primed {
+                prime_backlog(&mut revealed_ms, entries.len(), &mut cascade);
+                primed = true;
+            }
         }
 
         let now_ms = millis(loop_start.elapsed());
@@ -522,12 +553,17 @@ where
         let mut animating = cascade.shown < entries.len();
         let rows: Vec<StreamRow> = (0..cascade.shown)
             .map(|i| {
-                let age = now_ms.saturating_sub(revealed_ms[i]);
-                let age_ms = if age < ENTER_MS {
-                    animating = true;
-                    Some(age)
-                } else {
-                    None
+                let age_ms = match revealed_ms[i] {
+                    None => None, // backlog row: settled, no wipe
+                    Some(t) => {
+                        let age = now_ms.saturating_sub(t);
+                        if age < ENTER_MS {
+                            animating = true;
+                            Some(age)
+                        } else {
+                            None
+                        }
+                    }
                 };
                 StreamRow {
                     entry: &entries[i],
@@ -1389,14 +1425,14 @@ mod tests {
             anchor_ms: 0,
             anchor_base: 0,
         };
-        let mut rev: Vec<u64> = Vec::new();
+        let mut rev: Vec<Option<u64>> = Vec::new();
         advance_cascade(&mut c, 0, 0, &mut rev);
         assert_eq!(c.shown, 0);
         // One entry arrives; not seen until a full idle poll later (t=250).
         advance_cascade(&mut c, 1, 250, &mut rev);
         assert_eq!(c.shown, 1);
-        assert_eq!(rev[0], 250, "row anchored at arrival (t=250), not at t=0");
-        let age = 250u64.saturating_sub(rev[0]);
+        assert_eq!(rev[0], Some(250));
+        let age = 250u64.saturating_sub(rev[0].unwrap_or(0));
         assert_eq!(age, 0);
         assert!(
             entrance_reveal(age, ENTER_MS, 80).is_some(),
@@ -1411,16 +1447,16 @@ mod tests {
             anchor_ms: 0,
             anchor_base: 0,
         };
-        let mut rev: Vec<u64> = Vec::new();
+        let mut rev: Vec<Option<u64>> = Vec::new();
         advance_cascade(&mut c, 3, 0, &mut rev); // 3 arrive at t=0
         assert_eq!(c.shown, 1); // one released immediately
-        assert_eq!(rev, vec![0]);
+        assert_eq!(rev, vec![Some(0)]);
         advance_cascade(&mut c, 3, STEP_MS, &mut rev);
         assert_eq!(c.shown, 2);
-        assert_eq!(rev[1], STEP_MS); // staggered by one step
+        assert_eq!(rev[1], Some(STEP_MS)); // staggered by one step
         advance_cascade(&mut c, 3, 2 * STEP_MS, &mut rev);
         assert_eq!(c.shown, 3);
-        assert_eq!(rev[2], 2 * STEP_MS);
+        assert_eq!(rev[2], Some(2 * STEP_MS));
     }
 
     #[test]
@@ -1430,10 +1466,52 @@ mod tests {
             anchor_ms: 0,
             anchor_base: 2,
         };
-        let mut rev: Vec<u64> = vec![0, STEP_MS];
+        let mut rev: Vec<Option<u64>> = vec![Some(0), Some(STEP_MS)];
         advance_cascade(&mut c, 2, 9_999, &mut rev);
         assert_eq!(c.shown, 2, "no spurious release when caught up");
         assert_eq!(rev.len(), 2);
+    }
+
+    #[test]
+    fn prime_backlog_marks_history_settled_and_not_animating() {
+        // 5 entries already in the log at launch.
+        let mut c = Cascade {
+            shown: 0,
+            anchor_ms: 0,
+            anchor_base: 0,
+        };
+        let mut rev: Vec<Option<u64>> = Vec::new();
+        prime_backlog(&mut rev, 5, &mut c);
+        assert_eq!(c.shown, 5, "backlog is shown immediately");
+        assert_eq!(c.anchor_base, 5, "anchored past the backlog");
+        assert_eq!(rev.len(), 5);
+        // Every backlog row is settled — None reveal time, so no wipe-in plays.
+        assert!(
+            rev.iter().all(|r| r.is_none()),
+            "backlog rows must not animate"
+        );
+    }
+
+    #[test]
+    fn new_arrival_after_backlog_still_cascades() {
+        // Backlog of 2 primed at launch.
+        let mut c = Cascade {
+            shown: 0,
+            anchor_ms: 0,
+            anchor_base: 0,
+        };
+        let mut rev: Vec<Option<u64>> = Vec::new();
+        prime_backlog(&mut rev, 2, &mut c);
+        assert_eq!(c.shown, 2);
+        assert!(rev.iter().all(|r| r.is_none()));
+        // A genuinely new row arrives at t=250 (after an idle poll): it animates.
+        advance_cascade(&mut c, 3, 250, &mut rev);
+        assert_eq!(c.shown, 3);
+        assert_eq!(
+            rev[2],
+            Some(250),
+            "new row is anchored at arrival (Some), not None"
+        );
     }
 
     #[test]
