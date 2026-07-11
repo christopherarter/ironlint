@@ -443,14 +443,17 @@ fn check_references_arch_layers(check: &Check) -> bool {
 }
 
 /// The naming prefix ironlint gives every `$IRONLINT_TMPFILE` it
-/// materializes (see `unique_tmp_name`) — the only pattern
-/// `sweep_stale_tmpfiles` is allowed to remove.
+/// materializes (see `unique_tmp_name`).
 const TMPFILE_PREFIX: &str = "ironlint-tmp-";
 
 /// The naming prefix for the `$IRONLINT_ARCH_LAYERS` materialized file.
-/// These live in the system temp directory, not the project tree, so they are
-/// outside `sweep_stale_tmpfiles`' scope; `TmpFileGuard::drop` handles cleanup.
+/// These live in the system temp directory, not the project tree.
 const ARCH_LAYERS_PREFIX: &str = "ironlint-arch-";
+
+/// Prefixes that `sweep_stale_tmpfiles` may reclaim. Both `$IRONLINT_TMPFILE`
+/// and `$IRONLINT_ARCH_LAYERS` leaks can be left behind when ironlint is
+/// SIGKILLed mid-check and `TmpFileGuard::drop` does not run.
+const STALE_TMPFILE_PREFIXES: &[&str] = &[TMPFILE_PREFIX, ARCH_LAYERS_PREFIX];
 
 /// A collision-resistant temp-file name with `prefix` and optional `ext`.
 fn unique_name(prefix: &str, ext: Option<&str>) -> String {
@@ -492,12 +495,13 @@ fn unique_tmp_name(ext: Option<&str>) -> String {
 /// leak.
 const TMPFILE_SWEEP_MAX_AGE: Duration = Duration::from_secs(60 * 60);
 
-/// Best-effort reclaim of `$IRONLINT_TMPFILE` leaks in `root`'s immediate
-/// directory: removes only files whose name starts with `TMPFILE_PREFIX` and
-/// whose mtime is older than `max_age`. Never touches anything else — a
-/// non-matching name, a directory, or an unreadable/racing entry is simply
-/// skipped rather than erroring, since this runs unconditionally on every
-/// engine load and a sweep failure must never block a check.
+/// Best-effort reclaim of `$IRONLINT_TMPFILE` and `$IRONLINT_ARCH_LAYERS`
+/// leaks in `root`'s immediate directory: removes only regular files whose
+/// name starts with one of [`STALE_TMPFILE_PREFIXES`] and whose mtime is older
+/// than `max_age`. Never touches anything else — a non-matching name, a
+/// directory, or an unreadable/racing entry is simply skipped rather than
+/// erroring, since this runs unconditionally on every engine load and a sweep
+/// failure must never block a check.
 ///
 /// Deliberately shallow (does not recurse into subdirectories): a tmpfile
 /// for a nested checked file lands in that file's own directory (see
@@ -517,16 +521,16 @@ fn sweep_stale_tmpfiles(root: &Path, max_age: Duration) {
     }
 }
 
-/// True iff `entry` is a regular file matching `TMPFILE_PREFIX` whose mtime
-/// is older than `max_age` relative to `now`. Extracted from
-/// `sweep_stale_tmpfiles` to keep both functions well under the cognitive
-/// complexity cap.
+/// True iff `entry` is a regular file matching one of
+/// [`STALE_TMPFILE_PREFIXES`] whose mtime is older than `max_age` relative to
+/// `now`. Extracted from `sweep_stale_tmpfiles` to keep both functions well
+/// under the cognitive complexity cap.
 fn is_stale_tmpfile(entry: &std::fs::DirEntry, now: SystemTime, max_age: Duration) -> bool {
     let file_name = entry.file_name();
     let Some(name) = file_name.to_str() else {
         return false;
     };
-    if !name.starts_with(TMPFILE_PREFIX) {
+    if !STALE_TMPFILE_PREFIXES.iter().any(|p| name.starts_with(p)) {
         return false;
     }
     let Ok(metadata) = entry.metadata() else {
@@ -673,11 +677,16 @@ impl IronLintEngine {
             .canonicalize()
             .unwrap_or_else(|_| config_dir.clone());
 
-        // Reclaim any $IRONLINT_TMPFILE a prior run leaked by dying mid-check
-        // (SIGTERM/SIGINT skip TmpFileGuard::drop — see its docstring).
-        // Best-effort and age-gated, so it can never step on a tmpfile a
-        // concurrently-running ironlint process still owns.
+        // Reclaim any $IRONLINT_TMPFILE or $IRONLINT_ARCH_LAYERS leak a prior
+        // run left behind by dying mid-check (SIGTERM/SIGINT/SIGKILL skip
+        // TmpFileGuard::drop — see its docstring). Best-effort and age-gated,
+        // so it can never step on a tmpfile a concurrently-running ironlint
+        // process still owns.
         sweep_stale_tmpfiles(&config_dir_canon, TMPFILE_SWEEP_MAX_AGE);
+        // $IRONLINT_ARCH_LAYERS lives in the system temp dir, not the project
+        // tree, so sweep that too. The same prefix + is_file + age gate makes
+        // this safe in a shared directory.
+        sweep_stale_tmpfiles(&std::env::temp_dir(), TMPFILE_SWEEP_MAX_AGE);
 
         let timeout = resolve_timeout(&config);
 
@@ -1911,6 +1920,62 @@ mod gate_dispatch_tests {
         let dir = TempDir::new().unwrap();
         let missing = dir.path().join("does-not-exist");
         sweep_stale_tmpfiles(&missing, Duration::from_secs(60 * 60));
+    }
+
+    #[test]
+    fn sweep_stale_tmpfiles_removes_old_arch_layers_files() {
+        // Bug 8: SIGKILL skips TmpFileGuard::drop for $IRONLINT_ARCH_LAYERS,
+        // leaking ironlint-arch-* files in the system temp directory. The
+        // sweep must reclaim them the same way it reclaims ironlint-tmp-*.
+        let dir = TempDir::new().unwrap();
+
+        let stale = dir.path().join("ironlint-arch-1111-0-1.yml");
+        std::fs::write(&stale, "layers:\n").unwrap();
+        backdate_mtime(&stale, 2 * 60 * 60); // 2h ago
+
+        let unrelated = dir.path().join("not-ironlint-anything.yml");
+        std::fs::write(&unrelated, "keep me").unwrap();
+        backdate_mtime(&unrelated, 2 * 60 * 60);
+
+        sweep_stale_tmpfiles(dir.path(), Duration::from_secs(60 * 60));
+
+        assert!(!stale.exists(), "stale ironlint-arch-* file must be swept");
+        assert!(
+            unrelated.exists(),
+            "non-matching files must never be touched, regardless of age"
+        );
+    }
+
+    #[test]
+    fn sweep_stale_tmpfiles_keeps_fresh_arch_layers_files() {
+        // A fresh ironlint-arch-* file could belong to a concurrently-running
+        // ironlint process; the age gate must keep it.
+        let dir = TempDir::new().unwrap();
+
+        let fresh = dir.path().join("ironlint-arch-2222-0-2.yml");
+        std::fs::write(&fresh, "layers:\n").unwrap();
+
+        sweep_stale_tmpfiles(dir.path(), Duration::from_secs(60 * 60));
+
+        assert!(
+            fresh.exists(),
+            "fresh ironlint-arch-* file must survive (may be a concurrent live run)"
+        );
+    }
+
+    #[test]
+    fn sweep_stale_tmpfiles_ignores_directories_matching_arch_layers_prefix() {
+        let dir = TempDir::new().unwrap();
+        let weird_dir = dir.path().join("ironlint-arch-a-dir");
+        std::fs::create_dir(&weird_dir).unwrap();
+
+        // Even with a zero threshold, a directory is never a sweep candidate.
+        sweep_stale_tmpfiles(dir.path(), Duration::from_secs(0));
+
+        assert!(
+            weird_dir.exists(),
+            "a directory matching the arch-layers prefix must never be removed"
+        );
     }
 
     #[test]
