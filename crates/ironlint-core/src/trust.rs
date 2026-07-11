@@ -6,6 +6,9 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+/// Filesystem-only Git worktree identity discovery. See `WorktreeScope`.
+mod worktree;
+
 /// Feed one labeled blob into the hasher with length prefixes on both the
 /// label and the content, so no two distinct (label, bytes) pairs can collide
 /// by concatenation.
