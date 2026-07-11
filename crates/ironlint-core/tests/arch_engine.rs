@@ -1,7 +1,7 @@
 use ironlint_core::arch::config::ArchConfig;
 use ironlint_core::arch::engine::{ArchEngine, ArchOutcome};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 fn forbidden_config() -> ArchConfig {
     serde_yaml::from_str(
@@ -179,34 +179,42 @@ fn why_returns_violations_for_absolute_path() {
     assert_eq!(violations[0].rule_from, "presentation");
 }
 
-/// Build a non-canonical path alias through the `/tmp` -> `/private/tmp`
-/// symlink on macOS. Returns `None` if the path is not under `/private/tmp`.
-fn symlink_alias_through_tmp(path: &Path) -> Option<PathBuf> {
-    let s = path.to_str()?;
-    let stripped = s.strip_prefix("/private/tmp")?;
-    Some(PathBuf::from(format!("/tmp{}", stripped)))
-}
-
+#[cfg(unix)]
 #[test]
-#[cfg(target_os = "macos")]
 fn why_finds_violations_via_symlinked_path() {
-    // On macOS `tempfile::tempdir_in("/private/tmp")` gives a canonical root
-    // under `/private/tmp`; `/tmp` is a symlink to that directory. Passing the
-    // non-canonical `/tmp/...` alias exercises the mismatch between graph keys
-    // (canonical) and the requested path (non-canonical) that Bug 10 fixed.
-    let dir = tempfile::tempdir_in("/private/tmp").unwrap();
-    let root = dir.path();
-    make_ts_repo(root);
+    // Graph keys are canonical (they come from walking `root`), so `why`
+    // must canonicalize the requested path before comparing — otherwise a
+    // caller passing a symlinked path gets an empty result and a real
+    // violation is missed (Bug 10). The previous version of this test leaned
+    // on the macOS-only `/tmp` -> `/private/tmp` symlink, which left the
+    // canonicalization with ZERO coverage on Linux CI: a refactor dropping
+    // `canonicalize_through_parent(path)` would stay green on Linux and red
+    // only on macOS. This portable version creates its own symlink so the
+    // same code path runs on every Unix — Linux and macOS alike.
+    use std::os::unix::fs::symlink;
 
+    let dir = tempfile::tempdir().unwrap();
+    // Canonicalize root up front so `canon` below matches the graph's keys
+    // (which are canonical by construction). On macOS this resolves the
+    // `/var` -> `/private/var` indirection; on Linux it is usually a no-op.
+    let root = dir.path().canonicalize().unwrap();
+    make_ts_repo(&root);
+
+    // Canonical importer the graph will key on.
     let canon = root.join("src/components/App.tsx");
-    let alias =
-        symlink_alias_through_tmp(&canon).expect("tempdir should be located under /private/tmp");
+    // A symlinked alias to `root`. Passing a path through it reproduces the
+    // canonical/non-canonical mismatch Bug 10 guards: the graph holds `canon`,
+    // the request arrives as `alias/...`. Without canonicalization the two
+    // don't compare equal and the violation is dropped.
+    let alias_dir = dir.path().join("alias");
+    symlink(&root, &alias_dir).unwrap();
+    let alias = alias_dir.join("src/components/App.tsx");
 
-    let violations = ArchEngine::why(root, &forbidden_config(), &alias).unwrap();
+    let violations = ArchEngine::why(&root, &forbidden_config(), &alias).unwrap();
     assert_eq!(
         violations.len(),
         1,
-        "should find violation via non-canonical path"
+        "should find violation via non-canonical (symlinked) path"
     );
     assert_eq!(violations[0].importer, canon);
     assert_eq!(violations[0].rule_from, "presentation");
