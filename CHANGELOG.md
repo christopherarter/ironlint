@@ -4,6 +4,86 @@ Notable changes to IronLint, newest first. In-flight work lives in `plans/`.
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-07-12 — architecture enforcement + git worktree trust inheritance
+
+First release with `ironlint arch` and inherited worktree trust. The 2186-line
+`runner.rs` is also decomposed into a focused `runner/` module tree (zero
+behavior change, stable public API).
+
+### Added — Architecture enforcement (`ironlint arch`)
+
+A new `architecture:` config block lowers to a single synthetic `__arch__`
+check that flows through the same `gate::run_gate` path as any ordinary check —
+no per-rule engine, no severity, no LLM. Design:
+`docs/superpowers/specs/2026-07-09-architecture-enforcement-design.md`.
+
+- **`architecture:` config block** — named layers (each a list of `globs`,
+  standard `globset` full-path semantics, deliberately stricter than check
+  `files` globs) + `rules` (`from: <layer>` + `may_import: [<layer>...]`; an
+  empty list forbids all imports out of that layer). Lowers to a synthetic
+  `__arch__` check (`ironlint arch check | graph | why`).
+- **`ironlint arch check`** — `on: [write]` evaluates only the proposed file's
+  outgoing imports (fresh graph per invocation, no cross-write cache); `on:
+  [pre-commit]` (or a bare sweep) evaluates the whole graph on disk.
+- **`ironlint arch graph`** — walks the repo, extracts imports, resolves
+  layer membership, emits the dependency graph.
+- **`ironlint arch why`** — explains why a file belongs to a layer / why an
+  import is forbidden.
+- **Tree-sitter import extraction (TS/JS in v1)** — `ImportExtractor` trait +
+  TS/JS extractor; handles ESM `import`, CommonJS `require()`, TSX/JSX grammar
+  selection by extension, and TS path-alias resolution via `tsconfig` paths
+  (longest-match + all targets).
+- **`DepGraph` + layer classification** + `Resolver` trait (relative + barrel
+  resolution).
+- **Policy evaluator** — whole-graph evaluation for `pre-commit` / sweeps.
+- **`$IRONLINT_ARCH_LAYERS`** — materialized tempfile of the layer set, passed
+  to the lowered `__arch__` check; `$IRONLINT_PROPOSED_MANIFEST` ABI extension
+  so multi-file patches can't sneak forbidden imports through cross-file
+  imports within a single atomic patch.
+- **`doctor`** — grammar check + trust now covers the `architecture:` block.
+
+### Added — Git worktree trust inheritance
+
+A linked git worktree no longer needs a separate `ironlint trust` — the
+parent's trust entry is inherited. Design: `docs/superpowers/plans/` (git
+worktree trust inheritance).
+
+- **Filesystem-only Git worktree identity discovery** — no `git` subprocess;
+  resolves worktree identity from the filesystem.
+- **Worktree-relative policy hash** with root-escape eligibility.
+- **Inherited worktree lookup** + read-only legacy fallback for configs
+  blessed before worktree support.
+- **`trust` store v2** — `serde`-defaulted `worktree_entries` map (v1 entries
+  still load).
+- **`trust` bless writes a worktree entry** + prints a scope line.
+
+### Changed — Runner module split
+
+`crates/ironlint-core/src/runner.rs` (2186 lines) → `runner/` module tree:
+`engine.rs`, `types.rs`, `timeout.rs`, `path.rs`, `tmpfile.rs`, `mod.rs`
+facade + `tests/mod.rs` / `tests/tmpfile.rs`. Zero behavior change, stable
+public API (`IronLintEngine`, `IronLintEngineBuilder`, `CheckInput`,
+`CheckOptions`, `CheckReport`, `CheckExplain`, `ExplainOutcome`).
+
+### Fixed — Architecture enforcement bugs (merge-review wave)
+
+- **Bug 1** — env-manifest overlay so multi-file patches can't sneak forbidden
+  imports.
+- **Bug 2** — extract CommonJS `require()` imports.
+- **Bug 3** — select TSX/JSX grammar by extension.
+- **Bug 4** — `tsconfig` paths longest-match + all targets.
+- **Bug 5** — add `$IRONLINT_BIN` so lowered `__arch__` check runs the same
+  binary rather than resolving `ironlint` from `PATH`.
+- **Bug 6** — use canonical config dir for `$IRONLINT_ROOT` and gate cwd.
+- **Bug 7** — apply `architecture.ignore` in the write path.
+- **Bug 8** — sweep stale `ironlint-arch-*` temp files on SIGKILL leak.
+- **Bug 9** — lower `__arch__` in `show-resolved-config`.
+- **Bug 10** — canonicalize requested path in `why`.
+
+### Fixed — Other
+
+- **`watch`** — prime launch backlog so the log doesn't replay on start.
+
 ## [0.10.1] — 2026-07-09 — `ironlint init` interactive harness multi-select
 
 The bare `ironlint init` auto-detect flow is no longer all-or-nothing. The
