@@ -19,13 +19,13 @@ anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
-# Self-update (`ironlint update`): reads the dist install receipt, checks the
-# latest GitHub release, and re-runs the same installer the user installed with.
-# `blocking` provides a synchronous entrypoint so the CLI stays non-async.
-axoupdater = { version = "0.10", features = ["blocking"] }
 # Live TUI (`ironlint watch`): renders the telemetry stream + per-check explorer.
 # ratatui re-exports crossterm, so we depend on it alone for backend + events.
-ratatui = "0.30"
+# `default-features = false` drops `all-widgets` (only adds `widget-calendar`,
+# which we don't use — we touch `List`/`Paragraph`/`Block`/`Clear`/`ListState`).
+# The four enabled features are exactly what `watch` needs: crossterm backend,
+# macros, underline-color, and the layout cache.
+ratatui = { version = "0.30", default-features = false, features = ["crossterm", "macros", "underline-color", "layout-cache"] }
 # Repo-wide sweep (`ironlint check` with no --file/--diff): gitignore-aware
 # directory walker — the same rule engine ripgrep uses.
 ignore = "0.4"
@@ -37,9 +37,6 @@ tempfile.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
 insta.workspace = true
-# Only to construct `axoupdater::UpdateResult` in update.rs unit tests
-# (its `install_prefix` is a camino `Utf8PathBuf`).
-camino = "1"
 
 [lints]
 workspace = true

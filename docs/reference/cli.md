@@ -140,7 +140,7 @@ ironlint schema
 
 ## `ironlint update`
 
-Update the `ironlint` binary in place to the latest GitHub release. Reads the install receipt the [installer](../../README.md#install) wrote, checks the latest release, and — when there's a newer one — downloads and re-runs the same installer, then self-replaces the running binary. A no-op when you're already current.
+Update the `ironlint` binary in place to the latest GitHub release. Detects the install receipt the [installer](../../README.md#install) wrote and, if present, re-runs that same installer (`ironlint-cli-installer.sh` on Unix, `.ps1` on Windows), which downloads and self-replaces the running binary. The installer is idempotent, so running `update` when already current re-runs it harmlessly (exit `0`).
 
 ```
 ironlint update
@@ -148,7 +148,7 @@ ironlint update
 
 Only self-updates binaries installed via the shell/PowerShell installer. A binary from `cargo install` or a source build has no receipt; `update` then prints the command that *will* update it — the installer one-liner, or `cargo install --git … ironlint-cli --force` — and exits `1`.
 
-**Exit codes:** `0` on a successful update or when already current; `1` on any failure, including a non-installer build that can't self-update.
+**Exit codes:** `0` on a successful update; `1` on any failure, including a non-installer build that can't self-update.
 
 ## `ironlint watch`
 

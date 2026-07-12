@@ -129,3 +129,26 @@ proptest = "1"
 [profile.dist]
 inherits = "release"
 lto = "thin"
+
+# Release: thin LTO + single codegen unit + symbol strip for a smaller binary.
+# `lto = "thin"` (not `"fat"`) — fat LTO roughly doubles release compile time
+# for a marginal size gain; thin captures most of the win. `codegen-units = 1`
+# slows the release build but lets the optimizer see the whole crate at once
+# (smaller, faster binary). `panic = "abort"` is deliberately NOT set: the
+# runner spawns subprocesses (`gate::run_gate`, `nix` signals, `wait-timeout`)
+# and unwind is the safer default for a process that may need cleanup.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+
+# Dev: less debug info + unpacked split-debuginfo (macOS) for faster
+# incremental compiles. `build-override` bumps proc-macros (serde_derive,
+# clap_derive) to opt-level 3 — they run repeatedly during builds, so
+# optimizing them once saves time across many incremental rebuilds.
+[profile.dev]
+debug = 1
+split-debuginfo = "unpacked"
+
+[profile.dev.build-override]
+opt-level = 3

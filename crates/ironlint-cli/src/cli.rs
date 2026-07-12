@@ -148,12 +148,13 @@ pub enum Command {
     Schema,
     /// Update ironlint to the latest release.
     ///
-    /// Checks GitHub for a newer version and, if there is one, downloads and
-    /// installs it in place, then reports `from → to`. Exit codes: `0` on a
-    /// successful update or when already current; `1` on failure — including
-    /// when this build wasn't installed by the ironlint installer
-    /// (Homebrew/cargo/source builds) and so can't self-update, in which case
-    /// it prints the channel-specific command that will.
+    /// Re-runs the dist installer (`ironlint-cli-installer.sh` on Unix,
+    /// `.ps1` on Windows) in place. The installer is idempotent, so this also
+    /// covers the already-current case (it re-runs but exits 0). Exit codes:
+    /// `0` on a successful update; `1` on failure — including when this build
+    /// wasn't installed by the ironlint installer (Homebrew/cargo/source
+    /// builds) and so can't self-update, in which case it prints the
+    /// channel-specific command that will.
     Update,
     /// Live TUI over the telemetry log: a stream of check runs and a per-check
     /// explorer. Read-only; requires an interactive terminal.
