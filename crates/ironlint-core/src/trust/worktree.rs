@@ -4,11 +4,6 @@
 //! the agent process. Nonstandard or unreadable Git metadata simply yields
 //! `None` (no shared-worktree fallback); normal exact-path trust still works.
 
-// This module is foundational: WorktreeScope is consumed by later trust-store
-// tasks. Until those land, the crate build (not the test build) sees the
-// pub(crate) API as unused; suppress dead-code rather than invent a consumer.
-#![cfg_attr(not(test), allow(dead_code))]
-
 use std::path::{Path, PathBuf};
 
 pub(crate) struct WorktreeScope {

@@ -695,13 +695,13 @@ pub fn bless_in(config_path: &Path, store_path: &Path, now: &str) -> Result<()> 
     let mut store = read_store_for_bless(store_path)?;
     store.version = TRUST_STORE_VERSION;
     store.entries.insert(
-        key.clone(),
+        key,
         TrustEntry {
-            hash: hash.clone(),
+            hash,
             blessed_at: now.to_string(),
         },
     );
-    write_worktree_entry(&mut store, config_path, &hash, now);
+    write_worktree_entry(&mut store, config_path, now);
     write_store(store_path, &store)
 }
 
@@ -709,7 +709,7 @@ pub fn bless_in(config_path: &Path, store_path: &Path, now: &str) -> Result<()> 
 /// (identical content, root-relative labels) in `worktree_entries`. Best-effort:
 /// any discovery/hash failure is swallowed — blessing still succeeds with the
 /// direct entry already written by the caller.
-fn write_worktree_entry(store: &mut TrustStore, config_path: &Path, _hash: &str, now: &str) {
+fn write_worktree_entry(store: &mut TrustStore, config_path: &Path, now: &str) {
     let Some(scope) = WorktreeScope::discover(config_path) else {
         return;
     };
