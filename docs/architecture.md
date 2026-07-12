@@ -21,7 +21,7 @@ flowchart LR
 
     subgraph AdapterLayer["Adapter layer"]
         Hooks["Edit hooks<br/>capture proposed content"]
-        ABI["Stable ABI<br/>$IRONLINT_FILE, $IRONLINT_ROOT, $IRONLINT_EVENT, $IRONLINT_TMPFILE, stdin"]
+        ABI["Stable ABI<br/>$IRONLINT_FILE, $IRONLINT_FILES, $IRONLINT_ROOT, $IRONLINT_EVENT, $IRONLINT_TMPFILE, $IRONLINT_BIN, stdin"]
     end
 
     subgraph IronLint["IronLint"]

@@ -5,7 +5,7 @@
 ```json
 {
   "schema_version": 6,
-  "ironlint_version": "0.4.0",
+  "ironlint_version": "0.11.0",
   "status": "block",
   "blocks": [
     {
@@ -86,11 +86,12 @@ The exit code mirrors the status — it is what scripts branch on without parsin
 | Exit | Status | Meaning |
 |------|--------|---------|
 | `0` | `pass` | Every matched check passed. |
-| `1` | — | Config or load error (untrusted config, parse failure, missing file). No verdict is produced. |
+| `1` | — | Config or load error (parse failure, missing file, unknown `--check`). No verdict is produced. |
 | `2` | `block` | At least one check blocked (exited nonzero). |
 | `3` | `internal_error` | At least one check crashed. |
+| `4` | — | Untrusted config or checks — run `ironlint trust`. Emitted by the trust gate *before* the engine loads or any check runs; no verdict is produced. |
 
-Adapters fail-open on `3` by default; opt into fail-closed with `IRONLINT_FAIL_CLOSED_ON_INTERNAL=1`. See [Running checks](../operating/running-checks.md).
+Adapters fail-open on `3` by default; opt into fail-closed with `IRONLINT_FAIL_CLOSED_ON_INTERNAL=1`. Exit `4` is the opposite default: adapters must surface it loudly, and every pre-write adapter treats it as fail-closed and blocks the tool call. See [Running checks](../operating/running-checks.md) and [The trust store](../security/trust.md).
 
 ## Versioning
 

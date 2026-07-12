@@ -24,10 +24,12 @@ Every adapter normalizes its host into the same ABI, so one check command runs u
 
 | Channel | Value |
 |---------|-------|
-| `$IRONLINT_FILE` | Absolute path to the file under check. |
+| `$IRONLINT_FILE` | Absolute path to the file under check (set for `write`; not set for `pre-commit`). |
+| `$IRONLINT_FILES` | Newline-joined list of all files under check (single entry for `write`; all staged files for `pre-commit`). |
 | `$IRONLINT_ROOT` | Project root — also the check's working directory. |
 | `$IRONLINT_EVENT` | `write` or `pre-commit`. |
 | `$IRONLINT_TMPFILE` | **write only** — set only when the check's `run` references it: absolute path to a temp file holding the proposed content, placed beside `$IRONLINT_FILE` with the same extension. Auto-cleaned after the check. Unset on `pre-commit`. |
+| `$IRONLINT_BIN` | Absolute path to the `ironlint` binary, so a check can invoke it without `PATH` resolution (used by the synthetic `__arch__` check). |
 | stdin | The proposed post-edit content. |
 
 The adapter only shells out to the `ironlint` binary. It doesn't reimplement any policy logic.
@@ -42,6 +44,7 @@ Adapters translate [`ironlint check`'s exit codes](../operating/running-checks.m
 | `2` (block) | Reject the edit; the agent retries. |
 | `1` (config error) | **Fail-open** — log and allow. An unrelated problem, like a broken config, shouldn't block the agent's work. |
 | `3` (internal error) | **Fail-open by default** — log and allow. Set `IRONLINT_FAIL_CLOSED_ON_INTERNAL=1` to make internal errors block where the host lifecycle can still block. |
+| `4` (untrusted) | **Fail-closed** — block the tool call and surface it loudly. An untrusted config must never be silently un-gated. Bless it with `ironlint trust`. |
 
 The fail-open default on internal errors is deliberate: a rule that *couldn't run* is not a rule that *found a problem*. To make internal errors blocking instead — for strict CI-style enforcement — set `IRONLINT_FAIL_CLOSED_ON_INTERNAL=1`. See [Running checks](../operating/running-checks.md).
 
@@ -71,7 +74,7 @@ If hooks aren't firing for any agent, run [`ironlint doctor`](../operating/diagn
 
 Adapters that support skills ship three for managing policy without leaving the session:
 
-- **`ironlint-config`** is the authoring guide: the `{files, run}` check schema, the
+- **`ironlint-config`** is the authoring guide: the `{files, run, steps, on, name}` check schema, the `architecture:` block, the
   exit-code contract, and the common patterns, with a fixture-test loop. `ironlint
   init` installs it as a real skill into every detected agent, and `ironlint schema`
   prints it on demand.

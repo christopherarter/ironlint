@@ -25,11 +25,12 @@ The exit code is the contract — adapters and CI branch on it:
 | Code | Meaning |
 |------|---------|
 | `0` | **Pass** — no check blocked and none crashed. |
-| `1` | **Config or load error** — untrusted config or checks, parse failure, missing file, unknown `--check`. No verdict is produced. |
+| `1` | **Config or load error** — parse failure, missing file, unknown `--check`. No verdict is produced. |
 | `2` | **Block** — at least one check blocked (exited nonzero). |
 | `3` | **Internal error** — at least one check crashed (command not found, not executable, timed out, or killed by a signal). |
+| `4` | **Untrusted config or checks** — run `ironlint trust`. Emitted by the trust gate *before* the engine loads; no verdict is produced. |
 
-There is no warn tier. `0` and `2` are the normal pass/block signals. `1` means *fix your config or trust it*. `3` means *a check couldn't run* — distinct from *a check found a problem*. A check blocks by exiting nonzero (`1`–`125`); `0` is the only pass. `126`/`127`/a signal death/a timeout are internal errors, not passes — so a broken check is never a silent pass.
+There is no warn tier. `0` and `2` are the normal pass/block signals. `1` means *fix your config*; `3` means *a check couldn't run* — distinct from *a check found a problem*; `4` means *trust the config*. A check blocks by exiting nonzero (`1`–`125`); `0` is the only pass. `126`/`127`/a signal death/a timeout are internal errors, not passes — so a broken check is never a silent pass.
 
 ## Fail-open vs. fail-closed on internal errors
 
@@ -42,6 +43,8 @@ export IRONLINT_FAIL_CLOSED_ON_INTERNAL=1
 ```
 
 Use fail-closed where a skipped check is unacceptable — a CI pipeline where a check silently not running would let a violation through.
+
+Exit `4` is the opposite default. An untrusted config is never silently un-gated: adapters surface it loudly, and every pre-write adapter treats it as fail-closed and blocks the tool call outright. Bless the config with `ironlint trust`; see [The trust store](../security/trust.md).
 
 ## Other useful flags
 

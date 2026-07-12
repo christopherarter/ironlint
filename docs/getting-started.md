@@ -26,7 +26,7 @@ checks:
     run: "! grep -n 'DEBUG'"
 ```
 
-A check is two fields. `files` is the glob it watches; `run` is a shell command IronLint runs against each matching file. IronLint reads only the command's exit code: **any nonzero exit (1–125) blocks the edit**, `0` lets it through.
+A check is `files` plus a `run` command (or `steps`). `files` is the glob it watches; `run` is a shell command IronLint runs against each matching file. IronLint reads only the command's exit code: **any nonzero exit (1–125) blocks the edit**, `0` lets it through. (Optional `on` and `name` fields round it out — see the [config schema](reference/config-schema.md).)
 
 The `run` here negates a grep. `grep` exits `0` when it finds `DEBUG`, so `! grep …` succeeds when the proposed content is clean and fails when it isn't, and the nonzero exit blocks the edit. Grep reads the proposed post-edit content from stdin; `$IRONLINT_FILE` carries the path under check — there is no `{file}` templating.
 

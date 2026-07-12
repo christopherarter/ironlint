@@ -100,11 +100,11 @@ So with `extends:` you bless the **root** config you run `check` against, and a 
 
 - **Check scripts outside `.ironlint/scripts/`.** A check whose `run:` shells out to a file elsewhere in the repo — `run: "bash scripts/lint.sh"` or `run: "python tools/scan.py"` — is covered only for the `run:` *string* (which lives in the config). The contents of `scripts/lint.sh` are **not** hashed, so editing that file can neuter the check without invalidating trust. Keep check logic under `.ironlint/scripts/` (e.g. `run: ".ironlint/scripts/lint.sh"`) to bring it inside the boundary. This is the same threat class as a tampered config, reached through a file the hash doesn't reach.
 - **Interpreters and tools on `$PATH`.** Trust vouches for your check scripts, not for the `python`, `grep`, or `node` they invoke.
-- **Writes during the run.** The hash is computed when `check` starts; a write between that point and a check actually executing isn't caught. This TOCTOU window is a known limitation of the direnv-style model — there's no file locking in 0.3.
+- **Writes during the run.** The hash is computed when `check` starts; a write between that point and a check actually executing isn't caught. This TOCTOU window is a known limitation of the direnv-style model — there's no file locking.
 
 ## Trust is not a sandbox
 
-The trust store answers "have I reviewed what runs?", not "what can it do once it runs?". IronLint 0.3 does **not** sandbox check commands — the per-check [timeout](../operating/running-checks.md) is the only execution rail, and a blessed check runs with your full user privileges.
+The trust store answers "have I reviewed what runs?", not "what can it do once it runs?". IronLint does **not** sandbox check commands — the per-check [timeout](../operating/running-checks.md) is the only execution rail, and a blessed check runs with your full user privileges.
 
 If you need real isolation from a config you don't fully trust, run IronLint inside an OS-level sandbox — a container, a fresh user, or `bwrap` — in addition to blessing it.
 

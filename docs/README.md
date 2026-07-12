@@ -2,7 +2,7 @@
 
 IronLint is a policy-enforcement layer for AI coding agents. You write **checks** in a `.ironlint.yml`; when an agent edits a file, IronLint runs the checks that match it and blocks the edits that break your policy.
 
-A check is two fields — the files it watches and a shell command to run:
+A check is `files` plus a shell command (or a `steps` list) to run, with optional `on` and `name` fields:
 
 ```yaml
 # .ironlint.yml

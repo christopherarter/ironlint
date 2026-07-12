@@ -9,14 +9,19 @@ checks:
   no-console:
     files: "src/**/*.ts"
     run: "! grep -n 'console.log'"
+    on: [write, pre-commit]   # optional — default [write]
+    name: "no console.log"    # optional — human-readable label
 ```
 
-That's the whole surface. A check has exactly two fields:
+A check is `files` plus a command — either `run` (a single shell command) or `steps` (a sequential list). Two optional fields round it out:
 
 | Field | What it does |
 |-------|--------------|
 | `files` | The glob (or list of globs) selecting which files this check watches. A bare pattern without `/` matches at any depth — `*.ts` is the same as `**/*.ts`. See [Targeting files](../configuring/targeting-files.md). |
-| `run` | A shell command, handed to `sh -c` verbatim. IronLint reads only its exit code. |
+| `run` | A shell command, handed to `sh -c` verbatim. IronLint reads only its exit code. (One of `run` / `steps`.) |
+| `steps` | A sequence of `{ name?, run }` steps, all fed the same stdin. The first nonzero step blocks. `run:` is sugar for a single step. |
+| `on` | Lifecycle: `[write]` (default — per file on every edit), `[pre-commit]` (once over the staged set), or `[write, pre-commit]`. |
+| `name` | Human-readable label. Parsed and reserved; not yet surfaced in output. |
 
 ## The exit-code contract
 
@@ -46,11 +51,15 @@ IronLint hands each check the same four things. Nothing is spliced into the comm
 
 | Channel | Value |
 |---------|-------|
-| `$IRONLINT_FILE` | Absolute path to the file under check. |
+| `$IRONLINT_FILE` | Absolute path to the file under check (set for `write`; not set for `pre-commit`). |
+| `$IRONLINT_FILES` | Newline-joined list of all files under check (single entry for `write`; all staged files for `pre-commit`). |
 | `$IRONLINT_ROOT` | Project root — also the check's working directory. |
 | `$IRONLINT_EVENT` | What triggered the check: `write` or `pre-commit`. |
+| `$IRONLINT_BIN` | Absolute path to the `ironlint` binary, so a check can invoke it without `PATH` resolution. |
 | `$IRONLINT_TMPFILE` | **write only** — set only when your `run` references it: absolute path to a temp file beside `$IRONLINT_FILE` holding the proposed content (same extension, auto-cleaned). Use for tools that won't read stdin. Unset on `pre-commit`. |
 | stdin | The proposed post-edit content of the file (may be empty). |
+
+`$IRONLINT_PROPOSED_MANIFEST` and `$IRONLINT_ARCH_LAYERS` are set only by specific adapters and the synthetic `__arch__` check (see [Architecture enforcement](../reference/config-schema.md#architecture-enforcement)) — absent otherwise, so don't depend on them in ordinary checks.
 
 There is no `{file}` token. The path travels only as `$IRONLINT_FILE`.
 

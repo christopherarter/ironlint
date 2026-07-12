@@ -113,7 +113,7 @@ Local checks override inherited checks of the same id. Full format: `ironlint sc
 - **The check owns the verdict.** A check is a file glob plus a shell command (or `steps:`). IronLint reads one thing back — the exit code. `0` passes, `1–125` blocks, and your command's stdout/stderr becomes the block message. No engines, no severities, no output parsing.
 - **Your existing linters, unchanged.** `ruff`, `eslint`, `tsc`, `clippy`, `biome` — the same checks CI runs, wired in as-is. No per-tool integration to write.
 - **Two lifecycles, one config.** `on: [write]` fires per edit; `on: [pre-commit]` fires once over the whole staged set. A single check can do both — IronLint keys by check, not by event.
-- **Trust before it runs.** IronLint refuses an untrusted config. `ironlint trust` blesses it; any change to the config or its gate scripts revokes trust until you re-bless. `check` fails closed on untrusted input.
+- **Trust before it runs.** IronLint refuses an untrusted config. `ironlint trust` blesses it; any change to the config or its check scripts revokes trust until you re-bless. `check` fails closed on untrusted input.
 - **Telemetry, no setup.** Every run appends a JSONL record to `.ironlint/log.jsonl`; the directory ignores itself. `ironlint-review` flags noisy and dead checks.
 
 ## Why This Works
@@ -141,6 +141,7 @@ Every check receives, on its environment:
 - `$IRONLINT_FILES` — newline-joined list of all files (single entry for `write`; all staged files for `pre-commit`).
 - `$IRONLINT_ROOT` — project root (the check's cwd).
 - `$IRONLINT_EVENT` — `write` or `pre-commit`.
+- `$IRONLINT_BIN` — absolute path to the `ironlint` binary, so a check can invoke it without `PATH` resolution.
 - `$IRONLINT_TMPFILE` — a materialized temp file holding the proposed content, set only when your `run`/`steps` reference it.
 - **stdin** — proposed post-edit content (`write`) or empty (`pre-commit`).
 
@@ -182,7 +183,7 @@ Each adapter collapses one harness's edit hook into the ABI above and runs `iron
 | 1 | Config or load error — parse failure, missing file |
 | 2 | Block — at least one check exited nonzero (1–125) |
 | 3 | InternalError — at least one check crashed (not found, timeout, killed by signal) |
-| 4 | Untrusted config/gates — run `ironlint trust` |
+| 4 | Untrusted config/checks — run `ironlint trust` |
 
 Adapters fail-open on exit 3 by default. Opt-in fail-closed: `IRONLINT_FAIL_CLOSED_ON_INTERNAL=1`. Exit 4 is different: adapters must surface it loudly, and pre-write adapters (every shipped adapter) treat it as fail-closed and block the tool call outright — an untrusted config is never silently allowed through.
 

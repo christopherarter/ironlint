@@ -453,7 +453,7 @@ fn trust_row(ctx: &DoctorContext) -> CheckResult {
         Err(_) => CheckResult {
             name: "trust",
             status: Status::Warn,
-            detail: "config/gates not trusted".into(),
+            detail: "config/checks not trusted".into(),
             remediation: Some("run `ironlint trust`".into()),
         },
     }

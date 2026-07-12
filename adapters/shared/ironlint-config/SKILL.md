@@ -4,7 +4,7 @@ description: Authors, modifies, or removes checks in an ironlint .ironlint.yml. 
 license: MIT
 metadata:
   author: dynamik-dev
-  version: 1.2.0
+  version: 1.3.0
 ---
 
 # Authoring ironlint checks
@@ -20,9 +20,9 @@ checks:
 
 - `files` — the glob(s) the check watches. A bare pattern with no `/` (e.g. `*.py`) also matches at any depth.
 - `run` — a shell command handed to `sh -c`. **Any nonzero exit (1–125) blocks the edit**; exit 0 passes. `126`/`127`/timeout are treated as a broken check, not a block.
-- `steps` — alternative to `run`: a sequence of `{name, run}` steps, all fed the same stdin. The first nonzero step blocks.
+- `steps` — alternative to `run`: a sequence of `{name?, run}` steps, all fed the same stdin. The first nonzero step blocks.
 - `on` — lifecycle events: `[write]` (default) fires per file on every agent write; `[pre-commit]` fires once before a commit (see ABI below). Use `on: [write, pre-commit]` to fire at both.
-- `name` — optional human-readable label shown in block messages.
+- `name` — optional human-readable label. Parsed and reserved, but **not yet surfaced** in block messages or `ironlint explain` — it's a no-op today. (A `steps` entry's `name`, by contrast, *is* reported as the block's `step` field.)
 
 ## ABI — what every check receives
 
@@ -31,11 +31,61 @@ checks:
 - `$IRONLINT_ROOT` — project root (the check's cwd).
 - `$IRONLINT_EVENT` — `write` or `pre-commit`.
 - `$IRONLINT_TMPFILE` — **write only**, set only when your `run` mentions it: an absolute path to a temp file holding the proposed content, placed beside `$IRONLINT_FILE` with the same extension and auto-cleaned. Use it for tools that need a real file on disk (Biome, ESLint file-mode, `tsc`, ruff) instead of stdin. Unset on `pre-commit` (files are already on disk at `$IRONLINT_FILES`).
+- `$IRONLINT_BIN` — absolute path to the `ironlint` binary running the check, so a check can shell out to it without relying on `PATH` resolution. Falls back to the bare name `ironlint` if the path can't be determined.
+- `$IRONLINT_PROPOSED_MANIFEST` — optional; absolute path to a tab-separated (`file_path<TAB>content_path`) manifest of sibling proposed files in the same atomic patch. Set by some harness adapters; **absent otherwise — don't depend on it.**
 - **stdin** — proposed post-edit file content (`write`) or empty (`pre-commit`).
 
 **Read proposed content from stdin, not from `$IRONLINT_FILE`.** On harnesses that gate before the write lands (e.g. codex, pi), the file on disk still holds the OLD content, so reading it misses the very change you mean to check. Use `$IRONLINT_FILE` to hand a tool a filename (e.g. a linter's `--stdin-filename`), never as the content source.
 
+**The check runs in a scrubbed environment.** The child process inherits only an allowlist — `PATH`, `HOME`, `LANG`, `TZ`, `TMPDIR`, and any `LC_*` — plus the `IRONLINT_*` vars above. The agent's own credentials (`ANTHROPIC_API_KEY`, `GITHUB_TOKEN`, `NPM_TOKEN`, `AWS_*`, …) are **not** inherited, so a check that shells out to a tool needing a token fails unless that token name is allowlisted. Don't write a check that assumes the parent's ambient creds.
+
 On block, the check's combined stdout+stderr becomes the message the agent sees, so make the command print why it blocked.
+
+## Top-level config
+
+A minimal `.ironlint.yml` is just `checks:`. Three optional top-level keys tune it:
+
+- `extends:` — a list of relative paths to other config files. ironlint resolves them recursively (with cycle detection); **inherited checks fill gaps where the local config doesn't define them, and local checks win on collision.** `execution` and `architecture` inherit the same way (nearest ancestor's value when local sets none). Trust covers the whole `extends` closure — editing any extended file invalidates the fingerprint.
+
+  ```yaml
+  extends:
+    - ../shared/.ironlint.yml
+  checks: {}
+  ```
+
+- `execution.timeout_secs` — per-check wall-clock (default `30`). A check that exceeds it is killed and reported as InternalError, never a silent pass. Override at run time with the `IRONLINT_TIMEOUT` env var (seconds).
+
+  ```yaml
+  execution:
+    timeout_secs: 60
+  ```
+
+- `architecture:` — layer-based import rules that lower to a synthetic `__arch__` check; see [Architecture enforcement](#architecture-enforcement) below.
+
+## Architecture enforcement
+
+Declare named layers over path globs and `may_import` rules between them. The whole block lowers to one synthetic check named `__arch__` that runs `"$IRONLINT_BIN" arch check …` — it flows through the same gate path as any ordinary check (so it blocks when a rule is violated and is itself trust-gated). **Don't define a check named `__arch__`** — the parser rejects it.
+
+```yaml
+architecture:
+  layers:
+    - name: presentation
+      globs: ["src/components/**"]
+    - name: data
+      globs: ["src/data/**"]
+  rules:
+    - from: presentation
+      may_import: []      # presentation may not import any other layer
+    - from: data
+      may_import: [presentation]
+  ignore: ["**/*.test.*"]  # drop matching files from the import graph entirely
+```
+
+- `layers` — each a `name` + list of `globs`. At least one required; names must be unique and non-empty. Globs use **standard `globset` full-path semantics (path-anchored)** — deliberately stricter than a check's `files` globs, where a bare `*.py` also matches at any depth.
+- `rules` — each `from: <layer>` + `may_import: [<layer>...]`. **An empty `may_import` forbids all imports out of that layer.** A layer with no rule may import anything. One rule per `from` (duplicates are rejected); every `from` and target must name a declared layer.
+- `ignore` — globs excluded from the import graph before evaluation (tests, generated code).
+
+The synthetic `__arch__` check has `files: ["**/*"]` and fires on both `write` and `pre-commit`. On `write` it evaluates only the proposed file's **outgoing** imports against a fresh graph; on `pre-commit` (or a bare `ironlint check` sweep) it evaluates the **whole graph** on disk. Import extraction is tree-sitter based — TS/JS in v1, more languages later.
 
 ## Check patterns
 
