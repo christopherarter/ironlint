@@ -12,6 +12,7 @@
 
 ## Global Constraints
 
+- **Authorized exception (human ruling, 2026-07-11):** `TrustEntry` gains `PartialEq, Eq` derives. The brief said "TrustEntry is unchanged," but its own `assert_eq!(back.worktree_entries, store.worktree_entries)` round-trip test requires `TrustEntry: PartialEq, Eq`. A pure derive addition changes no serialization or behavior (existing v1 stores still round-trip), so it was authorized. Tests in Tasks 4–6 may rely on `TrustEntry: Eq` for `assert_eq!` on store state.
 Copied verbatim from the spec + repo conventions. Every task's requirements implicitly include this section.
 
 - `check` never writes or upgrades the trust store — only a human-initiated `ironlint trust` grants approval. No successful inherited check writes a direct entry, a worktree entry, a timestamp, or any other store state.
