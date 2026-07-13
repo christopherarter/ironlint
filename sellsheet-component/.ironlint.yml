@@ -1,0 +1,85 @@
+# SellSheet component policy — self-contained to this directory.
+#
+# Deliberately does NOT extend or modify the parent ironlint repo's root
+# .ironlint.yml (that file dogfoods the Rust crates). Run from here:
+#     ironlint check                                       # bare repo-wide sweep
+#     ironlint check --file src/lib/Sellsheet.svelte --content -   # per-file
+#
+# These checks enforce the Global Constraints in
+#   docs/superpowers/plans/2026-07-11-svelte-sellsheet-component.md:
+#   - Svelte 5 runes      (ban legacy `export let` props)
+#   - Themed via CSS vars  (ban hardcoded Tailwind palette colors)
+#   - strict TS in lib     (ban `any`); no console logging in lib
+# Accessibility (ARIA grid / roving tabindex / focus ring) is enforced at the
+# TEST layer via axe-core (Task 12), not by grep here — a regex a11y gate would
+# false-positive.
+
+execution:
+  timeout_secs: 30
+
+checks:
+  svelte5-runes-no-export-let:
+    name: Svelte 5 runes — no legacy export let props
+    files: ["src/lib/**/*.svelte"]
+    on: [write]
+    run: |
+      # Svelte 4 declares props with `export let`; Svelte 5 uses $props().
+      # Only `let` props are banned — `export const`/`export function` in a
+      # module context are legitimate.
+      if matches=$(grep -nE '\bexport[[:space:]]+let[[:space:]]'); then
+        echo 'Use the Svelte 5 $props() rune, not `export let`, for component props.' >&2
+        echo 'https://svelte.dev/docs/svelte/$props' >&2
+        echo "$matches" >&2
+        exit 1
+      fi
+      exit 0
+
+  no-hardcoded-tailwind-colors:
+    name: No hardcoded Tailwind palette colors — theme via --ss-* CSS variables
+    files: ["src/lib/**/*.svelte"]
+    on: [write]
+    run: |
+      # Allowed (arbitrary value, var-based):
+      #   bg-[var(--ss-cell-bg)] text-[var(--ss-text)] ring-[var(--ss-focus-ring)]
+      # Banned: Tailwind palette utilities of the form  <prefix>-<color>-<shade>
+      #   e.g. text-red-500, bg-blue-100, border-gray-200, ring-sky-400
+      pat='\b(text|bg|border|ring|from|to|via|fill|stroke|shadow|outline|divide|decoration|accent|caret|placeholder)-(red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose|slate|gray|grey|zinc|neutral|stone)-[0-9]{2,4}\b'
+      if matches=$(grep -nE "$pat"); then
+        echo 'Hardcoded Tailwind palette color found - theme via CSS variables instead:' >&2
+        echo '  bg-[var(--ss-cell-bg)]  text-[var(--ss-text)]  border-[var(--ss-border)]  ring-[var(--ss-focus-ring)]' >&2
+        echo "$matches" >&2
+        exit 1
+      fi
+      exit 0
+
+  no-any-in-lib:
+    name: No TypeScript any in library source
+    files: ["src/lib/**/*.ts", "src/lib/**/*.svelte"]
+    on: [write]
+    run: |
+      # Test files are exempt (fixtures sometimes need `as any`).
+      case "$IRONLINT_FILE" in
+        *__tests__*|*.test.*|*.spec.*) exit 0;;
+      esac
+      pat='\b(as[[:space:]]+any|:[[:space:]]*any\b|<any>|any\[\]|Array<any>)'
+      if matches=$(grep -nE "$pat"); then
+        echo "Do not use the 'any' type in library source; give it a real type." >&2
+        echo "$matches" >&2
+        exit 1
+      fi
+      exit 0
+
+  no-console-in-lib:
+    name: No console logging in library source
+    files: ["src/lib/**/*.ts", "src/lib/**/*.svelte"]
+    on: [write]
+    run: |
+      case "$IRONLINT_FILE" in
+        *__tests__*|*.test.*|*.spec.*) exit 0;;
+      esac
+      if matches=$(grep -nE '\bconsole\.'); then
+        echo 'No console.* logging in library source.' >&2
+        echo "$matches" >&2
+        exit 1
+      fi
+      exit 0
