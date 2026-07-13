@@ -1,7 +1,18 @@
-# SellSheet component policy — self-contained to this directory.
+# SellSheet component policy.
 #
-# Deliberately does NOT extend or modify the parent ironlint repo's root
-# .ironlint.yml (that file dogfoods the Rust crates). Run from here:
+# WORKS IN TWO INVOCATION CONTEXTS:
+#   1. Local:   `cd sellsheet-component && ironlint check`   (config_dir = sellsheet-component/)
+#   2. Rooted:  the repo-root .ironlint.yml `extends:` this file (config_dir = repo root)
+# ironlint matches a check's `files` globs against the path RELATIVE to
+# config_dir, and `extends:` does NOT re-anchor inherited globs (verified in
+# crates/ironlint-core/src/config/extends.rs + runner/engine.rs
+# `check_matches_path`). So every `files:` list below is DUAL-FORM:
+#     - "src/lib/..."                      matches context 1 (subdir-relative)
+#     - "sellsheet-component/src/lib/..."  matches context 2 (root-relative)
+# Each form is inert in the other context (matches nothing), so listing both
+# is safe and完整的.
+#
+# Run from here:
 #     ironlint check                                       # bare repo-wide sweep
 #     ironlint check --file src/lib/Sellsheet.svelte --content -   # per-file
 #
@@ -13,6 +24,10 @@
 # Accessibility (ARIA grid / roving tabindex / focus ring) is enforced at the
 # TEST layer via axe-core (Task 12), not by grep here — a regex a11y gate would
 # false-positive.
+#
+# Trust: editing this file invalidates the trust fingerprint for BOTH this
+# config AND any config that `extends:` it (the trust closure covers the whole
+# extends graph). Re-run `ironlint trust` after edits.
 
 execution:
   timeout_secs: 30
@@ -20,7 +35,9 @@ execution:
 checks:
   svelte5-runes-no-export-let:
     name: Svelte 5 runes — no legacy export let props
-    files: ["src/lib/**/*.svelte"]
+    files:
+      - "src/lib/**/*.svelte"
+      - "sellsheet-component/src/lib/**/*.svelte"
     on: [write]
     run: |
       # Svelte 4 declares props with `export let`; Svelte 5 uses $props().
@@ -36,7 +53,9 @@ checks:
 
   no-hardcoded-tailwind-colors:
     name: No hardcoded Tailwind palette colors — theme via --ss-* CSS variables
-    files: ["src/lib/**/*.svelte"]
+    files:
+      - "src/lib/**/*.svelte"
+      - "sellsheet-component/src/lib/**/*.svelte"
     on: [write]
     run: |
       # Allowed (arbitrary value, var-based):
@@ -54,7 +73,11 @@ checks:
 
   no-any-in-lib:
     name: No TypeScript any in library source
-    files: ["src/lib/**/*.ts", "src/lib/**/*.svelte"]
+    files:
+      - "src/lib/**/*.ts"
+      - "src/lib/**/*.svelte"
+      - "sellsheet-component/src/lib/**/*.ts"
+      - "sellsheet-component/src/lib/**/*.svelte"
     on: [write]
     run: |
       # Test files are exempt (fixtures sometimes need `as any`).
@@ -71,7 +94,11 @@ checks:
 
   no-console-in-lib:
     name: No console logging in library source
-    files: ["src/lib/**/*.ts", "src/lib/**/*.svelte"]
+    files:
+      - "src/lib/**/*.ts"
+      - "src/lib/**/*.svelte"
+      - "sellsheet-component/src/lib/**/*.ts"
+      - "sellsheet-component/src/lib/**/*.svelte"
     on: [write]
     run: |
       case "$IRONLINT_FILE" in

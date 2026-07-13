@@ -7,6 +7,16 @@
 # blocking check would be wrong. The three former `severity: error` rules stay as
 # blocking checks. The old in-YAML `trust:` block is gone — trust now lives in
 # the out-of-repo store (`ironlint trust`).
+
+# Surface the Svelte/Tailwind policy from the sellsheet-component sub-package so
+# writes/sweeps rooted here exercise its checks too. The sub-config's globs are
+# dual-form (src/... and sellsheet-component/src/...) so they match whether
+# ironlint runs from the repo root (this file) or from the sub-package dir —
+# `extends:` does NOT re-anchor globs. Trust closure now also covers
+# sellsheet-component/.ironlint.yml; re-run `ironlint trust` after editing either.
+extends:
+  - sellsheet-component/.ironlint.yml
+
 checks:
   no-debug-macros-in-src:
     name: no debug macros in src
