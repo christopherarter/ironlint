@@ -2,49 +2,17 @@
 
 Notable changes to IronLint, newest first. In-flight work lives in `plans/`.
 
-## [Unreleased]
+## [0.12.0] — 2026-07-14
 
-### Removed
+### Changed
 
-- Removed the built-in `architecture:` configuration, `ironlint arch` commands, synthetic `__arch__` check, and bundled Tree-sitter dependency graph engine. IronLint retains its generic check runner, trust boundary, executable-path ABI, and atomic-patch manifest so architecture enforcement can live in an external tool.
+- Breaking release: remove deprecated built-in functionality and simplify dependencies.
 
-## [0.11.0] — 2026-07-12 — architecture enforcement + git worktree trust inheritance
+## [0.11.0] — 2026-07-12 — git worktree trust inheritance + runner module split
 
-First release with `ironlint arch` and inherited worktree trust. The 2186-line
-`runner.rs` is also decomposed into a focused `runner/` module tree (zero
-behavior change, stable public API).
-
-### Added — Architecture enforcement (`ironlint arch`)
-
-A new `architecture:` config block lowers to a single synthetic `__arch__`
-check that flows through the same `gate::run_gate` path as any ordinary check —
-no per-rule engine, no severity, no LLM. Design:
-`docs/superpowers/specs/2026-07-09-architecture-enforcement-design.md`.
-
-- **`architecture:` config block** — named layers (each a list of `globs`,
-  standard `globset` full-path semantics, deliberately stricter than check
-  `files` globs) + `rules` (`from: <layer>` + `may_import: [<layer>...]`; an
-  empty list forbids all imports out of that layer). Lowers to a synthetic
-  `__arch__` check (`ironlint arch check | graph | why`).
-- **`ironlint arch check`** — `on: [write]` evaluates only the proposed file's
-  outgoing imports (fresh graph per invocation, no cross-write cache); `on:
-  [pre-commit]` (or a bare sweep) evaluates the whole graph on disk.
-- **`ironlint arch graph`** — walks the repo, extracts imports, resolves
-  layer membership, emits the dependency graph.
-- **`ironlint arch why`** — explains why a file belongs to a layer / why an
-  import is forbidden.
-- **Tree-sitter import extraction (TS/JS in v1)** — `ImportExtractor` trait +
-  TS/JS extractor; handles ESM `import`, CommonJS `require()`, TSX/JSX grammar
-  selection by extension, and TS path-alias resolution via `tsconfig` paths
-  (longest-match + all targets).
-- **`DepGraph` + layer classification** + `Resolver` trait (relative + barrel
-  resolution).
-- **Policy evaluator** — whole-graph evaluation for `pre-commit` / sweeps.
-- **`$IRONLINT_ARCH_LAYERS`** — materialized tempfile of the layer set, passed
-  to the lowered `__arch__` check; `$IRONLINT_PROPOSED_MANIFEST` ABI extension
-  so multi-file patches can't sneak forbidden imports through cross-file
-  imports within a single atomic patch.
-- **`doctor`** — grammar check + trust now covers the `architecture:` block.
+This release added inherited worktree trust and decomposed the 2186-line
+`runner.rs` into a focused `runner/` module tree (zero behavior change, stable
+public API).
 
 ### Added — Git worktree trust inheritance
 
@@ -68,21 +36,6 @@ worktree trust inheritance).
 facade + `tests/mod.rs` / `tests/tmpfile.rs`. Zero behavior change, stable
 public API (`IronLintEngine`, `IronLintEngineBuilder`, `CheckInput`,
 `CheckOptions`, `CheckReport`, `CheckExplain`, `ExplainOutcome`).
-
-### Fixed — Architecture enforcement bugs (merge-review wave)
-
-- **Bug 1** — env-manifest overlay so multi-file patches can't sneak forbidden
-  imports.
-- **Bug 2** — extract CommonJS `require()` imports.
-- **Bug 3** — select TSX/JSX grammar by extension.
-- **Bug 4** — `tsconfig` paths longest-match + all targets.
-- **Bug 5** — add `$IRONLINT_BIN` so lowered `__arch__` check runs the same
-  binary rather than resolving `ironlint` from `PATH`.
-- **Bug 6** — use canonical config dir for `$IRONLINT_ROOT` and gate cwd.
-- **Bug 7** — apply `architecture.ignore` in the write path.
-- **Bug 8** — sweep stale `ironlint-arch-*` temp files on SIGKILL leak.
-- **Bug 9** — lower `__arch__` in `show-resolved-config`.
-- **Bug 10** — canonicalize requested path in `why`.
 
 ### Fixed — Other
 
