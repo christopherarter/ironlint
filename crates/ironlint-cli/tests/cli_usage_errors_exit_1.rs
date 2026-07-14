@@ -78,3 +78,13 @@ fn check_help_exits_0() {
         .assert()
         .success();
 }
+
+#[test]
+fn removed_arch_subcommand_is_a_usage_error() {
+    Command::cargo_bin("ironlint")
+        .unwrap()
+        .args(["arch", "--help"])
+        .assert()
+        .code(1)
+        .stderr(predicates::str::contains("unrecognized subcommand 'arch'"));
+}

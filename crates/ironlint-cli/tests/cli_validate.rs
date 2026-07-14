@@ -123,3 +123,43 @@ fn validate_rejects_bad_yaml() {
         .failure()
         .code(1);
 }
+
+#[test]
+fn validate_rejects_removed_architecture_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join(".ironlint.yml");
+    std::fs::write(
+        &config,
+        "architecture:\n  layers:\n    - name: data\n      globs: [\"src/data/**\"]\nchecks: {}\n",
+    )
+    .unwrap();
+
+    let output = Command::cargo_bin("ironlint")
+        .unwrap()
+        .args(["validate", "--config", config.to_str().unwrap()])
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("unknown field `architecture`"), "{stderr}");
+}
+
+#[test]
+fn validate_accepts_arch_as_ordinary_check_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join(".ironlint.yml");
+    std::fs::write(
+        &config,
+        "checks:\n  __arch__:\n    files: \"**/*\"\n    run: \"true\"\n",
+    )
+    .unwrap();
+
+    let output = Command::cargo_bin("ironlint")
+        .unwrap()
+        .args(["validate", "--config", config.to_str().unwrap()])
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(0));
+}

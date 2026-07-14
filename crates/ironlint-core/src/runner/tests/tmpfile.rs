@@ -1,10 +1,8 @@
 use super::*;
 use crate::engine::InternalReason;
-use crate::runner::{
-    materialize_tmpfile, sweep_stale_tmpfiles, CheckInput, CheckOptions, IronLintEngine,
-};
+use crate::runner::{materialize_tmpfile, sweep_stale_tmpfiles, CheckInput, IronLintEngine};
 use crate::verdict::Status;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 use tempfile::TempDir;
 
@@ -365,135 +363,6 @@ fn sweep_stale_tmpfiles_tolerates_missing_root() {
 }
 
 #[test]
-fn sweep_stale_tmpfiles_removes_old_arch_layers_files() {
-    // Bug 8: SIGKILL skips TmpFileGuard::drop for $IRONLINT_ARCH_LAYERS,
-    // leaking ironlint-arch-* files in the system temp directory. The
-    // sweep must reclaim them the same way it reclaims ironlint-tmp-*.
-    let dir = TempDir::new().unwrap();
-
-    let stale = dir.path().join("ironlint-arch-1111-0-1.yml");
-    std::fs::write(&stale, "layers:\n").unwrap();
-    backdate_mtime(&stale, 2 * 60 * 60); // 2h ago
-
-    let unrelated = dir.path().join("not-ironlint-anything.yml");
-    std::fs::write(&unrelated, "keep me").unwrap();
-    backdate_mtime(&unrelated, 2 * 60 * 60);
-
-    sweep_stale_tmpfiles(dir.path(), Duration::from_secs(60 * 60));
-
-    assert!(!stale.exists(), "stale ironlint-arch-* file must be swept");
-    assert!(
-        unrelated.exists(),
-        "non-matching files must never be touched, regardless of age"
-    );
-}
-
-#[test]
-fn sweep_stale_tmpfiles_keeps_fresh_arch_layers_files() {
-    // A fresh ironlint-arch-* file could belong to a concurrently-running
-    // ironlint process; the age gate must keep it.
-    let dir = TempDir::new().unwrap();
-
-    let fresh = dir.path().join("ironlint-arch-2222-0-2.yml");
-    std::fs::write(&fresh, "layers:\n").unwrap();
-
-    sweep_stale_tmpfiles(dir.path(), Duration::from_secs(60 * 60));
-
-    assert!(
-        fresh.exists(),
-        "fresh ironlint-arch-* file must survive (may be a concurrent live run)"
-    );
-}
-
-#[test]
-fn sweep_stale_tmpfiles_ignores_directories_matching_arch_layers_prefix() {
-    let dir = TempDir::new().unwrap();
-    let weird_dir = dir.path().join("ironlint-arch-a-dir");
-    std::fs::create_dir(&weird_dir).unwrap();
-
-    // Even with a zero threshold, a directory is never a sweep candidate.
-    sweep_stale_tmpfiles(dir.path(), Duration::from_secs(0));
-
-    assert!(
-        weird_dir.exists(),
-        "a directory matching the arch-layers prefix must never be removed"
-    );
-}
-
-fn load_engine_with_tmp(dir: &TempDir, tmp_dir: &Path) -> IronLintEngine {
-    // Mirrors `load_with_event` but drives the real `load_with_tmp` path
-    // with an injected system-temp dir, so the load-time sweep call site
-    // (runner.rs `sweep_stale_tmpfiles(tmp_dir, ...)`) is exercised
-    // end-to-end without mutating process-global `TMPDIR`.
-    IronLintEngine::load_with_tmp(
-        &dir.path().join(".ironlint.yml"),
-        CheckOptions {
-            event: "write".to_string(),
-            ..Default::default()
-        },
-        tmp_dir,
-    )
-    .unwrap()
-}
-
-#[test]
-fn load_sweeps_stale_arch_layers_file_in_system_temp_dir() {
-    // Bug 8 / audit item 2: the load-time sweep at the `sweep_stale_tmpfiles`
-    // call site (runner.rs `sweep_stale_tmpfiles(tmp_dir, ...)`) is the
-    // reclaim path for `$IRONLINT_ARCH_LAYERS` leaks left in the SYSTEM
-    // temp dir by a SIGKILLed prior run. The 6 unit tests of the sweep
-    // function call it directly, so they pass even if this call site were
-    // deleted. This test drives the real `IronLintEngine::load` path.
-    //
-    // Discrimination: the stale file lives in a SEPARATE temp dir from the
-    // config dir, so the config_dir sweep (line 693) cannot reclaim it —
-    // only the system-temp-dir sweep at the injected `tmp_dir` can. Delete
-    // that one line and the stale file survives → test fails for the right
-    // reason, not a tautology.
-    let config_dir = TempDir::new().unwrap();
-    write_config(
-        &config_dir,
-        "checks:\n  noop:\n    files: \"**/*.rs\"\n    run: \"true\"\n",
-    );
-
-    // The injected system-temp dir: distinct from config_dir so the
-    // config_dir sweep can't cover for a deleted system-temp sweep.
-    let tmp_dir = TempDir::new().unwrap();
-
-    // Stale: a leaked ironlint-arch-* file from a killed prior run, backdated
-    // past the sweep's 1h threshold.
-    let stale = tmp_dir.path().join("ironlint-arch-1111-0-1.yml");
-    std::fs::write(&stale, "layers:\n").unwrap();
-    backdate_mtime(&stale, 2 * 60 * 60); // 2h ago
-
-    // Fresh: same prefix, recent mtime — a concurrently-running ironlint
-    // process's still-live $IRONLINT_ARCH_LAYERS. Must survive the sweep.
-    let fresh = tmp_dir.path().join("ironlint-arch-2222-0-2.yml");
-    std::fs::write(&fresh, "layers:\n").unwrap();
-
-    // Unrelated: old, but the name doesn't match the arch-layers prefix.
-    // Must never be touched, regardless of age.
-    let unrelated = tmp_dir.path().join("someone-elses-cache.yml");
-    std::fs::write(&unrelated, "keep me").unwrap();
-    backdate_mtime(&unrelated, 2 * 60 * 60);
-
-    let _engine = load_engine_with_tmp(&config_dir, tmp_dir.path());
-
-    assert!(
-        !stale.exists(),
-        "stale ironlint-arch-* file in the system temp dir must be swept at engine load"
-    );
-    assert!(
-        fresh.exists(),
-        "fresh ironlint-arch-* file must survive (may be a concurrent live run)"
-    );
-    assert!(
-        unrelated.exists(),
-        "non-matching files in the system temp dir must never be touched, regardless of age"
-    );
-}
-
-#[test]
 fn maybe_materialize_tmpfile_sweeps_stale_leaks_in_its_own_nested_dir() {
     // $IRONLINT_TMPFILE is materialized as a SIBLING of the checked file
     // (its own directory), which for real source is nested — e.g.
@@ -590,7 +459,5 @@ fn detail_for_truncates_multibyte_run_at_char_boundary() {
         "truncated run must be valid UTF-8 (char-boundary-aligned)"
     );
     // The emoji must NOT appear at the cut — it straddled the boundary.
-    assert!(
-        !truncated.contains('🚀'),
-    );
+    assert!(!truncated.contains('🚀'),);
 }

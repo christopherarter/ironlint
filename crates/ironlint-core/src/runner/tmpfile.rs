@@ -32,27 +32,9 @@ pub(crate) fn check_references_tmpfile(check: &Check) -> bool {
         .any(|s| s.run.contains("IRONLINT_TMPFILE"))
 }
 
-/// True iff any of the check's steps reference the `$IRONLINT_ARCH_LAYERS`
-/// token.
-pub(crate) fn check_references_arch_layers(check: &Check) -> bool {
-    check
-        .effective_steps()
-        .iter()
-        .any(|s| s.run.contains("IRONLINT_ARCH_LAYERS"))
-}
-
 /// The naming prefix ironlint gives every `$IRONLINT_TMPFILE` it
 /// materializes (see `unique_tmp_name`).
 pub(crate) const TMPFILE_PREFIX: &str = "ironlint-tmp-";
-
-/// The naming prefix for the `$IRONLINT_ARCH_LAYERS` materialized file.
-/// These live in the system temp directory, not the project tree.
-pub(crate) const ARCH_LAYERS_PREFIX: &str = "ironlint-arch-";
-
-/// Prefixes that `sweep_stale_tmpfiles` may reclaim. Both `$IRONLINT_TMPFILE`
-/// and `$IRONLINT_ARCH_LAYERS` leaks can be left behind when ironlint is
-/// SIGKILLed mid-check and `TmpFileGuard::drop` does not run.
-pub(crate) const STALE_TMPFILE_PREFIXES: &[&str] = &[TMPFILE_PREFIX, ARCH_LAYERS_PREFIX];
 
 /// A collision-resistant temp-file name with `prefix` and optional `ext`.
 pub(crate) fn unique_name(prefix: &str, ext: Option<&str>) -> String {
@@ -94,10 +76,10 @@ pub(crate) fn unique_tmp_name(ext: Option<&str>) -> String {
 /// leak.
 pub(crate) const TMPFILE_SWEEP_MAX_AGE: Duration = Duration::from_secs(60 * 60);
 
-/// Best-effort reclaim of `$IRONLINT_TMPFILE` and `$IRONLINT_ARCH_LAYERS`
-/// leaks in `root`'s immediate directory: removes only regular files whose
-/// name starts with one of [`STALE_TMPFILE_PREFIXES`] and whose mtime is older
-/// than `max_age`. Never touches anything else — a non-matching name, a
+/// Best-effort reclaim of `$IRONLINT_TMPFILE` leaks in `root`'s immediate
+/// directory: removes only regular files whose name starts with
+/// [`TMPFILE_PREFIX`] and whose mtime is older than `max_age`. Never touches
+/// anything else — a non-matching name, a
 /// directory, or an unreadable/racing entry is simply skipped rather than
 /// erroring, since this runs unconditionally on every engine load and a sweep
 /// failure must never block a check.
@@ -121,15 +103,15 @@ pub(crate) fn sweep_stale_tmpfiles(root: &Path, max_age: Duration) {
 }
 
 /// True iff `entry` is a regular file matching one of
-/// [`STALE_TMPFILE_PREFIXES`] whose mtime is older than `max_age` relative to
-/// `now`. Extracted from `sweep_stale_tmpfiles` to keep both functions well
+/// [`TMPFILE_PREFIX`] whose mtime is older than `max_age` relative to `now`.
+/// Extracted from `sweep_stale_tmpfiles` to keep both functions well
 /// under the cognitive complexity cap.
 fn is_stale_tmpfile(entry: &std::fs::DirEntry, now: SystemTime, max_age: Duration) -> bool {
     let file_name = entry.file_name();
     let Some(name) = file_name.to_str() else {
         return false;
     };
-    if !STALE_TMPFILE_PREFIXES.iter().any(|p| name.starts_with(p)) {
+    if !name.starts_with(TMPFILE_PREFIX) {
         return false;
     }
     let Ok(metadata) = entry.metadata() else {

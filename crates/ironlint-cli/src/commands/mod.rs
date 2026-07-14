@@ -1,4 +1,3 @@
-pub mod arch;
 pub mod check;
 pub mod config;
 pub mod doctor;

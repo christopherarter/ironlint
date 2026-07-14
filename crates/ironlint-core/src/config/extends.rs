@@ -82,7 +82,6 @@ fn merge_inherited(local: &mut Config, inherited: Config) {
         local.checks.entry(id).or_insert(check);
     }
     local.execution = local.execution.take().or(inherited.execution);
-    local.architecture = local.architecture.take().or(inherited.architecture);
 }
 
 /// Resolve `extends:` and return a per-check origin map.
@@ -148,5 +147,4 @@ fn merge_inherited_with_origin(
         }
     }
     local.execution = local.execution.take().or(inherited_execution);
-    local.architecture = local.architecture.take().or(inherited.architecture);
 }

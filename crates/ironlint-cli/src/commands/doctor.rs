@@ -24,7 +24,7 @@
 
 use crate::cli::OutputFormat;
 use crate::commands::check;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use ironlint_core::adapter::{
     all_harnesses, status, AdapterEnv, HarnessKind, HarnessStatus, Scope,
 };
@@ -71,9 +71,6 @@ pub fn run(dir: &Path, format: OutputFormat) -> Result<i32> {
         shell_row(),
         trust_row(&ctx),
     ];
-    if let Some(row) = check_arch_grammars(&ctx) {
-        checks.insert(4, row);
-    }
     checks.extend(adapter_section(dir));
     let report = Report {
         ironlint_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -214,115 +211,6 @@ fn check_script_paths(ctx: &DoctorContext) -> CheckResult {
 /// Returns `Some(problem description)` if `run` looks like a script path that
 /// is missing or not executable; `None` if the command is inline or the script
 /// is fine.
-/// Source extensions that the architecture-enforcement graph may care about in
-/// v1. Only files with these extensions are inspected; everything else (`.json`,
-/// `.md`, generated assets, config files) is ignored.
-const ARCH_SOURCE_EXTENSIONS: &[&str] = &[
-    "ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs", "rs", "py", "go", "php",
-];
-
-/// Warn when the repo contains source files whose language has no grammar
-/// support in this version. Only runs when `architecture:` is present; otherwise
-/// returns `None` so doctor does not emit a irrelevant row.
-fn check_arch_grammars(ctx: &DoctorContext) -> Option<CheckResult> {
-    let cfg = ironlint_core::config::parse_file_with_extends(&ctx.config_path).ok()?;
-    cfg.architecture.as_ref()?;
-    match collect_unsupported_arch_files(&ctx.dir) {
-        Ok(files) if files.is_empty() => Some(CheckResult {
-            name: "architecture",
-            status: Status::Pass,
-            detail: "all source files have grammar support".into(),
-            remediation: None,
-        }),
-        Ok(files) => {
-            let detail = files
-                .iter()
-                .map(|(_, label)| {
-                    format!("architecture: {label} not supported in v1 (file dropped from graph)")
-                })
-                .collect::<Vec<_>>()
-                .join("; ");
-            Some(CheckResult {
-                name: "architecture",
-                status: Status::Warn,
-                detail,
-                remediation: Some(
-                    "remove unsupported languages or disable the architecture block".into(),
-                ),
-            })
-        }
-        Err(e) => Some(CheckResult {
-            name: "architecture",
-            status: Status::Warn,
-            detail: format!("could not walk repo: {e}"),
-            remediation: None,
-        }),
-    }
-}
-
-/// Collect unsupported architecture-source files under `dir`. Returns
-/// `(relative_path, language_label)` pairs, sorted for stable output.
-fn collect_unsupported_arch_files(dir: &Path) -> Result<Vec<(String, &'static str)>> {
-    let mut out = Vec::new();
-    collect_unsupported_arch_files_rec(dir, dir, &mut out)?;
-    out.sort_by(|a, b| a.0.cmp(&b.0));
-    Ok(out)
-}
-
-fn collect_unsupported_arch_files_rec(
-    root: &Path,
-    dir: &Path,
-    out: &mut Vec<(String, &'static str)>,
-) -> Result<()> {
-    for entry in std::fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
-        let entry = entry?;
-        let path = entry.path();
-        let meta = entry
-            .metadata()
-            .with_context(|| format!("metadata for {}", path.display()))?;
-        if meta.is_dir() {
-            if should_skip_arch_dir(&path) {
-                continue;
-            }
-            collect_unsupported_arch_files_rec(root, &path, out)?;
-        } else if meta.is_file() {
-            if let Some((rel, label)) = unsupported_arch_file(root, &path) {
-                out.push((rel, label));
-            }
-        }
-    }
-    Ok(())
-}
-
-fn should_skip_arch_dir(path: &Path) -> bool {
-    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-    name.starts_with('.') || name == "target"
-}
-
-/// If `path` is an architecture-source file with no grammar support, return
-/// `(relative_path, language_label)`; otherwise `None`.
-fn unsupported_arch_file(root: &Path, path: &Path) -> Option<(String, &'static str)> {
-    let ext = path.extension()?.to_str()?;
-    if !ARCH_SOURCE_EXTENSIONS.contains(&ext) {
-        return None;
-    }
-    if ironlint_core::arch::languages::for_path(path).is_some() {
-        return None;
-    }
-    let rel = path.strip_prefix(root).ok()?.to_string_lossy().into_owned();
-    Some((rel, arch_language_label(ext)))
-}
-
-fn arch_language_label(ext: &str) -> &'static str {
-    match ext {
-        "rs" => "Rust",
-        "py" => "Python",
-        "go" => "Go",
-        "php" => "PHP",
-        _ => "Unsupported",
-    }
-}
-
 fn check_run_path(dir: &Path, check_id: &str, run: &str) -> Option<String> {
     // Inline command: contains a space → skip.
     if run.contains(' ') {
@@ -1028,64 +916,5 @@ mod tests {
         ironlint_core::adapter::install(&h, &env, ironlint_core::adapter::Scope::Local).unwrap();
         let r = hook_deps_row(&env).expect("wired adapter → a deps row");
         assert_eq!(r.name, "hook deps");
-    }
-
-    // --- Task 15: architecture grammar support check -------------------------
-
-    #[test]
-    fn arch_grammars_skipped_when_no_architecture_block() {
-        let d = tempdir().unwrap();
-        fs::write(
-            d.path().join(".ironlint.yml"),
-            "checks:\n  g:\n    files: \"*\"\n    run: \"true\"\n",
-        )
-        .unwrap();
-        let ctx = ctx_with(d.path());
-        assert!(check_arch_grammars(&ctx).is_none());
-    }
-
-    #[test]
-    fn arch_grammars_passes_when_only_supported_files() {
-        let d = tempdir().unwrap();
-        fs::write(
-            d.path().join(".ironlint.yml"),
-            "architecture:\n  layers:\n    - name: data\n      globs: [\"src/data/**\"]\nchecks:\n  g:\n    files: \"*\"\n    run: \"true\"\n",
-        )
-        .unwrap();
-        fs::write(d.path().join("main.ts"), "export const x = 1;\n").unwrap();
-        let ctx = ctx_with(d.path());
-        let r = check_arch_grammars(&ctx).expect("architecture block present");
-        assert_eq!(r.status, Status::Pass);
-        assert!(r.detail.contains("all source files"));
-    }
-
-    #[test]
-    fn arch_grammars_warns_on_unsupported_rs() {
-        let d = tempdir().unwrap();
-        fs::write(
-            d.path().join(".ironlint.yml"),
-            "architecture:\n  layers:\n    - name: data\n      globs: [\"src/data/**\"]\nchecks:\n  g:\n    files: \"*\"\n    run: \"true\"\n",
-        )
-        .unwrap();
-        fs::write(d.path().join("main.rs"), "fn main() {}\n").unwrap();
-        let ctx = ctx_with(d.path());
-        let r = check_arch_grammars(&ctx).expect("architecture block present");
-        assert_eq!(r.status, Status::Warn);
-        assert!(r.detail.contains("Rust not supported in v1"));
-    }
-
-    #[test]
-    fn arch_grammars_ignores_files_outside_extension_set() {
-        let d = tempdir().unwrap();
-        fs::write(
-            d.path().join(".ironlint.yml"),
-            "architecture:\n  layers:\n    - name: data\n      globs: [\"src/data/**\"]\nchecks:\n  g:\n    files: \"*\"\n    run: \"true\"\n",
-        )
-        .unwrap();
-        fs::write(d.path().join("README.md"), "# hi\n").unwrap();
-        fs::write(d.path().join("config.json"), "{}\n").unwrap();
-        let ctx = ctx_with(d.path());
-        let r = check_arch_grammars(&ctx).expect("architecture block present");
-        assert_eq!(r.status, Status::Pass);
     }
 }

@@ -10,9 +10,8 @@ use std::time::{Duration, Instant};
 use super::path::relativize;
 use super::timeout::resolve_timeout;
 use super::tmpfile::{
-    check_references_arch_layers, check_references_tmpfile, materialize_tmpfile,
-    sweep_stale_tmpfiles, unique_name, unique_tmp_name, TmpFileGuard, ARCH_LAYERS_PREFIX,
-    TMPFILE_SWEEP_MAX_AGE,
+    check_references_tmpfile, materialize_tmpfile, sweep_stale_tmpfiles, unique_tmp_name,
+    TmpFileGuard, TMPFILE_SWEEP_MAX_AGE,
 };
 use super::types::{CheckInput, CheckOptions, CheckReport, CheckStatus, Collected};
 
@@ -29,19 +28,14 @@ pub struct IronLintEngine {
     scope_matchers: BTreeMap<String, crate::config::scope::ScopeMatcher>,
     /// Per-check wall-clock budget (`IRONLINT_TIMEOUT` env → `execution.timeout_secs`).
     timeout: Duration,
-    /// Absolute path to the `ironlint` binary running this engine. Passed to
-    /// every check as `$IRONLINT_BIN` so the lowered `__arch__` check can shell
-    /// out to the same binary instead of relying on `PATH` (which may be
-    /// missing or stale). Falls back to the bare name `ironlint` if
-    /// `current_exe()` fails, preserving the pre-fix behavior in that edge case.
+    /// Absolute path to the `ironlint` binary, exposed to every check through
+    /// the public `$IRONLINT_BIN` ABI. Falls back to the bare name `ironlint`
+    /// if `current_exe()` fails.
     bin: PathBuf,
     /// Absolute path to a manifest of sibling proposed files, read from the
     /// `IRONLINT_PROPOSED_MANIFEST` env var at load time (set by the codex
-    /// hook before invoking `ironlint check`). Passed to the lowered
-    /// `__arch__` check as `$IRONLINT_PROPOSED_MANIFEST` so the arch
-    /// subprocess can merge cross-file imports within a single atomic patch
-    /// as virtual graph nodes (Bug 1). `None` when the env var is unset
-    /// (the common case — no manifest, no overlay, status quo behavior).
+    /// hook before invoking `ironlint check`). Exposed to every check through
+    /// the public `$IRONLINT_PROPOSED_MANIFEST` ABI; `None` when unset.
     proposed_manifest: Option<PathBuf>,
 }
 
@@ -114,21 +108,6 @@ impl IronLintEngine {
     }
 
     fn load_with(config_path: &Path, options: CheckOptions) -> Result<Self> {
-        Self::load_with_tmp(config_path, options, &std::env::temp_dir())
-    }
-
-    /// Same as [`IronLintEngine::load_with`], but the directory swept for
-    /// `$IRONLINT_ARCH_LAYERS` leaks is injected rather than read from
-    /// `std::env::temp_dir()`. The system temp dir is process-global: mutating
-    /// `TMPDIR` in a test races every concurrent `TempDir::new()` in the suite
-    /// (see the same reasoning in `gate.rs`'s env-scrub tests). Threading the
-    /// path here keeps the load path's sweep call site testable without env
-    /// gymnastics — and without serializing the whole module.
-    pub(crate) fn load_with_tmp(
-        config_path: &Path,
-        options: CheckOptions,
-        tmp_dir: &Path,
-    ) -> Result<Self> {
         // Debug hook: counts engine loads per process. Gated on the env var so
         // it is invisible in production; integration tests set it to assert
         // that `ironlint check` loads the engine exactly once.
@@ -140,8 +119,7 @@ impl IronLintEngine {
 
         // Trust verification is gone in 0.3 (returns in a later plan as the
         // out-of-repo direnv store). `resolve` walks `extends:` without it.
-        let mut config = crate::config::parse_file_with_extends(config_path)?;
-        crate::arch::lowering::lower_architecture(&mut config)?;
+        let config = crate::config::parse_file_with_extends(config_path)?;
 
         // Validate every check's file globs by constructing the matcher up
         // front, and cache it so `check_matches_path` never rebuilds a GlobSet.
@@ -165,31 +143,22 @@ impl IronLintEngine {
             .canonicalize()
             .unwrap_or_else(|_| config_dir.clone());
 
-        // Reclaim any $IRONLINT_TMPFILE or $IRONLINT_ARCH_LAYERS leak a prior
+        // Reclaim any $IRONLINT_TMPFILE leak a prior
         // run left behind by dying mid-check (SIGTERM/SIGINT/SIGKILL skip
         // TmpFileGuard::drop — see its docstring). Best-effort and age-gated,
         // so it can never step on a tmpfile a concurrently-running ironlint
         // process still owns.
         sweep_stale_tmpfiles(&config_dir_canon, TMPFILE_SWEEP_MAX_AGE);
-        // $IRONLINT_ARCH_LAYERS lives in the system temp dir, not the project
-        // tree, so sweep that too. The same prefix + is_file + age gate makes
-        // this safe in a shared directory. `tmp_dir` is injected (defaults to
-        // `std::env::temp_dir()` in `load_with`) so the load-time sweep of the
-        // system temp dir is testable without mutating process-global `TMPDIR`.
-        sweep_stale_tmpfiles(tmp_dir, TMPFILE_SWEEP_MAX_AGE);
 
         let timeout = resolve_timeout(&config);
 
-        // Absolute path to this ironlint binary. `current_exe()` can fail in
-        // exotic cases (e.g. the executable was unlinked after startup); fall
-        // back to the bare name so the lowered `__arch__` check degrades to the
-        // pre-fix PATH-resolved behavior instead of crashing the engine load.
+        // Populate the public `$IRONLINT_BIN` check ABI. `current_exe()` can
+        // fail in exotic cases (e.g. an executable unlinked after startup), so
+        // retain the bare-name fallback instead of failing engine load.
         let bin = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("ironlint"));
 
-        // Bug 1: read the proposed-manifest path from the parent env (set by
-        // the codex hook before invoking `ironlint check`). The runner owns
-        // which IRONLINT_* vars flow to checks — this is the same pattern used
-        // for `IRONLINT_BIN` (current_exe). `None` when unset (common case).
+        // Populate the public `$IRONLINT_PROPOSED_MANIFEST` check ABI from the
+        // parent environment. `None` when unset.
         let proposed_manifest = std::env::var_os("IRONLINT_PROPOSED_MANIFEST").map(PathBuf::from);
 
         Ok(Self {
@@ -346,35 +315,10 @@ impl IronLintEngine {
         Ok(Some(TmpFileGuard { path }))
     }
 
-    /// Materialize `$IRONLINT_ARCH_LAYERS` for any check that references it.
-    /// Unlike `$IRONLINT_TMPFILE`, the layers file is available at both
-    /// lifecycles (write and pre-commit) and is derived from the stashed config
-    /// YAML, not the proposed file content. Lives in the system temp directory
-    /// so it never mixes with project source.
-    fn maybe_materialize_arch_layers(
-        &self,
-        check: &Check,
-    ) -> std::io::Result<Option<TmpFileGuard>> {
-        if !check_references_arch_layers(check) {
-            return Ok(None);
-        }
-        let Some(yaml) = self.config.arch_layers_yaml.as_ref() else {
-            return Ok(None);
-        };
-        let name = unique_name(ARCH_LAYERS_PREFIX, Some("yml"));
-        let path = std::env::temp_dir().join(name);
-        materialize_tmpfile(&path, yaml)?;
-        Ok(Some(TmpFileGuard { path }))
-    }
-
     /// Build the human-readable `GateError.detail` string for an internal error:
     /// names the (truncated) run command and, for timeouts, the effective
     /// timeout that fired. One line.
-    pub(crate) fn detail_for(
-        reason: &InternalReason,
-        run: &str,
-        timeout: Duration,
-    ) -> String {
+    pub(crate) fn detail_for(reason: &InternalReason, run: &str, timeout: Duration) -> String {
         const MAX_RUN_LEN: usize = 80;
         let run_trunc = if run.len() > MAX_RUN_LEN {
             // Step back to the nearest char boundary at or below MAX_RUN_LEN
@@ -456,17 +400,6 @@ impl IronLintEngine {
                 }
             }
         };
-        let arch = match self.maybe_materialize_arch_layers(check) {
-            Ok(a) => a,
-            Err(e) => {
-                return CheckStatus::Error {
-                    step: Some("<arch-layers>".to_string()),
-                    reason: format!("arch_layers_write_failed:{e}"),
-                    detail: None,
-                    elapsed: 0,
-                }
-            }
-        };
         let abs_buf = abs.to_path_buf();
         let env = GateEnv {
             file: Some(abs),
@@ -474,12 +407,11 @@ impl IronLintEngine {
             root: &self.config_dir_canon,
             event: &self.options.event,
             tmpfile: tmp.as_ref().map(|g| g.path.as_path()),
-            arch_layers: arch.as_ref().map(|g| g.path.as_path()),
             bin: &self.bin,
             proposed_manifest: self.proposed_manifest.as_deref(),
         };
         self.run_steps(check, &env, Some(content.as_bytes()))
-        // `tmp` and `arch` drop here → temp files removed.
+        // `tmp` drops here → temp file removed.
     }
 
     /// Run the loaded checks against `input` and return the verdict.
@@ -529,31 +461,16 @@ impl IronLintEngine {
                 continue;
             }
             // Run the check once over the matched set; stdin is closed (None).
-            let arch = match self.maybe_materialize_arch_layers(check) {
-                Ok(a) => a,
-                Err(e) => {
-                    let status = CheckStatus::Error {
-                        step: Some("<arch-layers>".to_string()),
-                        reason: format!("arch_layers_write_failed:{e}"),
-                        detail: None,
-                        elapsed: 0,
-                    };
-                    collected.absorb(check_id, None, status, false);
-                    continue;
-                }
-            };
             let env = GateEnv {
                 file: None,
                 files: &matched,
                 root: &self.config_dir_canon,
                 event: &self.options.event,
                 tmpfile: None,
-                arch_layers: arch.as_ref().map(|g| g.path.as_path()),
                 bin: &self.bin,
                 proposed_manifest: self.proposed_manifest.as_deref(),
             };
             let status = self.run_steps(check, &env, None);
-            // `arch` drops here → temp file removed.
             collected.absorb(check_id, None, status, false);
         }
 

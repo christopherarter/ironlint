@@ -28,14 +28,6 @@ pub fn parse_str(input: &str) -> Result<Config> {
         ));
     }
     let cfg: Config = serde_yaml::from_str(input).context("parsing ironlint config")?;
-    if cfg.checks.contains_key("__arch__") {
-        return Err(anyhow!(
-            "`__arch__` is reserved for architecture enforcement"
-        ));
-    }
-    if let Some(architecture) = &cfg.architecture {
-        architecture.validate()?;
-    }
     for (id, check) in &cfg.checks {
         match (&check.run, &check.steps) {
             (Some(_), Some(_)) => {
