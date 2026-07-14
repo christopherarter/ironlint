@@ -201,6 +201,58 @@ fn not_installer_managed_message() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct EnvGuard {
+        values: Vec<(&'static str, Option<std::ffi::OsString>)>,
+    }
+
+    impl EnvGuard {
+        fn set(values: &[(&'static str, Option<&str>)]) -> Self {
+            let saved = values
+                .iter()
+                .map(|(name, value)| {
+                    let original = std::env::var_os(name);
+                    match value {
+                        Some(value) => std::env::set_var(name, value),
+                        None => std::env::remove_var(name),
+                    }
+                    (*name, original)
+                })
+                .collect();
+            Self { values: saved }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (name, value) in &self.values {
+                match value {
+                    Some(value) => std::env::set_var(name, value),
+                    None => std::env::remove_var(name),
+                }
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn env_guard_restores_non_unicode_values() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _restore_original = EnvGuard::set(&[("HOME", Some("/__ironlint_test_restore__"))]);
+        let non_unicode = std::ffi::OsString::from_vec(vec![b'/', 0xFF]);
+        std::env::set_var("HOME", &non_unicode);
+
+        {
+            let _guard = EnvGuard::set(&[("HOME", Some("/__ironlint_test_override__"))]);
+        }
+
+        assert_eq!(std::env::var_os("HOME"), Some(non_unicode));
+    }
 
     #[test]
     fn render_updated_includes_refresh_hint_and_exits_zero() {
@@ -261,16 +313,58 @@ mod tests {
         // path (no XDG/HOME fallthrough). Use a unique sentinel so a real env
         // var on the host can't mask the assertion.
         //
-        // NOTE: this mutates process-global env (set_var/remove_var), which is
-        // inherently racy under parallel test threads — but it is the only
-        // test in this binary that touches AXOUPDATER_CONFIG_PATH, so the race
-        // window has no other reader to corrupt.
+        // These tests mutate process-global env, so ENV_LOCK keeps their
+        // receipt-path assertions from observing each other's setup.
+        let _lock = ENV_LOCK.lock().unwrap();
         let sentinel = "/__ironlint_test_axoupdater_config_path__";
-        std::env::set_var("AXOUPDATER_CONFIG_PATH", sentinel);
+        let _env = EnvGuard::set(&[
+            ("AXOUPDATER_CONFIG_WORKING_DIR", None),
+            ("AXOUPDATER_CONFIG_PATH", Some(sentinel)),
+        ]);
         let paths = receipt_paths(APP_NAME);
-        std::env::remove_var("AXOUPDATER_CONFIG_PATH");
         // Early-return: the candidate list is exactly [sentinel], nothing else.
         assert_eq!(paths, vec![PathBuf::from(sentinel)]);
+    }
+
+    #[test]
+    fn receipt_paths_prioritizes_working_directory_over_explicit_path() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _env = EnvGuard::set(&[
+            ("AXOUPDATER_CONFIG_WORKING_DIR", Some("1")),
+            (
+                "AXOUPDATER_CONFIG_PATH",
+                Some("/__ironlint_test_axoupdater_config_path__"),
+            ),
+        ]);
+
+        assert_eq!(
+            receipt_paths(APP_NAME),
+            vec![std::env::current_dir().unwrap()]
+        );
+    }
+
+    #[test]
+    fn receipt_paths_uses_xdg_then_platform_home_fallback() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let xdg = "/__ironlint_test_xdg_config_home__";
+        let home = "/__ironlint_test_home__";
+        let _env = EnvGuard::set(&[
+            ("AXOUPDATER_CONFIG_WORKING_DIR", None),
+            ("AXOUPDATER_CONFIG_PATH", None),
+            ("XDG_CONFIG_HOME", Some(xdg)),
+            ("HOME", Some(home)),
+            ("LOCALAPPDATA", Some("/__ironlint_test_local_app_data__")),
+        ]);
+
+        let paths = receipt_paths(APP_NAME);
+        assert_eq!(paths[0], PathBuf::from(xdg).join(APP_NAME));
+        #[cfg(windows)]
+        assert_eq!(
+            paths[1],
+            PathBuf::from("/__ironlint_test_local_app_data__").join(APP_NAME)
+        );
+        #[cfg(not(windows))]
+        assert_eq!(paths[1], PathBuf::from(home).join(".config").join(APP_NAME));
     }
 
     #[test]

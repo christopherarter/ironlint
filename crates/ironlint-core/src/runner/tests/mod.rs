@@ -10,7 +10,6 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 use tempfile::TempDir;
 
-
 fn write(dir: &Path, name: &str, body: &str) -> PathBuf {
     let p = dir.join(name);
     let mut f = std::fs::File::create(&p).unwrap();
@@ -422,6 +421,5 @@ fn steps_fail_fast_on_first_blocking_step() {
         "step 3 ran after a block"
     );
 }
-
 
 mod tmpfile;

@@ -7,10 +7,6 @@
 use assert_cmd::Command;
 use tempfile::tempdir;
 
-fn write_config(path: &std::path::Path, content: &str) {
-    std::fs::write(path, content).unwrap();
-}
-
 #[test]
 fn show_resolved_config_default_tsv_row_per_check() {
     let dir = tempdir().unwrap();
