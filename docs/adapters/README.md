@@ -29,7 +29,7 @@ Every adapter normalizes its host into the same ABI, so one check command runs u
 | `$IRONLINT_ROOT` | Project root — also the check's working directory. |
 | `$IRONLINT_EVENT` | `write` or `pre-commit`. |
 | `$IRONLINT_TMPFILE` | **write only** — set only when the check's `run` references it: absolute path to a temp file holding the proposed content, placed beside `$IRONLINT_FILE` with the same extension. Auto-cleaned after the check. Unset on `pre-commit`. |
-| `$IRONLINT_BIN` | Absolute path to the `ironlint` binary, so a check can invoke it without `PATH` resolution (used by the synthetic `__arch__` check). |
+| `$IRONLINT_BIN` | Absolute path to the running `ironlint` binary, so any check can invoke it without `PATH` resolution. |
 | stdin | The proposed post-edit content. |
 
 The adapter only shells out to the `ironlint` binary. It doesn't reimplement any policy logic.
@@ -74,8 +74,8 @@ If hooks aren't firing for any agent, run [`ironlint doctor`](../operating/diagn
 
 Adapters that support skills ship three for managing policy without leaving the session:
 
-- **`ironlint-config`** is the authoring guide: the `{files, run, steps, on, name}` check schema, the `architecture:` block, the
-  exit-code contract, and the common patterns, with a fixture-test loop. `ironlint
+- **`ironlint-config`** is the authoring guide: the `{files, run, steps, on, name}` check schema, the exit-code contract,
+  and the common patterns, with a fixture-test loop. `ironlint
   init` installs it as a real skill into every detected agent, and `ironlint schema`
   prints it on demand.
 - **`/ironlint-init`** scaffolds a `.ironlint.yml` from your project's stack.

@@ -59,7 +59,7 @@ IronLint hands each check the same four things. Nothing is spliced into the comm
 | `$IRONLINT_TMPFILE` | **write only** — set only when your `run` references it: absolute path to a temp file beside `$IRONLINT_FILE` holding the proposed content (same extension, auto-cleaned). Use for tools that won't read stdin. Unset on `pre-commit`. |
 | stdin | The proposed post-edit content of the file (may be empty). |
 
-`$IRONLINT_PROPOSED_MANIFEST` and `$IRONLINT_ARCH_LAYERS` are set only by specific adapters and the synthetic `__arch__` check (see [Architecture enforcement](../reference/config-schema.md#architecture-enforcement)) — absent otherwise, so don't depend on them in ordinary checks.
+`$IRONLINT_PROPOSED_MANIFEST` is an optional tab-separated (`file_path<TAB>content_path`) manifest of sibling proposed files in the same atomic patch. It is set by some adapters and absent otherwise, so checks that use it should handle its absence.
 
 There is no `{file}` token. The path travels only as `$IRONLINT_FILE`.
 

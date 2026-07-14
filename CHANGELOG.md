@@ -4,6 +4,10 @@ Notable changes to IronLint, newest first. In-flight work lives in `plans/`.
 
 ## [Unreleased]
 
+### Removed
+
+- Removed the built-in `architecture:` configuration, `ironlint arch` commands, synthetic `__arch__` check, and bundled Tree-sitter dependency graph engine. IronLint retains its generic check runner, trust boundary, executable-path ABI, and atomic-patch manifest so architecture enforcement can live in an external tool.
+
 ## [0.11.0] — 2026-07-12 — architecture enforcement + git worktree trust inheritance
 
 First release with `ironlint arch` and inherited worktree trust. The 2186-line

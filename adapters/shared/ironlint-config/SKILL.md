@@ -43,9 +43,9 @@ On block, the check's combined stdout+stderr becomes the message the agent sees,
 
 ## Top-level config
 
-A minimal `.ironlint.yml` is just `checks:`. Three optional top-level keys tune it:
+A minimal `.ironlint.yml` is just `checks:`. Two optional top-level keys tune it:
 
-- `extends:` — a list of relative paths to other config files. ironlint resolves them recursively (with cycle detection); **inherited checks fill gaps where the local config doesn't define them, and local checks win on collision.** `execution` and `architecture` inherit the same way (nearest ancestor's value when local sets none). Trust covers the whole `extends` closure — editing any extended file invalidates the fingerprint.
+- `extends:` — a list of relative paths to other config files. ironlint resolves them recursively (with cycle detection); **inherited checks fill gaps where the local config doesn't define them, and local checks win on collision.** `execution` inherits the same way (nearest ancestor's value when local sets none). Trust covers the whole `extends` closure — editing any extended file invalidates the fingerprint.
 
   ```yaml
   extends:
@@ -59,33 +59,6 @@ A minimal `.ironlint.yml` is just `checks:`. Three optional top-level keys tune 
   execution:
     timeout_secs: 60
   ```
-
-- `architecture:` — layer-based import rules that lower to a synthetic `__arch__` check; see [Architecture enforcement](#architecture-enforcement) below.
-
-## Architecture enforcement
-
-Declare named layers over path globs and `may_import` rules between them. The whole block lowers to one synthetic check named `__arch__` that runs `"$IRONLINT_BIN" arch check …` — it flows through the same gate path as any ordinary check (so it blocks when a rule is violated and is itself trust-gated). **Don't define a check named `__arch__`** — the parser rejects it.
-
-```yaml
-architecture:
-  layers:
-    - name: presentation
-      globs: ["src/components/**"]
-    - name: data
-      globs: ["src/data/**"]
-  rules:
-    - from: presentation
-      may_import: []      # presentation may not import any other layer
-    - from: data
-      may_import: [presentation]
-  ignore: ["**/*.test.*"]  # drop matching files from the import graph entirely
-```
-
-- `layers` — each a `name` + list of `globs`. At least one required; names must be unique and non-empty. Globs use **standard `globset` full-path semantics (path-anchored)** — deliberately stricter than a check's `files` globs, where a bare `*.py` also matches at any depth.
-- `rules` — each `from: <layer>` + `may_import: [<layer>...]`. **An empty `may_import` forbids all imports out of that layer.** A layer with no rule may import anything. One rule per `from` (duplicates are rejected); every `from` and target must name a declared layer.
-- `ignore` — globs excluded from the import graph before evaluation (tests, generated code).
-
-The synthetic `__arch__` check has `files: ["**/*"]` and fires on both `write` and `pre-commit`. On `write` it evaluates only the proposed file's **outgoing** imports against a fresh graph; on `pre-commit` (or a bare `ironlint check` sweep) it evaluates the **whole graph** on disk. Import extraction is tree-sitter based — TS/JS in v1, more languages later.
 
 ## Check patterns
 
