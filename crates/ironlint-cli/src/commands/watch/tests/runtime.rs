@@ -78,6 +78,47 @@ fn terminal_text(terminal: &Terminal<TestBackend>) -> String {
         .collect()
 }
 
+struct OrderingRuntimeIo {
+    calls: Vec<&'static str>,
+}
+
+impl RuntimeIo for OrderingRuntimeIo {
+    fn read_since(&mut self, _: &Path, _: &mut u64) -> anyhow::Result<(Vec<LogEntry>, bool)> {
+        self.calls.push("read_since");
+        Ok((vec![], false))
+    }
+
+    fn now_ms(&mut self) -> u64 {
+        assert_eq!(
+            self.calls.last(),
+            Some(&"read_since"),
+            "sample the clock after completing the telemetry read"
+        );
+        self.calls.push("now_ms");
+        0
+    }
+
+    fn poll(&mut self, _: Duration) -> io::Result<bool> {
+        self.calls.push("poll");
+        Ok(true)
+    }
+
+    fn read(&mut self) -> io::Result<Event> {
+        self.calls.push("read_event");
+        Ok(press('q'))
+    }
+}
+
+#[test]
+fn event_loop_samples_time_after_the_telemetry_read() {
+    let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
+    let mut io = OrderingRuntimeIo { calls: Vec::new() };
+
+    event_loop(&mut terminal, Path::new("/project"), &[], true, &mut io).unwrap();
+
+    assert_eq!(io.calls, ["read_since", "now_ms", "poll", "read_event"]);
+}
+
 #[test]
 fn event_loop_primes_backlog_draws_and_quits_on_pressed_q() {
     let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();

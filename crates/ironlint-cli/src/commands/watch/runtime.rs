@@ -176,7 +176,7 @@ impl Default for LoopState {
 }
 
 impl LoopState {
-    fn refresh<I: RuntimeIo>(&mut self, io: &mut I, log: &Path, now_ms: u64) {
+    fn refresh<I: RuntimeIo>(&mut self, io: &mut I, log: &Path) {
         if let Ok((new, reset)) = io.read_since(log, &mut self.offset) {
             if reset {
                 self.reset_entries();
@@ -184,7 +184,9 @@ impl LoopState {
             self.entries.extend(new);
             self.prime_if_needed();
         }
+    }
 
+    fn advance(&mut self, now_ms: u64) {
         advance_cascade(
             &mut self.cascade,
             self.entries.len(),
@@ -251,8 +253,9 @@ where
     let mut loop_state = LoopState::default();
 
     loop {
+        loop_state.refresh(io, &log);
         let now_ms = io.now_ms();
-        loop_state.refresh(io, &log, now_ms);
+        loop_state.advance(now_ms);
         let (rows, animating) = loop_state.rows(now_ms);
         let summary = summarize(&loop_state.entries[..loop_state.cascade.shown], armed);
         terminal.draw(|f| {
