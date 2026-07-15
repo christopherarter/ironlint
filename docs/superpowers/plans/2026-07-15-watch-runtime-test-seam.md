@@ -32,14 +32,14 @@
 
 ```rust
 struct ScriptedRuntimeIo {
-    reads: VecDeque<std::io::Result<(Vec<LogEntry>, bool)>>,
+    reads: VecDeque<anyhow::Result<(Vec<LogEntry>, bool)>>,
     now_ms: VecDeque<u64>,
     polls: Vec<Duration>,
     events: VecDeque<Event>,
 }
 
 impl RuntimeIo for ScriptedRuntimeIo {
-    fn read_since(&mut self, _: &Path, _: &mut u64) -> std::io::Result<(Vec<LogEntry>, bool)> {
+    fn read_since(&mut self, _: &Path, _: &mut u64) -> anyhow::Result<(Vec<LogEntry>, bool)> {
         self.reads.pop_front().expect("scripted telemetry read")
     }
     fn now_ms(&mut self) -> u64 { self.now_ms.pop_front().expect("scripted clock") }
@@ -110,7 +110,7 @@ git commit -m "test-watch-runtime-loop-seam"
 
 ```rust
 pub(super) trait RuntimeIo {
-    fn read_since(&mut self, log: &Path, offset: &mut u64) -> std::io::Result<(Vec<LogEntry>, bool)>;
+    fn read_since(&mut self, log: &Path, offset: &mut u64) -> anyhow::Result<(Vec<LogEntry>, bool)>;
     fn now_ms(&mut self) -> u64;
     fn poll(&mut self, wait: Duration) -> std::io::Result<bool>;
     fn read(&mut self) -> std::io::Result<Event>;
