@@ -2,6 +2,15 @@
 
 Notable changes to IronLint, newest first. In-flight work lives in `plans/`.
 
+## [0.12.1] — 2026-07-15
+
+### Changed
+
+- Decompose the trust, `watch`, and `doctor` implementations into focused
+  modules while preserving their public behavior and CLI contracts.
+- Add deterministic `watch` runtime coverage and a Unix PTY integration test
+  for raw-mode `q` exit handling.
+
 ## [0.12.0] — 2026-07-14
 
 ### Changed
