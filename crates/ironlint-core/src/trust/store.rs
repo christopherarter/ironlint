@@ -165,10 +165,7 @@ pub(super) fn acquire_store_lock(store_path: &Path) -> Result<StoreLock> {
 /// read permission on the target file. [`ensure_trusted_in`] deliberately
 /// does **not** use this path — a corrupt store must keep `check` failing
 /// closed.
-fn classify_store_read(
-    store_path: &Path,
-    read: std::io::Result<String>,
-) -> Result<TrustStore> {
+fn classify_store_read(store_path: &Path, read: std::io::Result<String>) -> Result<TrustStore> {
     match read {
         Ok(s) => Ok(serde_json::from_str(&s).unwrap_or_else(|_| {
             eprintln!(
