@@ -37,6 +37,7 @@ tempfile.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
 insta.workspace = true
+expectrl = "0.7"
 
 [lints]
 workspace = true
