@@ -11,7 +11,8 @@
 ## Global Constraints
 
 - Preserve `ironlint watch` rendering, key behavior, poll intervals, and current terminal-cleanup error semantics.
-- Tests must use `TestBackend`; do not open a real TTY or add sleeps.
+- Unit tests must use `TestBackend`; the approved macOS/Linux PTY integration
+  test is the single exception and must use bounded expectation timeouts, not sleeps.
 - Keep all Rust files under `crates/*/src/` at or above 80% region coverage.
 - Keep functions at cognitive complexity 15 or below; decompose rather than suppress the lint.
 - The runtime-I/O boundary is private to `commands::watch`; no public CLI or core API changes.
@@ -162,15 +163,16 @@ git add crates/ironlint-cli/src/commands/watch/runtime.rs crates/ironlint-cli/sr
 git commit -m "refactor-watch-runtime-test-seam"
 ```
 
-### Task 3: Verify coverage and add lifecycle seam only if evidence requires it
+### Task 3: Verify coverage and add a PTY integration test if evidence requires it
 
 **Files:**
-- Modify only if required: `crates/ironlint-cli/src/commands/watch/runtime.rs`
-- Modify only if required: `crates/ironlint-cli/src/commands/watch/tests/runtime.rs`
+- Modify: `crates/ironlint-cli/Cargo.toml`
+- Modify: `Cargo.lock`
+- Create: `crates/ironlint-cli/tests/cli_e2e_watch.rs`
 
 **Interfaces:**
 - Consumes: the Task 2 scripted runtime loop.
-- Produces: verified >=80% region coverage for `runtime.rs`; no unnecessary terminal abstraction.
+- Produces: verified >=80% region coverage for `runtime.rs`; no new terminal abstraction.
 
 - [ ] **Step 1: Run the exact coverage gate**
 
@@ -179,24 +181,30 @@ Run: `bash scripts/ci-coverage.sh`
 Expected: PASS with `crates/ironlint-cli/src/commands/watch/runtime.rs` at or
 above 80% region coverage.
 
-- [ ] **Step 2: If and only if runtime coverage remains below 80%, add red tests for lifecycle ordering**
+- [ ] **Step 2: If and only if runtime coverage remains below 80%, add a red PTY smoke test**
 
 ```rust
 #[test]
-fn terminal_lifecycle_cleans_up_after_loop_error() {
-    // A fake lifecycle records enter, loop, disable, and leave; assert cleanup
-    // runs after a loop error and that current error precedence is preserved.
+fn watch_uses_a_real_tty_renders_then_quits() {
+    let mut command = std::process::Command::new(assert_cmd::cargo::cargo_bin!("ironlint"));
+    command.current_dir(project_with_empty_log());
+    let mut session = expectrl::Session::spawn(command).unwrap();
+    session.set_expect_timeout(Some(std::time::Duration::from_secs(3)));
+    session.expect("waiting for edits").unwrap();
+    session.send("q").unwrap();
+    session.expect(expectrl::Eof).unwrap();
 }
 ```
 
-Run this test before implementation and verify it fails for the missing
-lifecycle seam.
+Run this test before adding `expectrl`; verify it fails because the crate is
+absent, then add the dev dependency and keep the test macOS/Linux-only.
 
-- [ ] **Step 3: Implement the smallest lifecycle seam and rerun its focused tests**
+- [ ] **Step 3: Add the PTY harness dependency and rerun the focused test**
 
-Keep production setup and cleanup ordering byte-for-byte equivalent in effect.
-Test setup failure, loop failure, and cleanup failure paths; do not make an
-existing partial-setup failure safer as part of this organizational change.
+Add `expectrl` as a dev dependency for `ironlint-cli`. Spawn the explicit
+compiled binary through `Session::spawn(Command)`, wait for stable semantic UI
+text, send raw `q`, and require EOF. Do not change production setup, cleanup,
+polling, rendering, or key handling.
 
 - [ ] **Step 4: Run final verification**
 
@@ -211,11 +219,11 @@ bash scripts/ci-coverage.sh
 
 Expected: all commands exit 0.
 
-- [ ] **Step 5: Commit any evidence-required lifecycle addition**
+- [ ] **Step 5: Commit the PTY integration test**
 
 ```bash
-git add crates/ironlint-cli/src/commands/watch/runtime.rs crates/ironlint-cli/src/commands/watch/tests/runtime.rs
-git commit -m "test-watch-runtime-lifecycle"
+git add Cargo.lock crates/ironlint-cli/Cargo.toml crates/ironlint-cli/tests/cli_e2e_watch.rs
+git commit -m "test-watch-pty-runtime"
 ```
 
 ### Task 4: Review the coverage repair and finish the original module split

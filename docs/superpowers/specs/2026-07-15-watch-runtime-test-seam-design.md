@@ -43,12 +43,21 @@ quit event. They cover:
   non-key events, non-press keys, and quit; and
 - telemetry read failure followed by success, plus a reset/re-prime cycle.
 
-If those tests leave `runtime.rs` below 80%, a second, narrowly scoped terminal
-lifecycle seam will test setup and cleanup error ordering without altering its
-current semantics. It is not introduced unless coverage evidence requires it.
+Those tests leave the concrete terminal adapter below 80% region coverage. The
+approved follow-up is one macOS/Linux black-box integration test that runs the
+compiled `ironlint watch` binary inside a pseudo-terminal. It must wait for a
+stable visible UI string, send raw `q` (without a newline), and observe a clean
+exit. `expectrl` is the primary test harness; `portable-pty` remains an
+acceptable lower-level alternative if direct control of the PTY becomes
+necessary.
+
+The PTY test covers the real positive path: TTY detection, raw-mode setup,
+alternate-screen entry, Crossterm event polling, and cleanup. It must use a
+bounded expectation timeout, assert semantic screen text rather than ANSI byte
+sequences or animation frames, and run only where the repository currently
+supports it (macOS/Linux). Windows support is explicitly deferred.
 
 ## Non-goals
 
-- No pseudo-terminal integration test or real terminal in unit tests.
 - No change to `ironlint watch` interaction, output, or error handling.
 - No relaxation or exemption of the coverage gate.
