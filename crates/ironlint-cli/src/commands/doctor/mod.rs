@@ -32,18 +32,7 @@ mod adapters;
 mod config;
 
 use adapters::adapter_section;
-#[cfg(test)]
-use adapters::{
-    adapter_check, build_hook_deps_result, check_adapters, hook_deps_row, hook_deps_verdict,
-    hooks_row, json_hook_adapter_wired,
-};
-#[cfg(test)]
-use config::check_run_path;
 use config::{check_config_parses, check_config_present, check_script_paths};
-#[cfg(test)]
-use ironlint_core::adapter::HarnessStatus;
-#[cfg(test)]
-use std::path::Path;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct CheckResult {
@@ -193,7 +182,14 @@ fn trust_row(ctx: &DoctorContext) -> CheckResult {
 
 #[cfg(test)]
 mod tests {
+    use super::adapters::{
+        adapter_check, build_hook_deps_result, check_adapters, hook_deps_row, hook_deps_verdict,
+        hooks_row, json_hook_adapter_wired,
+    };
+    use super::config::check_run_path;
     use super::*;
+    use ironlint_core::adapter::HarnessStatus;
+    use std::path::Path;
 
     #[test]
     fn exit_code_is_zero_when_all_pass_or_warn() {
