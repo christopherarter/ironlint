@@ -13,8 +13,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/christopherarter/ironlint/actions/workflows/ci.yml"><img src="https://github.com/christopherarter/ironlint/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
-  <a href="https://github.com/christopherarter/ironlint/releases/latest"><img src="https://img.shields.io/github/v/release/christopherarter/ironlint?label=release" alt="Latest release" /></a>
+  <a href="https://github.com/ironlint/ironlint/actions/workflows/ci.yml"><img src="https://github.com/ironlint/ironlint/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="https://github.com/ironlint/ironlint/releases/latest"><img src="https://img.shields.io/github/v/release/ironlint/ironlint?label=release" alt="Latest release" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache_2.0-green" alt="Apache 2.0" /></a>
   <img src="https://img.shields.io/badge/built_with-Rust-orange" alt="Built with Rust" />
   <img src="https://img.shields.io/badge/agents-Claude_Code_·_OpenCode_·_Codex_·_pi-5A67D8" alt="Agent adapters" />
@@ -32,7 +32,7 @@
 
 ---
 
-IronLint is local linting tool for agentic coding harnesses. GitHub Actions runs your checks in the cloud after you push; IronLint runs the same kind of checks locally, on every edit your agent makes, **before the code lands on disk, and it can refuse.** A check is a file glob plus a shell command. IronLint hands that command your proposed content on stdin and reads one thing back: the exit code. Any nonzero exit (1–125) blocks the write. No engines, no severities, no output parsing.
+IronLint is a local policy gate for agentic coding harnesses. GitHub Actions runs your checks in the cloud after you push; IronLint runs the same kind of checks locally, on every edit your agent makes, **before the code lands on disk, and it can refuse.** A check is a file glob plus a shell command. IronLint hands that command your proposed content on stdin and reads one thing back: the exit code. Any nonzero exit (1–125) blocks the write. No engines, no severities, no output parsing.
 
 
 One YAML file at `.ironlint.yml` in your repo root. A map of checks; each names what to match, where it applies, and the command that decides.
@@ -46,12 +46,7 @@ checks:
 
   lint-and-format:
     files: "src/**/*.py"
-    on: [write, pre-commit]           # write: per file; pre-commit: once, with $IRONLINT_FILES
-    steps:
-      - name: ruff
-        run: "ruff check --quiet --stdin-filename \"$IRONLINT_FILE\" -"
-      - name: no-todo
-        run: "! grep -n 'TODO' $IRONLINT_FILES"
+    run: "ruff check --quiet --stdin-filename \"$IRONLINT_FILE\" -"
 ```
 
 New here? Start with [Getting started](docs/getting-started.md).
@@ -61,26 +56,26 @@ New here? Start with [Getting started](docs/getting-started.md).
 Prebuilt binaries for macOS (Apple Silicon and Intel), Linux (x86-64), and Windows (x86-64). The installer downloads the right binary, drops it in `~/.cargo/bin`, and puts it on your `PATH` — no Rust toolchain required:
 
 ```sh
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/christopherarter/ironlint/releases/latest/download/ironlint-cli-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/ironlint/ironlint/releases/latest/download/ironlint-cli-installer.sh | sh
 ```
 
 Windows (PowerShell):
 
 ```powershell
-powershell -ExecutionPolicy Bypass -c "irm https://github.com/christopherarter/ironlint/releases/latest/download/ironlint-cli-installer.ps1 | iex"
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/ironlint/ironlint/releases/latest/download/ironlint-cli-installer.ps1 | iex"
 ```
 
 Or build from source (needs a Rust toolchain):
 
 ```sh
-cargo install --git https://github.com/christopherarter/ironlint ironlint-cli
+cargo install --git https://github.com/ironlint/ironlint ironlint-cli
 ```
 
 Then run `ironlint --version`. Update any time with `ironlint update` (installer-based installs; source builds update with `cargo install … --force`).
 
 ## Connect your agent
 
-`ironlint init` takes you from clone to gated in one command. It scaffolds a starter `.ironlint.yml`, trusts it, detects your coding agents, and wires IronLint's edit hook into each — so policy runs on every edit without you calling `ironlint check` by hand:
+`ironlint init` takes you from clone to gated in one command. It scaffolds a starter `.ironlint.yml`, trusts that new config, detects your coding agents, and wires IronLint's edit hook into each — so policy runs on every edit without you calling `ironlint check` by hand:
 
 ```sh
 ironlint init
@@ -91,7 +86,7 @@ It detects Claude Code, Codex, pi, and OpenCode, asks before touching anything, 
 ```sh
 ironlint init --harness opencode   # just one agent
 ironlint init --harness all        # every supported agent
-ironlint init --global             # user-level settings, not the project
+ironlint init --global             # wire user-level agent settings (the config remains project-local)
 ```
 
 It also installs an `ironlint-config` authoring skill so the agent knows how to write checks; run `ironlint schema` to read the format yourself. `ironlint doctor` verifies the wiring (one row per agent); `ironlint init --uninstall --harness <name>` removes it.
@@ -112,9 +107,9 @@ Local checks override inherited checks of the same id. Full format: `ironlint sc
 - **Runs on the write, not after.** Every agent edit fires your checks with the proposed content on stdin, before it lands on disk. A nonzero exit refuses the write. GitHub Actions can't reach that early.
 - **The check owns the verdict.** A check is a file glob plus a shell command (or `steps:`). IronLint reads one thing back — the exit code. `0` passes, `1–125` blocks, and your command's stdout/stderr becomes the block message. No engines, no severities, no output parsing.
 - **Your existing linters, unchanged.** `ruff`, `eslint`, `tsc`, `clippy`, `biome` — the same checks CI runs, wired in as-is. No per-tool integration to write.
-- **Two lifecycles, one config.** `on: [write]` fires per edit; `on: [pre-commit]` fires once over the whole staged set. A single check can do both — IronLint keys by check, not by event.
+- **Two lifecycles, one config.** `on: [write]` fires per edit; `on: [pre-commit]` fires once over the selected matching file set. A single check can do both — IronLint keys by check, not by event.
 - **Trust before it runs.** IronLint refuses an untrusted config. `ironlint trust` blesses it; any change to the config or its check scripts revokes trust until you re-bless. `check` fails closed on untrusted input.
-- **Telemetry, no setup.** Every run appends a JSONL record to `.ironlint/log.jsonl`; the directory ignores itself. `ironlint-review` flags noisy and dead checks.
+- **Telemetry, no setup.** Every run appends a JSONL record to `.ironlint/log.jsonl`; the directory ignores itself. The optional standalone Claude Code plugin provides the `/ironlint-review` skill for reviewing noisy and dead checks; it is not a CLI command or part of the standard `init` integration.
 
 ## Why This Works
 
@@ -129,7 +124,7 @@ A check fires on `write` (default), `pre-commit`, or both.
 | Event | Trigger | stdin | `$IRONLINT_FILE` | `$IRONLINT_FILES` |
 |-------|---------|-------|------------------|-------------------|
 | `write` | Every agent edit | proposed content | the edited file | same, single entry |
-| `pre-commit` | Once before a commit | empty | not set | all staged files, newline-joined |
+| `pre-commit` | Once for the selected matching file set | empty | not set | selected matching files, newline-joined |
 
 Use `on: [write, pre-commit]` to fire at both — no duplication. This is the inversion that separates IronLint from lefthook, whose earliest reach is `pre-commit`, after the agent already wrote the file.
 
@@ -138,11 +133,12 @@ Use `on: [write, pre-commit]` to fire at both — no duplication. This is the in
 Every check receives, on its environment:
 
 - `$IRONLINT_FILE` — absolute path of the file under check (set for `write`; not set for `pre-commit`).
-- `$IRONLINT_FILES` — newline-joined list of all files (single entry for `write`; all staged files for `pre-commit`).
+- `$IRONLINT_FILES` — newline-joined list of all selected files (single entry for `write`; the matching file set for `pre-commit`).
 - `$IRONLINT_ROOT` — project root (the check's cwd).
 - `$IRONLINT_EVENT` — `write` or `pre-commit`.
 - `$IRONLINT_BIN` — absolute path to the `ironlint` binary, so a check can invoke it without `PATH` resolution.
 - `$IRONLINT_TMPFILE` — a materialized temp file holding the proposed content, set only when your `run`/`steps` reference it.
+- `$IRONLINT_PROPOSED_MANIFEST` — optional tab-separated manifest of sibling proposed files in the same atomic patch; absent unless an adapter supplies it.
 - **stdin** — proposed post-edit content (`write`) or empty (`pre-commit`).
 
 Read proposed content from **stdin**, not from `$IRONLINT_FILE`. On harnesses that gate before the write lands (codex, pi), the file on disk still holds the old content.
@@ -213,11 +209,11 @@ Add `# ironlint-disable: <check-id>` anywhere in a file to suppress that check f
 <details>
 <summary>Adapters</summary>
 
-- **Claude Code** — `adapters/claude-code/`. PostToolUse hook, plus three skills. See [docs/adapters/claude-code.md](docs/adapters/claude-code.md).
+- **Claude Code** — `adapters/claude-code/`. PreToolUse hook for edits, plus three skills. See [docs/adapters/claude-code.md](docs/adapters/claude-code.md).
 - **OpenCode** — `adapters/opencode/`. `tool.execute.before` gates proposed edits. See [docs/adapters/opencode.md](docs/adapters/opencode.md).
 - **Codex** — `adapters/codex/`. PreToolUse hook for `apply_patch`, blocking via a `permissionDecision` JSON on stdout rather than an exit code; requires a one-time review+trust step inside Codex. See [adapters/codex/README.md](adapters/codex/README.md).
 - **pi** — `adapters/pi/`. `tool_call` hook gates proposed edits before they're written. See [adapters/pi/README.md](adapters/pi/README.md).
-- *Aider, pre-commit, MCP — planned.*
+- The CLI is the stable integration point for additional harnesses and Git hooks.
 </details>
 
 <details>

@@ -45,6 +45,7 @@ Want the big picture first? See the [Visual elevator pitch](visual-elevator-pitc
 - [Inspecting your config](operating/inspecting-config.md) — `explain` and `show-resolved-config`
 - [Diagnostics](operating/diagnostics.md) — `ironlint doctor`
 - [Telemetry](operating/telemetry.md) — the `.ironlint/log.jsonl` check log
+- [Watching checks](operating/watching-checks.md) — follow live runs with `ironlint watch`
 
 ## Trust
 

@@ -1,9 +1,9 @@
 # IronLint — Claude Code adapter
 
-`PreToolUse` hook integration for Claude Code. Runs `ironlint check` on every
-`Edit`, `Write`, `MultiEdit`, or `NotebookEdit` tool call **before** the edit
-lands on disk, checking the proposed content against your project's
-`.ironlint.yml` policy.
+`PreToolUse` hook integration for Claude Code. The `ironlint init` install runs
+`ironlint check` on `Edit`, `Write`, `MultiEdit`, and `NotebookEdit` calls
+**before** the edit lands on disk, checking the proposed content against your
+project's `.ironlint.yml` policy.
 
 > **Timing:** this adapter fires on **PreToolUse**, so ironlint sees the
 > proposed content — `tool_input.content` for `Write`, or `old_string` ->
@@ -26,7 +26,7 @@ ironlint init --harness claude-code
 
 This auto-detects Claude Code and patches `<project>/.claude/settings.local.json`
 (or `~/.claude/settings.json` with `--global`) to register a `PreToolUse`
-hook matching `Edit|Write|MultiEdit|NotebookEdit`. A local (project-scope)
+hook matching `Edit|Write|MultiEdit|NotebookEdit|Bash`. A local (project-scope)
 install always targets `settings.local.json` — the personal, gitignored
 settings file Claude Code merges in — never the committable `settings.json`,
 so the machine-specific absolute hook path never lands in version control.
@@ -63,17 +63,16 @@ for commands that never mention `ironlint` or `.ironlint`. The deny decision
 is shared across every adapter via `ironlint gate-bash`. The branch runs
 before the config-existence check, so it fires even in a project with no
 `.ironlint.yml` — exactly when the agent is most motivated to self-trust. See
-`docs/superpowers/specs/2026-07-06-bash-gate-self-trust-prevention-design.md`
-for the threat model and the documented known gap (variable-substitution
-indirection).
+[The trust guide](../../docs/security/trust.md#the-agent-cant-bless-its-own-config)
+for the protected paths and the shell-classification boundary.
 
 ## Manual fallback
 
 Use these steps if the `ironlint` binary is not available:
 
-1. Install the `ironlint` binary (`cargo install --git https://github.com/christopherarter/ironlint ironlint-cli`, or use a release binary).
+1. Install the `ironlint` binary (`cargo install --git https://github.com/ironlint/ironlint ironlint-cli`, or use a release binary).
 2. Add this plugin via your Claude Code plugin manager.
-3. Run `ironlint init` in a project to scaffold `.ironlint.yml`.
+3. Run `ironlint init --no-hook` in a project to scaffold `.ironlint.yml` without also installing the settings-hook integration.
 4. Review the config and run `ironlint trust` to fingerprint it.
 5. Edit any file — the PreToolUse hook checks the proposed edit against the
    policy *before* it lands; a violating edit is blocked and never written.
@@ -91,6 +90,11 @@ Use these steps if the `ironlint` binary is not available:
 `CLAUDE_PLUGIN_ROOT` is set by Claude Code at hook-fire time and points to the
 plugin's installed directory (wherever the plugin manager unpacked this adapter).
 You do **not** set it yourself.
+
+The packaged plugin matcher covers `Edit|Write`. Use `ironlint init --harness
+claude-code` when you also need `MultiEdit`, `NotebookEdit`, and the Bash gate.
+Choose the packaged plugin or the `init` integration path for a project, not
+both: installing both would register two PreToolUse gates.
 
 If a hook fails with `hook.sh: No such file or directory`, the plugin is not
 installed where Claude Code expects. Reinstall via `ironlint init --harness claude-code`

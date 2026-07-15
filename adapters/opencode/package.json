@@ -35,9 +35,9 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/christopherarter/ironlint.git",
+    "url": "https://github.com/ironlint/ironlint.git",
     "directory": "adapters/opencode"
   },
-  "homepage": "https://github.com/christopherarter/ironlint#readme",
-  "bugs": "https://github.com/christopherarter/ironlint/issues"
+  "homepage": "https://github.com/ironlint/ironlint#readme",
+  "bugs": "https://github.com/ironlint/ironlint/issues"
 }

@@ -1,6 +1,6 @@
 # Telemetry — `.ironlint/log.jsonl`
 
-IronLint appends one JSON record per line to `.ironlint/log.jsonl` for every check run it performs. The file is owner-only (`0o600`) and append-only — IronLint never rewrites or truncates it. Operators rotate it themselves; downstream tools (dashboards, log greppers) read it line by line.
+IronLint appends newline-delimited JSON records to `.ironlint/log.jsonl` as checks run. The active file is owner-only (`0o600` on Unix), and downstream tools read it one line at a time. A file check produces one record; a repository sweep can produce one record per write-lifecycle file plus one batched record for pre-commit checks.
 
 **Schema version:** `5`. This is a code constant (`telemetry::SCHEMA_VERSION`) that bumps when the record shape changes. It is **not** written into each line — there is no per-line version field.
 
@@ -46,4 +46,6 @@ There is no warn status at either level, no `engine` field, and no `rule_id` —
 
 ## Rotation
 
-IronLint does not rotate `.ironlint/log.jsonl` itself — operators handle rotation. The append-only contract means external rotation (e.g. `logrotate copytruncate`) is safe: a missing-or-empty file is silently re-created on the next append.
+After an append grows the active log beyond 10 MiB, IronLint renames it to `.ironlint/log.jsonl.1`. The next record creates a new active `log.jsonl`. IronLint keeps one archive: a later rotation replaces the existing `.1` file.
+
+You may remove either file when you no longer need its history. A missing log is created on the next check run.

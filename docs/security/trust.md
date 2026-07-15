@@ -43,10 +43,9 @@ files stays open — it is already gated — so the change closes the *ungated*
 Bash escape without removing the legitimate edit path. The deny decision is
 shared across every adapter via `ironlint gate-bash`, and it fires even in a
 project with no `.ironlint.yml` (exactly when the agent is most motivated to
-self-trust). See
-`docs/superpowers/specs/2026-07-06-bash-gate-self-trust-prevention-design.md`
-for the threat model and the documented known gap (variable-substitution
-indirection — adversarial tier, out of scope).
+self-trust). It cannot reliably classify shell commands that construct
+`ironlint trust` through variable substitution, such as `iron$(echo lint) trust`;
+treat the Bash gate as protection for direct shell forms, not a shell sandbox.
 
 ## How verification works
 

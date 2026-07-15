@@ -96,7 +96,7 @@ checks:
     run: "[ \"$IRONLINT_EVENT\" = pre-commit ] || exit 0; cargo test -q"
 ```
 
-On any event other than `pre-commit`, the check exits `0` immediately. At commit time it runs the tests and blocks if they fail.
+On any event other than `pre-commit`, the check exits `0` immediately. When you invoke the pre-commit lifecycle, it runs the tests and blocks if they fail.
 
 ## See also
 

@@ -13,7 +13,7 @@ cargo build --release
 
 Put `./target/release/ironlint` on your `PATH` so the rest of this guide can call `ironlint` directly. (Prebuilt binaries and a one-line installer are in the [project README](../README.md).)
 
-> **Windows:** IronLint runs checks via `sh -c` and requires a POSIX shell. On Windows, run it inside **Git Bash** or **WSL** — a stock PowerShell/CMD environment has no `sh`, so `ironlint check` will exit `1` (a loud config-tier error) and `ironlint doctor` will report a failing `shell` row rather than silently fail-open. A `windows-latest` CI leg is planned (see `plans/readiness-review/`).
+> **Windows:** IronLint runs checks via `sh -c` and requires a POSIX shell. On Windows, run it inside **Git Bash** or **WSL**. A stock PowerShell or CMD environment has no `sh`, so `ironlint check` exits `1` and `ironlint doctor` reports a failing `shell` row.
 
 ## Write your first check
 
@@ -66,7 +66,7 @@ The blank page is optional, and so is wiring your agent by hand. From a fresh pr
 ironlint init
 ```
 
-`ironlint init` detects your stack and writes a starter `.ironlint.yml` (the same shape as the check above, tuned for Rust, Node, or Python), trusts it for you, then detects your installed agents — Claude Code, Codex, pi, OpenCode — and, after you confirm, installs IronLint's edit hook into each. From then on the check runs on every edit the agent makes; you never call `ironlint check` by hand.
+`ironlint init` writes a small, stack-agnostic starter `.ironlint.yml`, trusts that new config, then detects your installed agents — Claude Code, Codex, pi, OpenCode — and, after you confirm, installs IronLint's edit hook into each. It does not inspect manifests or add Rust, Node, or Python-specific checks; choose and add those after reviewing the starter. From then on the check runs on every edit the agent makes; you never call `ironlint check` by hand.
 
 Review the generated checks and adjust. If you change the config after init, re-run `ironlint trust`. Target a single agent with `--harness <name>`, wire all four with `--harness all`, or preview the writes with `--dry-run` — see the [CLI reference](reference/cli.md#ironlint-init) for every flag and the [adapter docs](adapters/README.md) for per-agent details.
 

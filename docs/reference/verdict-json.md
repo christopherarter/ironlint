@@ -5,7 +5,7 @@
 ```json
 {
   "schema_version": 6,
-  "ironlint_version": "0.11.0",
+  "ironlint_version": "0.12.1",
   "status": "block",
   "blocks": [
     {

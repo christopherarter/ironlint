@@ -20,7 +20,7 @@ A check is `files` plus a command — either `run` (a single shell command) or `
 | `files` | The glob (or list of globs) selecting which files this check watches. A bare pattern without `/` matches at any depth — `*.ts` is the same as `**/*.ts`. See [Targeting files](../configuring/targeting-files.md). |
 | `run` | A shell command, handed to `sh -c` verbatim. IronLint reads only its exit code. (One of `run` / `steps`.) |
 | `steps` | A sequence of `{ name?, run }` steps, all fed the same stdin. The first nonzero step blocks. `run:` is sugar for a single step. |
-| `on` | Lifecycle: `[write]` (default — per file on every edit), `[pre-commit]` (once over the staged set), or `[write, pre-commit]`. |
+| `on` | Lifecycle: `[write]` (default — per file on every edit), `[pre-commit]` (once over the selected matching file set), or `[write, pre-commit]`. |
 | `name` | Human-readable label. Parsed and reserved; not yet surfaced in output. |
 
 ## The exit-code contract
@@ -52,7 +52,7 @@ IronLint hands each check the same four things. Nothing is spliced into the comm
 | Channel | Value |
 |---------|-------|
 | `$IRONLINT_FILE` | Absolute path to the file under check (set for `write`; not set for `pre-commit`). |
-| `$IRONLINT_FILES` | Newline-joined list of all files under check (single entry for `write`; all staged files for `pre-commit`). |
+| `$IRONLINT_FILES` | Newline-joined list of all selected files (single entry for `write`; the matching file set for `pre-commit`). |
 | `$IRONLINT_ROOT` | Project root — also the check's working directory. |
 | `$IRONLINT_EVENT` | What triggered the check: `write` or `pre-commit`. |
 | `$IRONLINT_BIN` | Absolute path to the `ironlint` binary, so a check can invoke it without `PATH` resolution. |

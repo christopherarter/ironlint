@@ -28,7 +28,7 @@ Once a pattern contains a slash, it's matched against the full path relative to 
 - `src/*.py` matches `src/app.py` but **not** `src/pkg/util.py`.
 - `src/**/*.py` matches `src/app.py` and `src/pkg/util.py` — `**` spans directories.
 
-A bare extension glob is right-anchored so it catches the file at any depth. This mirrors the original bully matcher.
+A bare extension glob is right-anchored so it catches the file at any depth.
 
 ## Checking what matches
 

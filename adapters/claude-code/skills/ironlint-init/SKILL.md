@@ -1,6 +1,6 @@
 ---
 name: ironlint-init
-description: Bootstraps a project's .ironlint.yml by detecting the tech stack from manifest files, wrapping existing linters as checks, and generating a baseline config. Use when user says "init ironlint", "set up ironlint", "bootstrap ironlint config", "create ironlint checks", "ironlint init", or asks to create or generate an ironlint configuration.
+description: Bootstraps a project's .ironlint.yml with IronLint's generic baseline, then helps the user deliberately add checks for their stack and existing linters. Use when user says "init ironlint", "set up ironlint", "bootstrap ironlint config", "create ironlint checks", "ironlint init", or asks to create or generate an ironlint configuration.
 metadata:
   author: dynamik-dev
   version: 0.2.0
@@ -10,32 +10,26 @@ metadata:
 
 # IronLint Init
 
-Generate a baseline `.ironlint.yml` by detecting the stack and wrapping installed
-linters as checks. A check is two fields — `files` (a glob or list) and `run` (a
-shell command that exits nonzero to block); there are no engines or severities.
+Start with IronLint's generic baseline, then help the user choose checks for
+their stack and installed linters. A check is two fields — `files` (a glob or
+list) and `run` (a shell command that exits nonzero to block); there are no
+engines or severities.
 
 This skill is user-driven. Do not silently install tools or add checks. Every step
 below is a proposal the user accepts or declines.
 
 ## Step 1: Run `ironlint init`
 
-`ironlint init` detects the stack from manifest files, writes a starter
-`.ironlint.yml`, and trusts it for you:
-
-| Manifest | Stack |
-|---|---|
-| `Cargo.toml` | Rust |
-| `package.json` | Node |
-| `pyproject.toml` or `setup.py` | Python |
-| (none) | Generic |
+`ironlint init` writes a small, stack-agnostic starter `.ironlint.yml` and
+trusts it for you. It does not inspect manifest files or wrap linters:
 
 ```bash
 ironlint init
 ```
 
-This creates `.ironlint.yml` with one or two starter checks for the detected stack
-(and, outside this Claude session, can also wire hooks into other agents — not
-needed here, the PreToolUse hook is already running). Review the generated checks.
+This creates `.ironlint.yml` with generic starter checks (and, outside this
+Claude session, can also wire hooks into other agents — not needed here, the
+PreToolUse hook is already running). Review the generated checks.
 
 ## Step 2: Wrap the project's linters as checks
 
@@ -81,5 +75,5 @@ block verdict.
   existing config untouched. Propose edits via `/ironlint-config` instead.
 - There is no migration from older formats; ironlint rejects a pre-0.3 config
   (`schema_version:`/`rules:`) outright. Write checks fresh.
-- Telemetry lands at `.ironlint/log.jsonl`, one record per check with a per-check
-  breakdown. The `/ironlint-review` skill consumes it.
+- Telemetry lands at `.ironlint/log.jsonl`, with a per-check breakdown in each
+  record. The `/ironlint-review` skill consumes it.

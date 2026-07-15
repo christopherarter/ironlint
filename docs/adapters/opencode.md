@@ -12,7 +12,7 @@ With the `ironlint` binary on your `PATH`, one command wires the plugin and scaf
 ironlint init --harness opencode
 ```
 
-This writes the adapter to `<project>/.opencode/plugins/ironlint.ts` with a `.ironlint-adapter.json` sidecar (per-file sha256 + version) alongside it, then scaffolds and trusts a starter `.ironlint.yml`. OpenCode plugins are **project-scoped** — there is no global plugin directory, so `--global` has no effect here. Re-runs are idempotent (unchanged → "already present", changed artifact → "updated").
+This writes the adapter to `<project>/.opencode/plugins/ironlint.ts` with a `.ironlint-adapter.json` sidecar (per-file sha256 + version) alongside it, then scaffolds and trusts a starter `.ironlint.yml`. `ironlint init` installs the OpenCode adapter at project scope, so `--global` does not change that path. Re-runs are idempotent (unchanged → "already present", changed artifact → "updated").
 
 OpenCode ships Bun, so there is no separate runtime to install. Restart OpenCode so it discovers the plugin, then verify the wiring:
 
@@ -72,15 +72,6 @@ To cover **every** project at once, symlink into OpenCode's global plugin direct
 ```bash
 mkdir -p ~/.config/opencode/plugins
 ln -sf /path/to/ironlint/adapters/opencode/src/index.ts ~/.config/opencode/plugins/ironlint.ts
-```
-
-Once the package is published, you can add it to a project's `opencode.json` and let OpenCode install it via Bun on first load:
-
-```jsonc
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugin": ["@christopherarter/ironlint-opencode"]
-}
 ```
 
 ## What isn't gated yet

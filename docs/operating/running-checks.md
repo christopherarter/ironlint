@@ -10,13 +10,19 @@ IronLint loads `.ironlint.yml`, confirms the config is trusted, then runs every 
 
 ## Choosing what to check
 
-| Flag | Checks |
+| Input | Checks |
 |------|--------|
 | `--file <path>` | A single file on disk. |
 | `--diff <path>` | A unified diff; each changed file is checked. |
 | `--content <string\|->` | Proposed post-edit content instead of reading `--file` from disk — pass `-` to read it from stdin. Requires `--file`; conflicts with `--diff`. |
+| no `--file` or `--diff` | A repository sweep. IronLint walks the config directory, respects `.gitignore`, and skips hidden directories. Checks with only `on: [write]` run once per matching file; any check that includes `pre-commit` (including `on: [write, pre-commit]`) runs once over its matching file set. |
 
 `--content` evaluates a *proposed* edit before it lands on disk — the case an adapter hits when it checks an agent's write before committing it. The proposed content reaches every matching check the same way on-disk content does: on **stdin**. There is no engine/on-disk split — a check sees the bytes you pass, whether they came from disk or `--content`.
+
+By default, `--file` and `--diff` dispatch the `write` lifecycle. Pass
+`--event pre-commit` when you need the batched lifecycle for that selected
+input. You cannot pass `--event` with a bare repository sweep because the
+sweep runs each check according to its `on:` list.
 
 ## Exit codes
 
@@ -52,6 +58,9 @@ Exit `4` is the opposite default. An untrusted config is never silently un-gated
 |------|--------|
 | `--config <path>` | Load a config other than `.ironlint.yml`. |
 | `--check <id>` | Run only this check. Repeatable; multiple flags are OR'd. |
+| `--force` | Run a named `--check` against `--file` even when the path is outside that check's `files:` scope. It does not bypass lifecycle or `ironlint-disable:` directives. |
+| `--require-match` | Make a file that matches no checks fail instead of reporting a visible no-match pass. Use it in CI to catch stale globs. |
+| `--allow-external-paths` | Allow a file outside the config directory. Keep the default unless you intentionally check a file outside the project. |
 
 For JSON output (`--format json`) and the complete flag list, see the [CLI reference](../reference/cli.md) and [Verdict JSON](../reference/verdict-json.md).
 

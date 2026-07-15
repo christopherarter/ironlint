@@ -12,9 +12,8 @@ OpenCode plugin integration for IronLint. A static per-file check that uses Open
 ironlint init --harness opencode
 ```
 
-This writes the adapter plugin atomically to `<project>/.opencode/plugins/ironlint.ts`
-(project-scoped; OpenCode does not expose a global plugin directory). A
-`.ironlint-adapter.json` sidecar (per-file sha256 + version) is placed alongside
+This writes the adapter plugin atomically to `<project>/.opencode/plugins/ironlint.ts`.
+A `.ironlint-adapter.json` sidecar (per-file sha256 + version) is placed alongside
 the artifact. Re-runs are idempotent (unchanged → "already present", changed
 artifact → "updated").
 
@@ -35,7 +34,7 @@ Your `.ironlint.yml` and trust store are untouched.
 
 ## Requirements
 
-- The `ironlint` binary on PATH (`cargo install --git https://github.com/christopherarter/ironlint ironlint-cli` or release binary).
+- The `ironlint` binary on PATH (`cargo install --git https://github.com/ironlint/ironlint ironlint-cli` or release binary).
 - OpenCode (which ships Bun). No extra runtime install required.
 
 ## Manual fallback
@@ -60,27 +59,23 @@ cp /path/to/ironlint/adapters/opencode/src/index.ts .opencode/plugins/ironlint.t
 
 Restart OpenCode. The plugin will be picked up automatically.
 
-### npm (once published)
+### npm package
 
-```jsonc
-// opencode.json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugin": ["@christopherarter/ironlint-opencode"]
-}
-```
-
-OpenCode installs the package via Bun on first load.
+An npm package is not published yet. Until a release announces an installable
+package and its final name, use `ironlint init --harness opencode` or the local
+development setup above.
 
 ## Initialise the project
 
-Run `ironlint init` to scaffold `.ironlint.yml`, review the checks, then:
+Run `ironlint init` to scaffold and bless a new `.ironlint.yml`:
 
 ```bash
-ironlint trust
+ironlint init
 ```
 
-This fingerprints the config. The plugin no-ops silently in projects without `.ironlint.yml`, so installing it globally is safe.
+If you later edit the config or a covered script, review the change and run
+`ironlint trust` again. The plugin no-ops silently in projects without
+`.ironlint.yml`, so installing it globally is safe.
 
 ## How it works
 
@@ -96,10 +91,11 @@ The plugin honours the `ironlint` CLI exit-code contract from `commands/check.rs
 
 | Exit | Plugin behaviour |
 |------|------------------|
-| `0` (pass or warn) | Allow. |
+| `0` (pass) | Allow. |
 | `2` (block) | Throw — OpenCode cancels the tool call. |
 | `3` (internal error) | Fail-open by default; set `IRONLINT_FAIL_CLOSED_ON_INTERNAL=1` to fail closed while the hook can still block. |
-| `1` / other (config error) | Log to stderr, allow. Config errors should not block the agent on unrelated work. |
+| `4` (untrusted policy) | Fail closed: block and tell the user to review and run `ironlint trust`. |
+| `1` / other (config error) | Log to stderr and allow. Config errors should not block the agent on unrelated work. |
 
 ## Bash gate
 
@@ -111,12 +107,10 @@ Ordinary commands are not slowed: a substring pre-filter skips the decision
 entirely for commands that never mention `ironlint` or `.ironlint`. The deny
 decision is shared across every adapter via `ironlint gate-bash`. The branch
 runs before the config-existence check, so it fires even in a project with no
-`.ironlint.yml`. See
-`docs/superpowers/specs/2026-07-06-bash-gate-self-trust-prevention-design.md`
-for the threat model and the documented known gap (variable-substitution
-indirection).
+`.ironlint.yml`. See [The trust guide](../../docs/security/trust.md#the-agent-cant-bless-its-own-config)
+for the protected paths and the shell-classification boundary.
 
-## Known gaps at 0.1d
+## Known gaps
 
 - **No `apply_patch` interception.** OpenCode's multi-file patch tool would need per-file extraction; large refactors via `apply_patch` are not gated. Use `edit` / `write` or run `ironlint check` manually in CI to cover them.
 - **Partially ported skills.** `ironlint init` installs the `ironlint-config` authoring skill into `.opencode/skills/` today — check authoring and the fixture-test loop are available in OpenCode. `/ironlint-init` and `/ironlint-review` remain Claude Code plugin-only skills and are not yet ported to other harnesses.

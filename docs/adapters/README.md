@@ -2,7 +2,7 @@
 
 An adapter wires IronLint into a coding agent so policy runs automatically on every edit, instead of you calling `ironlint check` by hand. The adapter hooks the agent's edit events, runs `ironlint check`, and translates the exit code into "allow" or "reject this edit."
 
-**`ironlint init` installs these for you.** Run it with no arguments to detect every agent you have and wire them all at once; the per-agent command targets just one. The per-adapter pages below cover scopes, paths, and manual fallbacks.
+**`ironlint init` installs these for you.** Run it with no arguments to detect the supported agents on your machine and offer to wire them; the per-agent command targets one explicitly. The pages below cover scopes, paths, and manual fallbacks.
 
 | Adapter | Agent | Wire it in | Under the hood |
 |---------|-------|------------|----------------|
@@ -11,25 +11,26 @@ An adapter wires IronLint into a coding agent so policy runs automatically on ev
 | [Codex](../../adapters/codex/README.md) | OpenAI Codex | `ironlint init --harness codex` | `PreToolUse` hook in `.codex/hooks.json` (project-scoped, or `~/.codex/hooks.json` with `--global`) |
 | [pi](../../adapters/pi/README.md) | pi | `ironlint init --harness pi` | extension in `.pi/extensions/` |
 
-*Aider, pre-commit, and MCP adapters are planned.*
+You can also call `ironlint check` directly from another harness or Git hook.
 
 ## What adapters do
 
 The exact hook names and coverage differ, but the contract is the same across agents:
 
 1. **On each edit or proposed edit** — collapse the host's hook payload into IronLint's ABI and run `ironlint check` against the file. On exit `2`, gating hooks reject the edit so the agent retries.
-2. **On each Bash/shell command** — the agent's shell tool is gated too (`Bash` for claude-code/codex, `bash` for pi/opencode). Commands that would let the agent free itself — `ironlint trust`, or a Bash write to `.ironlint.yml` / `.ironlint/scripts/` — are denied via `ironlint gate-bash`, a separate built-in that is not a `check` and not trust-gated (it fires even with no `.ironlint.yml`). See the per-adapter "Bash gate" sections and `docs/superpowers/specs/2026-07-06-bash-gate-self-trust-prevention-design.md`.
+2. **On each Bash/shell command** — the agent's shell tool is gated too (`Bash` for Claude Code and Codex, `bash` for pi and OpenCode). Commands that would let the agent free itself — `ironlint trust`, or a Bash write to `.ironlint.yml` / `.ironlint/scripts/` — are denied via `ironlint gate-bash`, a separate built-in that is not a `check` and not trust-gated. It fires even with no `.ironlint.yml`. See [The agent can't bless its own config](../security/trust.md#the-agent-cant-bless-its-own-config).
 
 Every adapter normalizes its host into the same ABI, so one check command runs unchanged everywhere:
 
 | Channel | Value |
 |---------|-------|
 | `$IRONLINT_FILE` | Absolute path to the file under check (set for `write`; not set for `pre-commit`). |
-| `$IRONLINT_FILES` | Newline-joined list of all files under check (single entry for `write`; all staged files for `pre-commit`). |
+| `$IRONLINT_FILES` | Newline-joined list of all selected files (single entry for `write`; the matching file set for `pre-commit`). |
 | `$IRONLINT_ROOT` | Project root — also the check's working directory. |
 | `$IRONLINT_EVENT` | `write` or `pre-commit`. |
 | `$IRONLINT_TMPFILE` | **write only** — set only when the check's `run` references it: absolute path to a temp file holding the proposed content, placed beside `$IRONLINT_FILE` with the same extension. Auto-cleaned after the check. Unset on `pre-commit`. |
 | `$IRONLINT_BIN` | Absolute path to the running `ironlint` binary, so any check can invoke it without `PATH` resolution. |
+| `$IRONLINT_PROPOSED_MANIFEST` | Optional tab-separated manifest of sibling proposed files in the same atomic patch. It is absent unless the adapter supplies it. |
 | stdin | The proposed post-edit content. |
 
 The adapter only shells out to the `ironlint` binary. It doesn't reimplement any policy logic.

@@ -2,7 +2,7 @@
 
 > IronLint is a local, static policy gate for AI coding agents: every proposed edit runs the shell checks from a trusted `.ironlint.yml` before it lands, and any nonzero exit (1–125) blocks the write. A machine-readable verdict with stable exit codes makes the result consumable by CI and agent adapters.
 
-A check is a file glob plus a shell command (or a `steps:` sequence). IronLint hands the command the proposed content on stdin plus a small env ABI (`$IRONLINT_FILE`, `$IRONLINT_FILES`, `$IRONLINT_ROOT`, `$IRONLINT_EVENT`, `$IRONLINT_TMPFILE`) and reads back only the exit code — no engines, no severities, no output parsing; the check owns the decision. Checks fire on two lifecycles: `write` (per edit, pre-landing) and `pre-commit` (once over the staged set). An out-of-repo trust store means an unblessed config never runs. The verdict JSON (schema 5) and the append-only `.ironlint/log.jsonl` telemetry log are versioned wire formats consumed by CI and by agent adapters (Claude Code, OpenCode, pi, Reasonix).
+A check is a file glob plus a shell command (or a `steps:` sequence). IronLint hands the command proposed content on stdin plus a small env ABI (`$IRONLINT_FILE`, `$IRONLINT_FILES`, `$IRONLINT_ROOT`, `$IRONLINT_EVENT`, `$IRONLINT_TMPFILE`, `$IRONLINT_BIN`, and optionally `$IRONLINT_PROPOSED_MANIFEST`) and reads back only the exit code. There are no engines, severities, or output parsing; the check owns the decision. Checks fire on two lifecycles: `write` (per edit) and `pre-commit` (once over the selected matching file set). An out-of-repo trust store means an unblessed config never runs. Verdict JSON schema 6 and telemetry schema 5 are versioned wire formats consumed by CI and the Claude Code, Codex, OpenCode, and pi adapters.
 
 ## Start here
 
@@ -12,9 +12,9 @@ A check is a file glob plus a shell command (or a `steps:` sequence). IronLint h
 
 ## Reference
 
-- [CLI reference](docs/reference/cli.md): every subcommand and flag — `check`, `trust`, `validate`, `init`, `explain`, `show-resolved-config`, `doctor`, `schema`, `watch`, `update`.
+- [CLI reference](docs/reference/cli.md): every subcommand and flag — `check`, `trust`, `validate`, `init`, `doctor`, `explain`, `show-resolved-config`, `schema`, `update`, `watch`, and `gate-bash`.
 - [Config schema](docs/reference/config-schema.md): the `.ironlint.yml` format — `checks:` entries with `files`, `run` or `steps`, `on`, `name`, plus `extends:` and `execution:`.
-- [Verdict JSON](docs/reference/verdict-json.md): the machine-readable verdict wire format (schema 5), statuses, and the exit-code contract (0/1/2/3).
+- [Verdict JSON](docs/reference/verdict-json.md): the machine-readable verdict wire format (schema 6), statuses, and the exit-code contract (0/1/2/3/4).
 - [show-resolved-config](docs/reference/show-resolved-config.md): print the post-`extends:` merged check set, attributing each check to its source file.
 
 ## Writing checks
@@ -30,17 +30,18 @@ A check is a file glob plus a shell command (or a `steps:` sequence). IronLint h
 
 ## Operating
 
-- [Running checks](docs/operating/running-checks.md): `ironlint check` in file and diff modes, exit codes, and fail-open behavior.
+- [Running checks](docs/operating/running-checks.md): `ironlint check` in file, diff, and repository-sweep modes, exit codes, and fail-open behavior.
 - [Inspecting your config](docs/operating/inspecting-config.md): debug scope and check resolution with `explain` / `show-resolved-config`.
-- [Telemetry](docs/operating/telemetry.md): the append-only `.ironlint/log.jsonl` check log.
+- [Telemetry](docs/operating/telemetry.md): the `.ironlint/log.jsonl` check log and its 10 MiB rotation policy.
 - [Diagnostics](docs/operating/diagnostics.md): `ironlint doctor` environment, config, and adapter health checks.
+- [Watching checks](docs/operating/watching-checks.md): follow live check runs with `ironlint watch`.
 
 ## Adapters
 
 - [Adapters overview](docs/adapters/README.md): the shared adapter contract — the check ABI, exit codes, and fail-open-on-internal-error behavior.
-- [Claude Code adapter](docs/adapters/claude-code.md): the PostToolUse plugin that gates `Edit`/`Write`.
+- [Claude Code adapter](docs/adapters/claude-code.md): the `PreToolUse` integration for edits and the Bash policy gate.
+- [Codex adapter](adapters/codex/README.md): the `PreToolUse` guardrail for `apply_patch` and Bash.
 - [OpenCode adapter](docs/adapters/opencode.md): the `tool.execute.before` plugin gate.
-- [Reasonix adapter](adapters/reasonix/README.md): the PreToolUse hook for DeepSeek-Reasonix.
 - [pi adapter](adapters/pi/README.md): the `tool_call` pre-write gate for pi.
 
 ## Security

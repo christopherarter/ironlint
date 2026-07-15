@@ -15,11 +15,12 @@ Interpret and act on ironlint PreToolUse hook output. Not user-invocable.
 ## When blocked (hook exited 2)
 
 The tool-result stderr is a `Verdict` JSON whose `status` is `block`. A check is a
-shell command; it blocked because it exited `2`. Shape:
+shell command; it blocked because it exited nonzero (`1`–`125`). The adapter uses
+hook exit `2` to reject the tool call. Shape:
 
 ```json
 {
-  "schema_version": 5,
+  "schema_version": 6,
   "status": "block",
   "blocks": [
     {"check": "no-debug", "step": null, "file": "src/foo.rs", "message": "src/foo.rs:42: DEBUG marker"}

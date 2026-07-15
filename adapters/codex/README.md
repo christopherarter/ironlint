@@ -96,9 +96,8 @@ entirely for commands that never mention `ironlint` or `.ironlint`. The deny
 decision is shared across every adapter via `ironlint gate-bash`. The branch
 runs before the config-existence check, so it fires even in a project with no
 `.ironlint.yml`. See
-`docs/superpowers/specs/2026-07-06-bash-gate-self-trust-prevention-design.md`
-for the threat model and the documented known gap (variable-substitution
-indirection).
+[The trust guide](../../docs/security/trust.md#the-agent-cant-bless-its-own-config)
+for the protected paths and the shell-classification boundary.
 
 ## Guardrail, not a hard boundary
 
@@ -116,7 +115,7 @@ guardrail, not a guarantee.
 
 Use these steps if the `ironlint` binary is not available:
 
-1. Install the `ironlint` binary (`cargo install --git https://github.com/christopherarter/ironlint ironlint-cli`, or use a release binary).
+1. Install the `ironlint` binary (`cargo install --git https://github.com/ironlint/ironlint ironlint-cli`, or use a release binary).
 2. Copy `hooks/hook.sh` from this directory into place and register it in
    Codex's `hooks.json` under `hooks.PreToolUse`, matcher
    `apply_patch|Edit|Write`, `command` pointed at the script's absolute path

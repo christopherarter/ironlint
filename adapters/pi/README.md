@@ -42,7 +42,7 @@ Your `.ironlint.yml` and trust store are untouched.
 
 ## Requirements
 
-- The `ironlint` binary on `PATH` (`cargo install --git https://github.com/christopherarter/ironlint ironlint-cli` or a release binary), ≥ 0.1.
+- The `ironlint` binary on `PATH` (`cargo install --git https://github.com/ironlint/ironlint ironlint-cli` or a release binary).
 - Node ≥ 22.6 (pi's runtime; also required for the bundled `node:test` suite).
 
 ## Manual fallback
@@ -73,23 +73,23 @@ Or reference an absolute path in pi `settings.json`:
 Ad-hoc load for one session: `pi -e ./adapters/pi/src/index.ts`. Hot-reload
 with `/reload`.
 
-### npm (once published)
+### npm package
 
-`@christopherarter/ironlint-pi` ships a `"pi": { "extensions": ["./src/index.ts"] }`
-field, so pi discovers it automatically once the package is installed.
+An npm package is not published yet. Until a release announces an installable
+package and its final name, use `ironlint init --harness pi` or the local
+development setup above.
 
 ## Initialise the project
 
 ```bash
-ironlint init    # scaffold .ironlint.yml (auto-blesses it in the trust store)
-ironlint trust   # bless the config in the out-of-repo trust store
+ironlint init    # scaffold and bless a new .ironlint.yml
 ```
 
-Trust is **required**: `check` fails closed (exit 1) on a config that is missing
-from, or no longer matches, the trust store at `$XDG_CONFIG_HOME/ironlint/trust.json`
-(else `~/.config/ironlint/trust.json`). The adapter treats exit 1 as a config error
-and **allows** the edit (fail-open), so an untrusted config leaves the check
-silently inert — re-run `ironlint trust` after every edit to `.ironlint.yml`.
+Trust is required: `check` exits `4` when a config is missing from, or no longer
+matches, the trust store at `$XDG_CONFIG_HOME/ironlint/trust.json` (or
+`~/.config/ironlint/trust.json`). The adapter treats that exit as fail-closed,
+so an untrusted policy blocks the edit and tells you to run `ironlint trust`.
+Re-run `ironlint trust` after every edit to `.ironlint.yml`.
 
 ## Exit-code contract
 
@@ -101,7 +101,8 @@ The extension honours the `ironlint` CLI exit-code contract
 | `0` (pass) | Allow. |
 | `2` (block) | `return { block: true, reason }` — pi cancels the tool call. |
 | `3` (internal error) | Fail-open (log + allow) by default; set `IRONLINT_FAIL_CLOSED_ON_INTERNAL=1` to fail closed (block). |
-| `1` / other (config error, incl. untrusted or modified config) | Log to stderr, allow. |
+| `4` (untrusted policy) | Fail closed: block and tell the user to review and run `ironlint trust`. |
+| `1` / other (config error) | Log to stderr and allow. |
 
 ## Bash gate
 
@@ -113,9 +114,8 @@ that never mention `ironlint` or `.ironlint`. The deny decision is shared across
 every adapter via `ironlint gate-bash`. The branch runs before the
 config-existence check, so it fires even in a project with no `.ironlint.yml` —
 exactly when the agent is most motivated to self-trust. See
-`docs/superpowers/specs/2026-07-06-bash-gate-self-trust-prevention-design.md`
-for the threat model and the documented known gap (variable-substitution
-indirection).
+[The trust guide](../../docs/security/trust.md#the-agent-cant-bless-its-own-config)
+for the protected paths and the shell-classification boundary.
 
 ## Known gaps (v1)
 

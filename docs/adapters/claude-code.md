@@ -2,17 +2,17 @@
 
 The Claude Code adapter runs your IronLint checks every time Claude edits a file. When an edit breaks a check, Claude Code rejects it on the spot, hands Claude the verdict, and Claude rewrites the change to comply. You stop having to remember to run `ironlint check` yourself; the check is always on.
 
-The adapter ships in this repo at `adapters/claude-code/`. It predates the 0.3 gates redesign, so its alignment to the check ABI (`$IRONLINT_FILE`, the proposed post-edit content on stdin, any nonzero exit blocks) is still in progress under Plan 4; the `.ironlint.yml` check format shown below is current regardless.
+The adapter ships in this repository at `adapters/claude-code/`. `ironlint init` installs the current `PreToolUse` integration and supplies the same check ABI used by every supported adapter.
 
 ## Install
 
-With the `ironlint` binary and `jq` on your `PATH`, one command wires the hook and scaffolds a trusted config:
+With the `ironlint` binary, `jq`, and `python3` on your `PATH`, one command wires the hook and scaffolds a trusted config:
 
 ```bash
 ironlint init --harness claude-code
 ```
 
-This patches `<project>/.claude/settings.local.json` (or `~/.claude/settings.json` with `--global`) to register a `PreToolUse` hook matching `Edit|Write|MultiEdit|NotebookEdit`, and materializes the hook scripts to `~/.config/ironlint/adapters/claude-code/` with a `.ironlint-adapter.json` sidecar (per-file sha256). A local (project-scope) install always targets `settings.local.json` — the personal, gitignored settings file Claude Code merges in — never the committable `settings.json`, so the machine-specific absolute hook path never lands in version control. A backup of the prior settings file is written as `<settings>.bak` on the first patch; re-runs are idempotent. Restart (or reload) Claude Code so it picks up the new hook, then verify:
+This patches `<project>/.claude/settings.local.json` (or `~/.claude/settings.json` with `--global`) to register a `PreToolUse` hook matching `Edit|Write|MultiEdit|NotebookEdit|Bash`, and materializes the hook scripts to `~/.config/ironlint/adapters/claude-code/` with a `.ironlint-adapter.json` sidecar (per-file sha256). A local (project-scope) install always targets `settings.local.json` — the personal, gitignored settings file Claude Code merges in — never the committable `settings.json`, so the machine-specific absolute hook path never lands in version control. A backup of the prior settings file is written as `<settings>.bak` on the first patch; re-runs are idempotent. Restart (or reload) Claude Code so it picks up the new hook, then verify:
 
 ```bash
 ironlint doctor
@@ -69,13 +69,13 @@ This hook sets no ironlint-specific timeout of its own, so it isn't affected by 
 
 `ironlint init --harness claude-code` installs the **`ironlint-config`** authoring skill into `.claude/skills/ironlint-config/` — the check schema, the exit-code contract, and common patterns with a fixture-test loop. Run `ironlint schema` any time to print the same guide at the terminal. `/ironlint-init` and `/ironlint-review` ship with the Claude Code **plugin** instead (see [Managing policy from inside the agent](README.md#managing-policy-from-inside-the-agent)).
 
-The plugin layout lives in this repo at `adapters/claude-code/`. For local development, link it into Claude Code's plugin directory and restart:
+The plugin layout lives in this repository at `adapters/claude-code/`. For local development, link it into Claude Code's plugin directory and restart:
 
 ```bash
 ln -sf "$(pwd)/adapters/claude-code" ~/.claude/plugins/data/ironlint
 ```
 
-Once IronLint is published to the plugin marketplace you can skip the symlink and run `/plugin install ironlint` instead. The plugin registers the same `PreToolUse` check, so install it *or* run `ironlint init --harness claude-code` — not both.
+The packaged plugin's hook configuration covers `Edit` and `Write`. `ironlint init --harness claude-code` is the recommended path because its generated matcher also covers `MultiEdit`, `NotebookEdit`, and `Bash`. Install one integration path, not both.
 
 ## When edits aren't being gated
 
@@ -85,13 +85,13 @@ If Claude edits a file and nothing happens, walk through these in order:
 2. Confirm `ironlint --version` runs on your `PATH`.
 3. Confirm `.ironlint.yml` exists in the project root.
 4. Confirm the config is trusted (`ironlint init` does this; otherwise run `ironlint trust`).
-5. Trace a single event end to end: `bash -x adapters/claude-code/hooks/hook.sh post-tool-use < event.json`.
+5. Trace a single event end to end: `bash -x adapters/claude-code/hooks/hook.sh pre-tool-use < event.json`.
 
 For a one-shot health check, run [`ironlint doctor`](../operating/diagnostics.md). Its `claude-code` adapter row confirms the wiring without you tracing anything by hand.
 
 ## How it works
 
-The adapter is one bash script that Claude Code calls on `PreToolUse` (matching `Edit` \| `Write` \| `MultiEdit` \| `NotebookEdit`). It only ever shells out to the `ironlint` binary and holds no policy logic of its own, so changing a check never means touching the adapter. It translates `ironlint check`'s exit codes into allow/reject per [the exit-code contract](README.md#the-exit-code-contract). The adapter hooks edits and nothing else — it does not proxy Claude's `Read`, `Grep`, or `Glob` tools.
+The adapter is one bash script that Claude Code calls on `PreToolUse` (matching `Edit` \| `Write` \| `MultiEdit` \| `NotebookEdit` \| `Bash`). It only ever shells out to the `ironlint` binary and holds no policy logic of its own, so changing a check never means touching the adapter. It translates `ironlint check`'s exit codes into allow/reject per [the exit-code contract](README.md#the-exit-code-contract). It gates edits and the narrow Bash policy surface; it does not proxy Claude's `Read`, `Grep`, or `Glob` tools.
 
 ## See also
 

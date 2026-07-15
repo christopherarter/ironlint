@@ -21,13 +21,13 @@ checks:
 - `files` — the glob(s) the check watches. A bare pattern with no `/` (e.g. `*.py`) also matches at any depth.
 - `run` — a shell command handed to `sh -c`. **Any nonzero exit (1–125) blocks the edit**; exit 0 passes. `126`/`127`/timeout are treated as a broken check, not a block.
 - `steps` — alternative to `run`: a sequence of `{name?, run}` steps, all fed the same stdin. The first nonzero step blocks.
-- `on` — lifecycle events: `[write]` (default) fires per file on every agent write; `[pre-commit]` fires once before a commit (see ABI below). Use `on: [write, pre-commit]` to fire at both.
+- `on` — lifecycle events: `[write]` (default) fires per file on every agent write; `[pre-commit]` fires once over the selected matching file set (see ABI below). Use `on: [write, pre-commit]` to fire at both.
 - `name` — optional human-readable label. Parsed and reserved, but **not yet surfaced** in block messages or `ironlint explain` — it's a no-op today. (A `steps` entry's `name`, by contrast, *is* reported as the block's `step` field.)
 
 ## ABI — what every check receives
 
 - `$IRONLINT_FILE` — absolute path of the single file under check (set for `write`; not set for `pre-commit`).
-- `$IRONLINT_FILES` — newline-joined list of all files under check (single entry for `write`; all staged files for `pre-commit`).
+- `$IRONLINT_FILES` — newline-joined list of all selected files (single entry for `write`; the matching file set for `pre-commit`).
 - `$IRONLINT_ROOT` — project root (the check's cwd).
 - `$IRONLINT_EVENT` — `write` or `pre-commit`.
 - `$IRONLINT_TMPFILE` — **write only**, set only when your `run` mentions it: an absolute path to a temp file holding the proposed content, placed beside `$IRONLINT_FILE` with the same extension and auto-cleaned. Use it for tools that need a real file on disk (Biome, ESLint file-mode, `tsc`, ruff) instead of stdin. Unset on `pre-commit` (files are already on disk at `$IRONLINT_FILES`).
@@ -37,7 +37,7 @@ checks:
 
 **Read proposed content from stdin, not from `$IRONLINT_FILE`.** On harnesses that gate before the write lands (e.g. codex, pi), the file on disk still holds the OLD content, so reading it misses the very change you mean to check. Use `$IRONLINT_FILE` to hand a tool a filename (e.g. a linter's `--stdin-filename`), never as the content source.
 
-**The check runs in a scrubbed environment.** The child process inherits only an allowlist — `PATH`, `HOME`, `LANG`, `TZ`, `TMPDIR`, and any `LC_*` — plus the `IRONLINT_*` vars above. The agent's own credentials (`ANTHROPIC_API_KEY`, `GITHUB_TOKEN`, `NPM_TOKEN`, `AWS_*`, …) are **not** inherited, so a check that shells out to a tool needing a token fails unless that token name is allowlisted. Don't write a check that assumes the parent's ambient creds.
+**The check runs in a scrubbed environment.** The child process inherits only an allowlist — `PATH`, `HOME`, `LANG`, `TZ`, `TMPDIR`, and any `LC_*` — plus the `IRONLINT_*` vars above. The agent's own credentials (`ANTHROPIC_API_KEY`, `GITHUB_TOKEN`, `NPM_TOKEN`, `AWS_*`, …) are **not** inherited. Don't write a check that assumes the parent's ambient credentials; use a file, credential helper, or secrets manager that the check can access explicitly when a tool requires credentials.
 
 On block, the check's combined stdout+stderr becomes the message the agent sees, so make the command print why it blocked.
 
@@ -111,7 +111,7 @@ A minimal `.ironlint.yml` is just `checks:`. Two optional top-level keys tune it
       exit 0
 ```
 
-**Pre-commit check (staged files).** Runs once before a commit, receiving all staged matching files via `$IRONLINT_FILES`:
+**Pre-commit check.** Runs once over the selected matching file set, receiving those paths through `$IRONLINT_FILES`:
 
 ```yaml
   no-secrets:
@@ -134,15 +134,14 @@ console.log("debug only")
 1. Read `.ironlint.yml` to see existing checks (if none exists, scaffold one with `ironlint init`).
 2. Draft the check: `files` scope + a `run` command that exits nonzero to block.
 3. Build two fixtures: a **dirty** file the check should block, and a **clean** one it should pass.
-4. Test each by feeding the fixture's content on stdin and isolating the check:
+4. After adding the candidate and re-trusting the config, test each fixture by feeding its content on stdin and isolating the check:
    ```bash
-   ironlint check --file dirty.py --check ruff-check < dirty.py ; echo "dirty exit: $?"   # expect nonzero
-   ironlint check --file clean.py --check ruff-check < clean.py ; echo "clean exit: $?"   # expect 0
+   ironlint check --file dirty.py --content - --check ruff-check < dirty.py ; echo "dirty exit: $?"   # expect nonzero
+   ironlint check --file clean.py --content - --check ruff-check < clean.py ; echo "clean exit: $?"   # expect 0
    ```
 5. Verify the check exits nonzero on dirty input and 0 on clean input.
-6. If both hold, write the check into `.ironlint.yml`.
-7. Run `ironlint trust` to re-bless the config — edits invalidate the trust fingerprint, so checks refuse to run until you do.
+6. Keep the check when both fixtures produce the expected result. Revise or remove it otherwise.
 
 ## Test before write
 
-Always test the check against a fixture BEFORE writing to `.ironlint.yml`. A check that doesn't exit nonzero on dirty input is worse than no check — it gives false confidence. A check that exits nonzero on clean input blocks every edit in scope.
+Test every check against a fixture before relying on it. A check that doesn't exit nonzero on dirty input gives false confidence. A check that exits nonzero on clean input blocks every edit in scope.

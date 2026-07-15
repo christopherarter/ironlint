@@ -6,27 +6,29 @@ The binary is `ironlint`. Run `ironlint <command> --help` for the same informati
 
 ## `ironlint check`
 
-Run the checks against a file or diff.
+Run the checks against a file, a unified diff, or the repository tree.
 
 ```
 ironlint check [--file <path>] [--diff <path>] [--content <string|->]
              [--format human|json] [--config <path>] [--check <id>]...
              [--event write|pre-commit] [--force] [--explain]
-             [--allow-external-paths]
+             [--allow-external-paths] [--require-match]
 ```
 
 | Flag | Default | Notes |
 |------|---------|-------|
 | `--file <path>` | — | File to check. |
 | `--diff <path>` | — | Unified diff; each changed file is checked. |
+| neither `--file` nor `--diff` | — | Sweep the config directory, respecting `.gitignore` and skipping hidden directories. `write` checks run per matching file; `pre-commit` checks run once over their matching file set. |
 | `--content <string\|->` | — | Proposed post-edit content to evaluate instead of reading `--file` from disk; `-` reads it from stdin. Requires `--file`; conflicts with `--diff`. |
 | `--format` | `human` | `human` or `json`. See [Verdict JSON](verdict-json.md). |
 | `--config <path>` | `.ironlint.yml` | Config file to load. |
 | `--check <id>` | — | Run only this check. Repeatable; multiple flags are OR'd. |
-| `--event` | `write` | What triggered the check, surfaced to checks as `$IRONLINT_EVENT`. One of `write`, `pre-commit`. |
+| `--event` | `write` for `--file` and `--diff` | What triggered the check, surfaced to checks as `$IRONLINT_EVENT`. One of `write`, `pre-commit`. It is not valid with a bare repository sweep, which derives lifecycles from each check's `on:` list. |
 | `--force` | off | Bypass scope matching (`files:` globs) for checks named with `--check`, so an ad-hoc `--file` outside a check's glob still runs that check. Lifecycle and `ironlint-disable:` directives still apply. Requires at least one `--check`; exits `1` if used without `--check`. |
 | `--explain` | off | Print a per-check outcome report to stderr after the verdict. |
 | `--allow-external-paths` | off | Allow checking files whose canonical path falls outside the config's directory. |
+| `--require-match` | off | Turn a no-match pass into a nonzero result. Use it in CI to catch a glob that no longer selects a file. |
 
 **Exit codes:** `0` pass · `1` config or load error · `2` block · `3` internal error · `4` untrusted config/checks (run `ironlint trust`). Argument/usage errors (a typo'd flag, a missing value, bare `ironlint`) also exit `1` — `2` is reserved exclusively for a real **Block** verdict, so a usage error is never mistaken for a policy block. Exit `4` is a config the trust layer could hash but that doesn't match (or has no entry in) the blessed store — distinct from exit `1`, which a config that fails to *parse* still uses (the trust layer can't even evaluate something that doesn't parse, so that failure defers to the same code a load error would use). Adapters must surface exit `4` loudly; pre-write adapters (every adapter as of Task 3.1) treat it as fail-closed and block the tool call. See [Running checks](../operating/running-checks.md).
 
@@ -60,7 +62,7 @@ ironlint validate [--config <path>]
 
 Scaffold a starter `.ironlint.yml` and wire IronLint into your coding agents. Two phases:
 
-1. **Scaffold + trust.** Detects your stack (Rust / Node / Python, including workspaces) and existing linters (biome / eslint / ruff), writes a `.ironlint.yml`, and trusts it for you. An existing config is left untouched (and not re-trusted — run [`ironlint trust`](#ironlint-trust) yourself if you hand-edit it).
+1. **Scaffold + trust.** Writes a small, stack-agnostic `.ironlint.yml` baseline and trusts it for you. It does not inspect manifests, discover linters, or add language-specific checks; add those deliberately after reviewing the starter. An existing config is left untouched (and not re-trusted — run [`ironlint trust`](#ironlint-trust) yourself if you hand-edit it).
 2. **Wire hooks.** Detects installed agents — Claude Code, Codex, pi, OpenCode — and, after you confirm, installs IronLint's edit hook into each. Materialized hook artifacts plus a `.ironlint-adapter.json` sidecar (per-file sha256 + version) land under `~/.config/ironlint/adapters/<harness>/` for settings-hook agents, or the agent's plugin directory for plugin agents. Re-runs are idempotent.
 
 ```
@@ -77,7 +79,7 @@ ironlint init [--dir <path>] [--harness <name>]... [--global] [--yes]
 | `--no-hook` | off | Scaffold and trust the config only; install no hooks. Mutually exclusive with `--hook-only`. |
 | `--hook-only` | off | Skip scaffolding; only wire hooks. |
 | `--uninstall` | off | Remove IronLint's hooks and materialized artifacts. Leaves `.ironlint.yml` and the trust store untouched. |
-| `--dry-run` | off | Preview the hook writes and settings patches without making them. Note: the config scaffold + trust is **not** part of the dry run — it still writes and trusts `.ironlint.yml`. Pair with `--hook-only` to preview hooks without scaffolding. |
+| `--dry-run` | off | Preview config scaffolding, trust, hook writes, and settings patches without making them. Pair with `--hook-only` to preview hooks alone. |
 
 **Exit codes:** `0` on success; `3` if every attempted hook install failed; `1` on a scaffold/trust error.
 
@@ -174,7 +176,8 @@ Two views, toggled with `Tab` / `→` / `←`:
 
 `q` / `Esc` quits. Requires an interactive terminal; in a non-TTY it exits `1`
 with a hint. Read-only: it runs no checks, writes no telemetry, and does not
-enforce trust.
+enforce trust. See [Watching checks](../operating/watching-checks.md) for the
+task-oriented guide.
 
 ## `ironlint gate-bash`
 
@@ -188,9 +191,9 @@ is exactly when the agent is most motivated to run `ironlint trust`. Any
 exit other than `0` or `2` (spawn failure, signal death) is treated by the
 adapters as fail-closed.
 
-See `docs/superpowers/specs/2026-07-06-bash-gate-self-trust-prevention-design.md`
-for the threat model and the documented known gap (variable-substitution
-indirection).
+The classifier protects direct shell forms. It cannot reliably identify a
+command that builds `ironlint trust` through variable substitution; see [The
+agent can't bless its own config](../security/trust.md#the-agent-cant-bless-its-own-config).
 
 ## Read-only commands
 
