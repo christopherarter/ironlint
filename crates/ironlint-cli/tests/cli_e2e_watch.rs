@@ -47,4 +47,8 @@ fn watch_uses_a_real_tty_renders_then_quits() {
     session.expect("waiting for edits").unwrap();
     session.send("q").unwrap();
     session.expect(expectrl::Eof).unwrap();
+    assert_eq!(
+        session.get_process().wait().unwrap(),
+        expectrl::WaitStatus::Exited(session.get_process().pid(), 0)
+    );
 }
