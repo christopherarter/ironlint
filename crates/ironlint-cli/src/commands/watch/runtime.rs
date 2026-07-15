@@ -22,9 +22,43 @@ pub(super) const ENTER_MS: u64 = 210;
 /// Cascade release cadence — one queued row shown per this interval (spec §2).
 pub(super) const STEP_MS: u64 = 95;
 /// Poll interval while an entrance is in flight (smooth-enough stepping).
-const ACTIVE_POLL_MS: u64 = 40;
+pub(super) const ACTIVE_POLL_MS: u64 = 40;
 /// Poll interval when nothing is animating — a quiet watcher stays near-zero CPU.
-const IDLE_POLL_MS: u64 = 250;
+pub(super) const IDLE_POLL_MS: u64 = 250;
+
+pub(super) trait RuntimeIo {
+    fn read_since(&mut self, log: &Path, offset: &mut u64)
+        -> anyhow::Result<(Vec<LogEntry>, bool)>;
+    fn now_ms(&mut self) -> u64;
+    fn poll(&mut self, wait: Duration) -> std::io::Result<bool>;
+    fn read(&mut self) -> std::io::Result<Event>;
+}
+
+struct CrosstermRuntimeIo {
+    loop_start: Instant,
+}
+
+impl RuntimeIo for CrosstermRuntimeIo {
+    fn read_since(
+        &mut self,
+        log: &Path,
+        offset: &mut u64,
+    ) -> anyhow::Result<(Vec<LogEntry>, bool)> {
+        ironlint_core::telemetry::read_since(log, offset)
+    }
+
+    fn now_ms(&mut self) -> u64 {
+        millis(self.loop_start.elapsed())
+    }
+
+    fn poll(&mut self, wait: Duration) -> std::io::Result<bool> {
+        event::poll(wait)
+    }
+
+    fn read(&mut self) -> std::io::Result<Event> {
+        event::read()
+    }
+}
 
 /// Resolve the armed-check projection from `<dir>/.ironlint.yml`. Best-effort:
 /// returns `(checks, true)` on success, `([], false)` on any load error so the
@@ -52,7 +86,10 @@ fn run_tui(dir: &Path, armed: &[ArmedCheck], config_loaded: bool) -> Result<()> 
     let mut stdout = std::io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
-    let result = event_loop(&mut terminal, dir, armed, config_loaded);
+    let mut io = CrosstermRuntimeIo {
+        loop_start: Instant::now(),
+    };
+    let result = event_loop(&mut terminal, dir, armed, config_loaded, &mut io);
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     result
@@ -112,11 +149,97 @@ pub(super) fn prime_backlog(revealed_ms: &mut Vec<Option<u64>>, n: usize, c: &mu
     c.anchor_base = n;
 }
 
-fn event_loop<B: Backend>(
+struct LoopState {
+    state: ViewState,
+    entries: Vec<LogEntry>,
+    offset: u64,
+    primed: bool,
+    cascade: Cascade,
+    revealed_ms: Vec<Option<u64>>,
+}
+
+impl Default for LoopState {
+    fn default() -> Self {
+        Self {
+            state: ViewState::default(),
+            entries: Vec::new(),
+            offset: 0,
+            primed: false,
+            cascade: Cascade {
+                shown: 0,
+                anchor_base: 0,
+                anchor_ms: 0,
+            },
+            revealed_ms: Vec::new(),
+        }
+    }
+}
+
+impl LoopState {
+    fn refresh<I: RuntimeIo>(&mut self, io: &mut I, log: &Path, now_ms: u64) {
+        if let Ok((new, reset)) = io.read_since(log, &mut self.offset) {
+            if reset {
+                self.reset_entries();
+            }
+            self.entries.extend(new);
+            self.prime_if_needed();
+        }
+
+        advance_cascade(
+            &mut self.cascade,
+            self.entries.len(),
+            now_ms,
+            &mut self.revealed_ms,
+        );
+    }
+
+    fn rows(&self, now_ms: u64) -> (Vec<StreamRow<'_>>, bool) {
+        let mut animating = self.cascade.shown < self.entries.len();
+        let rows = (0..self.cascade.shown)
+            .map(|i| {
+                let age_ms = self.row_age(i, now_ms, &mut animating);
+                StreamRow {
+                    entry: &self.entries[i],
+                    age_ms,
+                }
+            })
+            .collect();
+        (rows, animating)
+    }
+
+    fn reset_entries(&mut self) {
+        self.entries.clear();
+        self.revealed_ms.clear();
+        self.cascade.shown = 0;
+        self.cascade.anchor_base = 0;
+        self.primed = false;
+    }
+
+    fn prime_if_needed(&mut self) {
+        if !self.primed {
+            prime_backlog(&mut self.revealed_ms, self.entries.len(), &mut self.cascade);
+            self.primed = true;
+        }
+    }
+
+    fn row_age(&self, index: usize, now_ms: u64, animating: &mut bool) -> Option<u64> {
+        let revealed_ms = self.revealed_ms[index]?;
+        let age_ms = now_ms.saturating_sub(revealed_ms);
+        if age_ms < ENTER_MS {
+            *animating = true;
+            Some(age_ms)
+        } else {
+            None
+        }
+    }
+}
+
+pub(super) fn event_loop<B: Backend, I: RuntimeIo>(
     terminal: &mut Terminal<B>,
     dir: &Path,
     armed: &[ArmedCheck],
     config_loaded: bool,
+    io: &mut I,
 ) -> Result<()>
 where
     // ratatui 0.30 gave `Backend` an associated `Error` type; bound it so
@@ -125,80 +248,33 @@ where
     B::Error: std::error::Error + Send + Sync + 'static,
 {
     let log = dir.join(".ironlint/log.jsonl");
-    let mut state = ViewState::default();
-    let mut entries: Vec<LogEntry> = Vec::new();
-    let mut offset: u64 = 0;
-    let mut primed = false;
-
-    let loop_start = Instant::now();
-    let mut cascade = Cascade {
-        shown: 0,
-        anchor_base: 0,
-        anchor_ms: 0,
-    };
-    let mut revealed_ms: Vec<Option<u64>> = Vec::new();
+    let mut loop_state = LoopState::default();
 
     loop {
-        if let Ok((new, reset)) = ironlint_core::telemetry::read_since(&log, &mut offset) {
-            if reset {
-                entries.clear();
-                revealed_ms.clear();
-                cascade.shown = 0;
-                cascade.anchor_base = 0;
-                primed = false;
-            }
-            entries.extend(new);
-
-            // Prime any already-present entries so they render instantly on
-            // the first successful tick (and after a log-rotation full
-            // reread) instead of cascading one row per STEP_MS — a launch
-            // backlog is history, not live traffic. Gated on a successful
-            // read: a first-tick I/O error must NOT mark an empty backlog as
-            // primed, or the real backlog would silently animate once the
-            // read later succeeds.
-            if !primed {
-                prime_backlog(&mut revealed_ms, entries.len(), &mut cascade);
-                primed = true;
-            }
-        }
-
-        let now_ms = millis(loop_start.elapsed());
-        advance_cascade(&mut cascade, entries.len(), now_ms, &mut revealed_ms);
-
-        let mut animating = cascade.shown < entries.len();
-        let rows: Vec<StreamRow> = (0..cascade.shown)
-            .map(|i| {
-                let age_ms = match revealed_ms[i] {
-                    None => None, // backlog row: settled, no wipe
-                    Some(t) => {
-                        let age = now_ms.saturating_sub(t);
-                        if age < ENTER_MS {
-                            animating = true;
-                            Some(age)
-                        } else {
-                            None
-                        }
-                    }
-                };
-                StreamRow {
-                    entry: &entries[i],
-                    age_ms,
-                }
-            })
-            .collect();
-
-        let summary = summarize(&entries[..cascade.shown], armed);
-        terminal.draw(|f| ui(f, &rows, &summary, armed.len(), &state, config_loaded))?;
+        let now_ms = io.now_ms();
+        loop_state.refresh(io, &log, now_ms);
+        let (rows, animating) = loop_state.rows(now_ms);
+        let summary = summarize(&loop_state.entries[..loop_state.cascade.shown], armed);
+        terminal.draw(|f| {
+            ui(
+                f,
+                &rows,
+                &summary,
+                armed.len(),
+                &loop_state.state,
+                config_loaded,
+            );
+        })?;
 
         let poll = if animating {
             ACTIVE_POLL_MS
         } else {
             IDLE_POLL_MS
         };
-        if event::poll(Duration::from_millis(poll))? {
-            if let Event::Key(key) = event::read()? {
+        if io.poll(Duration::from_millis(poll))? {
+            if let Event::Key(key) = io.read()? {
                 if key.kind == KeyEventKind::Press
-                    && handle_key(key.code, &mut state, &summary) == Loop::Quit
+                    && handle_key(key.code, &mut loop_state.state, &summary) == Loop::Quit
                 {
                     return Ok(());
                 }

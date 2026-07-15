@@ -14,14 +14,14 @@ use std::path::Path;
 use std::time::Duration;
 
 struct ScriptedRuntimeIo {
-    reads: VecDeque<io::Result<(Vec<LogEntry>, bool)>>,
+    reads: VecDeque<anyhow::Result<(Vec<LogEntry>, bool)>>,
     now_ms: VecDeque<u64>,
     polls: Vec<Duration>,
     events: VecDeque<Event>,
 }
 
 impl RuntimeIo for ScriptedRuntimeIo {
-    fn read_since(&mut self, _: &Path, _: &mut u64) -> io::Result<(Vec<LogEntry>, bool)> {
+    fn read_since(&mut self, _: &Path, _: &mut u64) -> anyhow::Result<(Vec<LogEntry>, bool)> {
         self.reads.pop_front().expect("scripted telemetry read")
     }
 
@@ -40,7 +40,7 @@ impl RuntimeIo for ScriptedRuntimeIo {
 }
 
 fn scripted_io(
-    reads: Vec<io::Result<(Vec<LogEntry>, bool)>>,
+    reads: Vec<anyhow::Result<(Vec<LogEntry>, bool)>>,
     now_ms: Vec<u64>,
     events: Vec<Event>,
 ) -> ScriptedRuntimeIo {
@@ -122,7 +122,7 @@ fn event_loop_retries_after_read_error_and_reprimes_after_reset() {
     let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
     let mut io = scripted_io(
         vec![
-            Err(io::Error::new(io::ErrorKind::NotFound, "missing log")),
+            Err(anyhow::anyhow!("missing log")),
             Ok((vec![runtime_entry("src/backlog.rs")], false)),
             Ok((vec![runtime_entry("src/replacement.rs")], true)),
         ],
