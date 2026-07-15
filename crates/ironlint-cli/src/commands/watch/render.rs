@@ -10,8 +10,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 
-use super::ViewState;
-use super::{View, ENTER_MS};
+use super::runtime::ENTER_MS;
+use super::{View, ViewState};
 
 // ── Color vocabulary ──────────────────────────────────────────────────────────
 
