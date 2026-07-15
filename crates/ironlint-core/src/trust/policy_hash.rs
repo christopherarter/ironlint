@@ -8,7 +8,7 @@ use super::worktree::WorktreeScope;
 /// Feed one labeled blob into the hasher with length prefixes on both the
 /// label and the content, so no two distinct (label, bytes) pairs can collide
 /// by concatenation.
-pub(super) fn hash_entry(hasher: &mut Sha256, label: &str, bytes: &[u8]) {
+fn hash_entry(hasher: &mut Sha256, label: &str, bytes: &[u8]) {
     hasher.update((label.len() as u64).to_le_bytes());
     hasher.update(label.as_bytes());
     hasher.update((bytes.len() as u64).to_le_bytes());

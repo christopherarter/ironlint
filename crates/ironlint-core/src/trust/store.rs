@@ -31,7 +31,7 @@ pub struct TrustEntry {
 /// `$XDG_CONFIG_HOME` (if set and non-empty) else `$HOME/.config`. Pure
 /// resolver split out from the env read so it is testable without mutating
 /// process env.
-pub(super) fn config_home_from(xdg: Option<String>, home: Option<String>) -> Option<PathBuf> {
+fn config_home_from(xdg: Option<String>, home: Option<String>) -> Option<PathBuf> {
     if let Some(x) = xdg {
         if !x.is_empty() {
             return Some(PathBuf::from(x));
@@ -47,7 +47,7 @@ pub fn config_home() -> Option<PathBuf> {
     )
 }
 
-pub(super) fn store_path_in(config_home: &Path) -> PathBuf {
+fn store_path_in(config_home: &Path) -> PathBuf {
     config_home.join("ironlint").join("trust.json")
 }
 
@@ -77,7 +77,7 @@ pub fn read_store(path: &Path) -> Result<TrustStore> {
 /// leftover temp file at a reused pid+counter pair is simply overwritten
 /// before anyone reads it, since only the final `rename` target is load
 /// bearing.
-pub(super) fn unique_tmp_path(path: &Path) -> PathBuf {
+fn unique_tmp_path(path: &Path) -> PathBuf {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
     path.with_extension(format!("json.tmp.{}.{n}", std::process::id()))
@@ -165,7 +165,7 @@ pub(super) fn acquire_store_lock(store_path: &Path) -> Result<StoreLock> {
 /// read permission on the target file. [`ensure_trusted_in`] deliberately
 /// does **not** use this path — a corrupt store must keep `check` failing
 /// closed.
-pub(super) fn classify_store_read(
+fn classify_store_read(
     store_path: &Path,
     read: std::io::Result<String>,
 ) -> Result<TrustStore> {
