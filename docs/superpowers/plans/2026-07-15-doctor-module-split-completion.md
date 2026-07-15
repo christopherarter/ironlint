@@ -4,7 +4,7 @@
 
 **Goal:** Finish the doctor command structural split by keeping `mod.rs` a small report facade and placing focused tests in matching test modules without changing doctor output.
 
-**Architecture:** `doctor/config.rs` owns configuration and script diagnostics; `doctor/adapters.rs` owns harness, hook, and dependency diagnostics; `doctor/mod.rs` owns report assembly and CLI output. Test files mirror these responsibilities and import sibling helpers directly through `pub(super)` visibility.
+**Architecture:** `doctor/config.rs` owns the `check_config_present`, `check_config_parses`, and `check_script_paths` diagnostics; `doctor/adapters.rs` owns harness, hook, and dependency diagnostics; `doctor/mod.rs` owns report assembly and CLI output. Test files mirror these responsibilities and import sibling helpers directly through `pub(super)` visibility.
 
 **Tech Stack:** Rust, `anyhow`, existing IronLint adapter diagnostics, Cargo test/clippy, cargo-llvm-cov.
 
@@ -23,7 +23,7 @@
 - Modify: `crates/ironlint-cli/src/commands/doctor/mod.rs`
 
 **Interfaces:**
-- Consumes: `config::config_section` and `adapters::adapter_section`.
+- Consumes: `config::{check_config_present, check_config_parses, check_script_paths}` and `adapters::adapter_section`.
 - Produces: the unchanged `pub fn run(dir: &Path, json: bool) -> Result<i32>` plus report types and rendering only.
 
 - [ ] Write an assertion-preserving compilation check before moving imports.
