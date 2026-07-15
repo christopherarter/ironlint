@@ -195,3 +195,7 @@ pub(super) fn canonical_key(config_path: &Path) -> Result<String> {
         .with_context(|| format!("resolving {}", config_path.display()))?;
     Ok(canon.to_string_lossy().to_string())
 }
+
+#[cfg(test)]
+#[path = "tests/store.rs"]
+mod tests;

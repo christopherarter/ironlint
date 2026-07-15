@@ -90,3 +90,7 @@ fn policy_is_eligible(config_path: &Path, scope: &WorktreeScope) -> Result<bool>
         None => Ok(false),
     }
 }
+
+#[cfg(test)]
+#[path = "tests/summary.rs"]
+mod tests;

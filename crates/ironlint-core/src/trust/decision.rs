@@ -220,3 +220,7 @@ pub fn bless(config_path: &Path) -> Result<()> {
     let now = chrono::Utc::now().to_rfc3339();
     bless_in(config_path, &trust_store_path()?, &now)
 }
+
+#[cfg(test)]
+#[path = "tests/decision.rs"]
+mod tests;

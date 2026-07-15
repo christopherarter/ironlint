@@ -258,3 +258,7 @@ fn worktree_rel(canon: &Path, root: &Path) -> Result<String> {
         .collect::<Vec<_>>()
         .join("/"))
 }
+
+#[cfg(test)]
+#[path = "tests/policy_hash.rs"]
+mod tests;
